@@ -1,0 +1,51 @@
+# docx-processor.py
+
+import os
+import sys
+from typing import List
+
+from langchain_community.document_loaders import (
+    PyPDFLoader,
+    TextLoader,
+    Docx2txtLoader,
+    DirectoryLoader,
+)
+
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+
+import config
+
+# mapping from file extension to loader class
+LOADER_MAPPING = {
+    ".pdf": PyPDFLoader,
+    ".txt": TextLoader,
+    ".docx": Docx2txtLoader,
+}
+
+def load_documents(folder_path: str) -> list:
+#loads all docs from specified folder, using diff loaders for diff file types.
+    print(f"Loading documents from {folder_path}...")
+    all_docs = []
+    for filename in os.listdir(folder_path):
+        file_path = os.path.listdir(folder_path, filename)
+        file_ext = os.path.splitext(filename)[1].lower()
+
+        if file_ext in LOADER_MAPPING:
+            try:
+                loader = LOADER_MAPPING[file_ext](file_path)
+                docs = loader.load()
+                all_docs.extend(docs)
+                print(f"  - Loaded {filename}")
+            except Exception as e:
+                print(f"Error loading {filename}: {e}")
+        else:
+            print(f"  - Skipped {filename} (unsupported file type)")
+
+    return all_docs
+
+# main fn to run the doc ingestion process
+def main():
+    print("--- Starting Document Ingestion ---")
+    

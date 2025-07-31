@@ -1,0 +1,31 @@
+# --- Core Langchain Framework ---
+langchain
+#~=0.2.5
+langchain-core
+#~=0.2.9
+langchain-community
+#~=0.2.5
+
+# --- LLM Integration ---
+langchain-ollama
+#~=0.2.1
+
+# --- Vector Store ---
+faiss-cpu
+#~=1.8.0  or
+faiss-gpu
+
+# --- Text Embedding model ---
+sentence-transformers
+#~=2.7.0
+
+# --- Document Loaders ---
+pypdf
+#~=4.2.0
+python-docx
+#~=1.1.2
+docx2txt
+#~=0.8
+
+# --- for parquet files
+pyarrow

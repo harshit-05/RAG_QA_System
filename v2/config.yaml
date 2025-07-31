@@ -1,0 +1,110 @@
+#config.yaml
+
+# --- component library ---
+components:
+  loaders:
+    pdf:
+      _target_: langchain_community.document_loaders.PyPDFLoader
+    docx:
+      _target_: langchain_community.document_loaders.Docx2txtLoader
+    txt:
+      _target_: langchain_community.document_loaders.TextLoader
+#    image:
+#      _target_: path.to.your.ImageLoader
+
+  splitter:
+    # we can define multiple splitters here and choose one in pipeline
+    english_recursive:
+      _target_: langchain.text_splitter.RecursiveCharacterTextSplitter
+      chunk_size: 1000
+      chunk_overlap: 150
+#    chinese_specialized:
+#      _target_: path.to.your.ChineseTextSplitter
+#      sentence_size: 250
+
+  embedders:
+    minilm_cpu:
+      _target_: langchain_huggingface.HuggingFaceEmbeddings
+      model_name: "sentence-transformers/all-MiniLM-L6-v2"
+      model_kwargs: {"device": "cpu"}
+    minilm_gpu:
+      _target_: langchain_huggingface.HuggingFaceEmbeddings
+      model_name: "sentence-transformers/all-MiniLM-L6-v2"
+      model_kwargs: {"device": "cuda"}
+    multilingual_mpnet:
+      _target_: langchain_huggingface.HuggingFaceEmbeddings
+      model_name: "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+      model_kwargs: {"device": "cuda"}
+
+  # --- Vector Stores ---
+  vector_stores:
+    faiss:
+      path: "vectorstore/db_faiss"
+    chroma:
+      path: "vectorstore/db_chroma"
+
+  llm:
+    qwen2_7b:
+      _target_: langchain_community.llms.Ollama
+      model: "qwen2:7b"
+      temperature: 0.5
+    groq_llama3:
+      _target_: langchain_groq.ChatGroq
+      model: "llama3-70b-8192"
+      temperature: 0.2
+
+  retriever:
+    vector_retriever:
+      search_kwargs: {"k": 10}
+
+  reranker:
+    cross_encoder:
+      _target_: langchain.retrievers.ContextualCompressionRetriever
+      base_compressor:
+        _target_: langchain.retrievers.document_compressors.CrossEncoderRerank
+        model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        top_n: 3
+
+# --- pipeline assembly ---
+pipeline:
+  # --- Data Ingestion Pipeline ---
+  ingestion:
+    loaders:
+      - components.loaders.pdf
+      - components.loaders.docx
+      - components.loaders.txt
+      - components.loaders.image
+    splitter: components.splitters.english_recursive
+    # To switch to Chinese, change splitter and embedder:
+    # splitter: components.splitters.chinese_specialized
+    # embedder: components.embedders.multilingual_mpnet
+    embedder: components.embedders.minilm
+    vector_store: components.vector_stores.faiss
+
+#pipeline:
+  #emedding: components.embedding.minilm_cpu
+  #splitter: components.splitter.recursive_splitter
+  #llm: components.llm.qwen2_7b
+  #retriever: components.retriever.vector_retriever
+  #reranker: components.reranker.ms_marco
+
+  # --- Query Pipeline ---
+  query:
+    llm: components.llms.qwen2_ollama
+    retriever: components.retrievers.vector_search
+#    reranker: components.rerankers.cross_encoder
+
+    prompt: |
+      You are a helpful and precise assistant. Answer the user's question based only on the following context.
+      If the answer is not available in the context, say "I could not find the answer in the provided documents."
+      Do not use any prior knowledge.
+
+      Context: {context}
+      
+      Question: {question}
+      Answer:
+      
+# ----------------- 3. General Settings -----------------
+data_path: "docs"
+vector_store_path: "vectorstore/db_faiss"
+
