@@ -93,13 +93,6 @@ pytest v2/
 
 ---
 
-## 📚 Documentation
-
-- See `docs/` for additional project reports, references, and experiment logs.
-- Example: `docs/Report_Harshit-2.pdf` (contains technical evaluation and methodology details).
-
----
-
 ## Planned & Upcoming Features
 
 - Learning from handwritten and distorted texts
