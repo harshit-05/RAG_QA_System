@@ -1,0 +1,162 @@
+# Board
+
+> Updated at every story close-out. This file + the story files ARE the
+> project memory across sessions.
+
+## Now
+
+**Next action:** implement S0-3 (WORKFLOW.md Step 3). S0-1 and S0-2 are done
+and verified on disk (2026-09-18) but **three commits are still pending**, to be
+made manually — recipe in pre-flight caveat 1 below, which must be followed
+exactly or S0-1 is silently undone. The Phase 0 architecture pass is done:
+`ARCHITECTURE.md` Phase 0 is confirmed and DEC-1/DEC-2/DEC-4 are resolved below.
+
+## Release mapping (per SRS §12, rev 1.1)
+
+| Phase exit | Git tag | Package version |
+| --- | --- | --- |
+| Phase 0 | `v0.1` | 0.1.0 |
+| Phase 1 | `v0.2` | 0.2.0 |
+| Phase 2 | `v0.3` | 0.3.0 |
+| Phase 3 (SRS complete) | `v1.0` | 1.0.0 |
+
+The final story of each phase performs the tag + version bump at close-out.
+
+## Human prerequisites (do these anytime, no session needed)
+
+- [ ] `gh auth login` — gh CLI 2.96.0 is installed but not authenticated;
+      needed to push and for Phase 1 CI/PR work. (HTTPS remote → this also
+      sorts push credentials.)
+
+- [x] Resolve DEC-1 / DEC-2 — done in the Phase 0 arch pass, 2026-09-18.
+
+- [ ] Nothing else: uv ✓, Python 3.12 (uv-managed) ✓, Ollama daemon ✓,
+      Docker 29.6.2 ✓ (Phase 3), disk 311 GB free ✓. **No MCP servers are
+      required for any phase** — built-in tools cover the whole workflow.
+
+## Pre-flight caveats (read before the first story session)
+
+1. **Three commits pending (maintainer commits manually).** S0-1 and S0-2 ran
+   before the baseline commit, so the index holds all three.
+
+   **`git reset` silently undoes S0-1.** Unstaging restores the index to HEAD,
+   where the binaries are tracked again; `.gitignore` does **not** untrack an
+   already-tracked file, so a plain `git add -A && git commit` after a reset
+   keeps ~10 MB of index/parquet/media in the tree and ISS-09 quietly fails.
+   (This already happened once on 2026-09-18 and was re-applied.) If the index
+   ever looks wrong, check with
+   `git ls-files | grep -E '__pycache__|vectorstore/|\.webm|\.save|\.parquet'` —
+   it must print nothing. The recipe below is safe to re-run from any state:
+
+   ```bash
+   # 1 — baseline: pre-existing v2 edits + workflow kit + Phase 0 arch pass
+   git reset
+   git add v2/config.yaml v2/file_processor.py v2/pipeline_builder.py v2/check_config.py \
+           CLAUDE.md SRS.md WORKFLOW.md ARCHITECTURE.md stories/
+   git commit -m "pre-v0.1 baseline: workflow kit, Phase 0 architecture, uncommitted v2 edits"
+
+   # 2 — S0-1: the rm --cached IS the story; files stay on disk
+   git rm -r -q --cached __pycache__ v1/__pycache__ vectorstore/db_faiss \
+          "Screencast from 30-07-25 04_25_00 PM IST.webm" v1/docx_processor.py.save \
+          docs/0000.parquet docs/train.parquet
+   git add .gitignore scripts/fetch_dataset.py
+   git add -u                     # stages the on-disk deletions + the rename
+   git commit -m "S0-1: repo hygiene — gitignore, purge tracked artifacts (ISS-09)"
+
+   # 3 — S0-2
+   git add pyproject.toml uv.lock .python-version src/rag_qa/__init__.py
+   git commit -m "S0-2: uv project — pyproject, pinned 3.12, lockfile (ISS-08)"
+   ```
+
+2. **Stale FAISS index trap (S0-5/S0-6).** `vectorstore/db_faiss/index.pkl`
+   was pickled under the old LangChain — after the 1.x migration it will
+   likely fail to unpickle. Any chain-construction check must re-ingest
+   first; never debug an unpickle error there, just rebuild the index.
+3. **CPU latency expectations.** 7B on CPU: expect ~5–15 s to first token
+   and ~1–2 min full answers; the current small corpus ingests in minutes.
+   Fine for Phase 0 proof. Consequence: **NFR-2 (<2 s first-token p95) is
+   not achievable CPU-only** — by v1.0 either revise the SLO or plan GPU
+   serving. Flagged in GPU offload notes below.
+4. **First run downloads models.** Ingestion pulls the MiniLM embedder
+   (~90 MB) from HuggingFace on first use — needs network once.
+5. **`docs/` parquet files have no loader** — S0-1 untracks them and moves
+   `docs/dataset.py` to `scripts/`; after S0-1 the corpus dir holds only the
+   three PDFs.
+6. **PyTorch index trap (S0-2).** `download.pytorch.org/whl/cpu` hosts stale
+   `langchain-community` releases. Declared as a general index it makes uv
+   silently resolve the whole stack to LangChain 0.3.x. It must be
+   `explicit = true` and bound to torch via `[tool.uv.sources]` — see
+   ARCHITECTURE.md §0.1. Check `langchain-core` is 1.x in `uv.lock`.
+7. **Ollama context window.** Default `num_ctx` is 2048; the old config's
+   k=10 × 1000-char chunks overflowed it silently. Config now sets
+   `num_ctx: 4096`, `k: 5`. If answers look ungrounded, check these first.
+8. **Memory at S0-6.** This host showed only 4.3 GB free with desktop apps
+   open (2026-09-18). Run `free -h` before the proof; use `phi3` if under
+   ~6 GB free, and record which model produced the transcript.
+
+## GPU offload notes (nothing *requires* GPU; Colab/Kaggle available)
+
+- **Phase 0–1: no GPU work at all.**
+- **Phase 2 — RAGAs eval sweeps**: with a local CPU judge, a full metric
+  sweep is an hours-scale run. Best Colab/Kaggle candidate: run the eval
+  notebook (judge model on their GPU) against exported answers/contexts.
+- **Bulk re-embedding** only if the corpus grows to thousands of docs.
+- **Serving SLO (NFR-2)** — Colab/Kaggle are batch sandboxes with session
+  limits, not hosting; if the <2 s SLO must hold at v1.0, that's a real
+  GPU box or a hosted-LLM fallback, decided in the Phase 3 arch pass.
+
+## Phase 0 — Make it run, make it honest
+
+Exit criterion (SRS §12): a fresh clone runs ingestion and answers a query
+end to end. Exit ⇒ tag `v0.1`.
+
+| Story | Title | Closes | Depends | Status |
+| --- | --- | --- | --- | --- |
+| [S0-1](phase-0/S0-1-repo-hygiene.md) | Repo hygiene: gitignore + purge artifacts | ISS-09 | — | Done 2026-09-18 (commit pending) |
+| [S0-2](phase-0/S0-2-uv-init.md) | uv project: pyproject, pinned 3.12, lockfile | ISS-08 | S0-1, DEC-1 | Done 2026-09-18 (commit pending) |
+| [S0-3](phase-0/S0-3-collapse-trees.md) | Collapse v1/v2/temp into one package | ISS-10, ISS-12 | S0-2 | Todo |
+| [S0-4](phase-0/S0-4-config-repair.md) | Config repair: keys, paths, dead blocks | ISS-01, ISS-02, ISS-11 | S0-3 | Todo |
+| [S0-5](phase-0/S0-5-langchain-migration.md) | Migrate code to resolved LangChain version | ISS-17 | S0-4, DEC-1 | Todo |
+| [S0-7](phase-0/S0-7-docs-layout.md) | Project docs into `docs/`; invert the CLAUDE.md corpus rule | DEC-4 | S0-4 | Todo |
+| [S0-6](phase-0/S0-6-end-to-end-proof.md) | End-to-end proof: ingest + answered query | — (exit) | S0-5, S0-7, DEC-2 | Todo |
+
+Execution order follows the **Depends** column, not the story number: S0-7 was
+added after the initial sharding (DEC-4) and runs between S0-5 and S0-6, so the
+`v0.1` tag ships the final layout.
+
+## Decisions log
+
+| ID | Decision | Status | Notes |
+| --- | --- | --- | --- |
+| DEC-1 | LangChain: migrate to 1.x vs pin legacy 0.2.x | **Resolved 2026-09-18: migrate to 1.x** | Verified resolve: core 1.6.3, community 0.4.2, ollama 1.1.0, huggingface 1.2.2, text-splitters 1.1.2, classic 1.0.8 (transitive only). Rules: app code imports only `langchain_core` / `_text_splitters` / `_community` / `_huggingface` / `_ollama`; chain is hand-composed LCEL, no `langchain_classic` imports in Phase 0–1; PyTorch index `explicit = true`. Full rationale: ARCHITECTURE.md §0.1. |
+| DEC-2 | Query LLM: pull `qwen2:7b` vs repoint to already-pulled `mistral` | **Resolved 2026-09-18: `mistral`, `phi3` fallback** | Same weight class as qwen2:7b, so the reason is zero download + known-good here, not RAM. `qwen2_ollama` entry stays in config unused. All Ollama entries: `temperature 0`, `num_ctx 4096`, `num_predict 512`, `validate_model_on_init true`; retriever `k 5`. Revisit with the Phase 2 eval harness. |
+| DEC-4 | Repo layout: `docs/` currently holds the RAG corpus, colliding with the universal convention that `docs/` is project documentation | **Resolved 2026-09-18: corpus → `corpus/`, `docs/` becomes project documentation** | Maintainer decision. The old name needed a CLAUDE.md hard rule to stay safe, and the text loader claims `.md`, so a project doc dropped in there gets embedded into the index. Renamed in S0-4 (which rewrites every path anyway); `SRS.md` / `WORKFLOW.md` / `ARCHITECTURE.md` move into `docs/` in S0-7, which also inverts the CLAUDE.md rule. `CLAUDE.md` and `README.md` stay at root (auto-load; GitHub renders README from root only). `stories/` stays at root as working state. |
+| DEC-3 | Vector store for Phase 3: Qdrant vs pgvector | **Lean: Qdrant** (decide in Phase 3 arch pass) | Native hybrid dense+sparse, one container, no Postgres to run. pgvector only if a Postgres already exists in the deployment. Store-specific code is confined to `vectorstore.py` so either works. |
+
+## Backlog (discovered, not yet storied)
+
+- `scripts/fetch_dataset.py` (moved from `docs/dataset.py` in S0-1) uses a
+  HuggingFace `/blob/` URL that downloads HTML, no timeout, and writes into
+  the corpus dir (ISS-18) — Phase 1 story.
+- Loader selection via `pipeline.ingestion.loaders` keyed by extension; drop
+  the `extensions` key from `_target_` dicts so there is one instantiation
+  path (`build_object({**cfg, "file_path": path})`). Needed before the
+  Pydantic schema. Phase 1.
+- `build_rag_chain` must not mutate the config it is given (falls out of a
+  frozen Pydantic model). Phase 1.
+- Error handling: ISS-05 (collect ingestion failures, non-zero exit) and
+  ISS-06 (REPL try/except around invoke). Phase 1.
+- Hosted-LLM fallback: `groq_llama3` config entry behind an optional extra +
+  `.with_fallbacks()` in `chain.py`. Phase 1.
+- RAGAs judge must be pointed at local Ollama explicitly (default is OpenAI);
+  a full metric sweep on CPU is hours — Colab/Kaggle offload candidate. Phase 2.
+- Ingestion manifest records embedder model name + dimension; refuse to open
+  an index built with a different embedder. Phase 2.
+- NFR-2 (<2 s first token) is unachievable CPU-only — revise the SLO or plan
+  GPU serving in the Phase 3 arch pass.
+
+- Phase 1+ stories: shard after Phase 0 exit via WORKFLOW.md Step 2.
+
+## Done
+
+(nothing yet)

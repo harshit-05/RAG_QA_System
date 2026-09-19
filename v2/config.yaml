@@ -5,14 +5,17 @@ components:
   loaders:
     pdf:
       _target_: langchain_community.document_loaders.PyPDFLoader
+      extensions: [".pdf"]
     docx:
       _target_: langchain_community.document_loaders.Docx2txtLoader
+      extensions: [".docx", ".doc"]
     txt:
       _target_: langchain_community.document_loaders.TextLoader
+      extensions: [".txt", ".md"]
 #    image:
 #      _target_: path.to.your.ImageLoader
 
-  splitter:
+  splitters:
     # we can define multiple splitters here and choose one in pipeline
     english_recursive:
       _target_: langchain.text_splitter.RecursiveCharacterTextSplitter
@@ -21,7 +24,6 @@ components:
 #    chinese_specialized:
 #      _target_: path.to.your.ChineseTextSplitter
 #      sentence_size: 250
-
   embedders:
     minilm_cpu:
       _target_: langchain_huggingface.HuggingFaceEmbeddings
@@ -39,22 +41,22 @@ components:
   # --- Vector Stores ---
   vector_stores:
     faiss:
-      path: "vectorstore/db_faiss"
+      path: "/home/harshit/RAG_System/vectorstore/db_faiss"
     chroma:
-      path: "vectorstore/db_chroma"
+      path: "/home/harshit/RAG_System/vectorstore/db_chroma"
 
-  llm:
-    qwen2_7b:
+  llmS:
+    qwen2_ollama:
       _target_: langchain_community.llms.Ollama
       model: "qwen2:7b"
       temperature: 0.5
-    groq_llama3:
-      _target_: langchain_groq.ChatGroq
-      model: "llama3-70b-8192"
-      temperature: 0.2
+#    groq_llama3:
+#      _target_: langchain_groq.ChatGroq
+#      model: "llama3-70b-8192"
+#      temperature: 0.2
 
-  retriever:
-    vector_retriever:
+  retrievers:
+    vector_search:
       search_kwargs: {"k": 10}
 
   reranker:
@@ -69,16 +71,16 @@ components:
 pipeline:
   # --- Data Ingestion Pipeline ---
   ingestion:
-    loaders:
-      - components.loaders.pdf
-      - components.loaders.docx
-      - components.loaders.txt
-      - components.loaders.image
+#    loaders:
+#      - components.loaders.pdf
+#      - components.loaders.docx
+#      - components.loaders.txt
+#      - components.loaders.image
     splitter: components.splitters.english_recursive
     # To switch to Chinese, change splitter and embedder:
     # splitter: components.splitters.chinese_specialized
     # embedder: components.embedders.multilingual_mpnet
-    embedder: components.embedders.minilm
+    embedder: components.embedders.minilm_cpu
     vector_store: components.vector_stores.faiss
 
 #pipeline:
@@ -105,6 +107,6 @@ pipeline:
       Answer:
       
 # ----------------- 3. General Settings -----------------
-data_path: "docs"
-vector_store_path: "vectorstore/db_faiss"
+data_path: "/home/harshit/RAG_System/docs"
+vector_store_path: "/home/harshit/RAG_System/vectorstore/db_faiss"
 
