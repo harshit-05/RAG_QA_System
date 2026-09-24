@@ -1,112 +1,110 @@
-#config.yaml
+# config.yaml — schema contract in ARCHITECTURE.md §0.3.
+#
+# Two halves, and the split is the point:
+#   components: the library of buildable things (any dict with _target_)
+#   pipeline:   the assembly, referencing components by dotted path
+# Swapping a model or a splitter is a pipeline reference change, not a code change.
 
-# --- component library ---
+# ----------------- 1. Component library -----------------
 components:
   loaders:
     pdf:
       _target_: langchain_community.document_loaders.PyPDFLoader
       extensions: [".pdf"]
     docx:
+      # .doc is deliberately absent: docx2txt cannot read the legacy binary format.
       _target_: langchain_community.document_loaders.Docx2txtLoader
-      extensions: [".docx", ".doc"]
+      extensions: [".docx"]
     txt:
       _target_: langchain_community.document_loaders.TextLoader
       extensions: [".txt", ".md"]
-#    image:
-#      _target_: path.to.your.ImageLoader
 
   splitters:
-    # we can define multiple splitters here and choose one in pipeline
     english_recursive:
-      _target_: langchain.text_splitter.RecursiveCharacterTextSplitter
+      _target_: langchain_text_splitters.RecursiveCharacterTextSplitter
       chunk_size: 1000
       chunk_overlap: 150
-#    chinese_specialized:
-#      _target_: path.to.your.ChineseTextSplitter
-#      sentence_size: 250
+
   embedders:
+    # This host has no NVIDIA GPU, so device is pinned to cpu. The former
+    # minilm_gpu / multilingual_mpnet entries selected a GPU device and were
+    # deleted rather than left as traps for a future session.
     minilm_cpu:
       _target_: langchain_huggingface.HuggingFaceEmbeddings
       model_name: "sentence-transformers/all-MiniLM-L6-v2"
       model_kwargs: {"device": "cpu"}
-    minilm_gpu:
-      _target_: langchain_huggingface.HuggingFaceEmbeddings
-      model_name: "sentence-transformers/all-MiniLM-L6-v2"
-      model_kwargs: {"device": "cuda"}
-    multilingual_mpnet:
-      _target_: langchain_huggingface.HuggingFaceEmbeddings
-      model_name: "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
-      model_kwargs: {"device": "cuda"}
 
-  # --- Vector Stores ---
-  vector_stores:
-    faiss:
-      path: "/home/harshit/RAG_System/vectorstore/db_faiss"
-    chroma:
-      path: "/home/harshit/RAG_System/vectorstore/db_chroma"
-
-  llmS:
+  llms:
+    # DEC-2: mistral is the Phase 0 query model — same weight class as qwen2:7b
+    # but already pulled here, so zero download.
+    # num_ctx 4096 because k=5 x 1000-char chunks overflows Ollama's 2048 default
+    # silently, which reads as an ungrounded answer rather than an error.
+    # temperature 0 so the Phase 2 evaluation harness is reproducible.
+    mistral_ollama:
+      _target_: langchain_ollama.ChatOllama
+      model: "mistral"
+      temperature: 0
+      num_ctx: 4096
+      num_predict: 512
+      validate_model_on_init: true
+    # Kept for the DEC-2 revisit once the eval harness exists (Phase 2).
+    # Not pulled on this host: enabling this without `ollama pull qwen2:7b`
+    # fails fast at construction thanks to validate_model_on_init.
     qwen2_ollama:
-      _target_: langchain_community.llms.Ollama
+      _target_: langchain_ollama.ChatOllama
       model: "qwen2:7b"
-      temperature: 0.5
-#    groq_llama3:
-#      _target_: langchain_groq.ChatGroq
-#      model: "llama3-70b-8192"
-#      temperature: 0.2
+      temperature: 0
+      num_ctx: 4096
+      num_predict: 512
+      validate_model_on_init: true
 
   retrievers:
     vector_search:
-      search_kwargs: {"k": 10}
+      # Kwargs passed straight to VectorStore.as_retriever().
+      search_kwargs: {"k": 5}
 
-  reranker:
+  rerankers:
+    # ISS-03 fixed: the real class names, and the nested cross-encoder OBJECT the
+    # recursive builder expects where the old config passed a bare model string.
+    # Defined here so its _target_s are import-verified, but NOT referenced by
+    # pipeline.query below — the first live run is a Phase 2 story (FR-4).
     cross_encoder:
-      _target_: langchain.retrievers.ContextualCompressionRetriever
+      _target_: langchain_classic.retrievers.ContextualCompressionRetriever
       base_compressor:
-        _target_: langchain.retrievers.document_compressors.CrossEncoderRerank
-        model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        _target_: langchain_classic.retrievers.document_compressors.CrossEncoderReranker
+        model:
+          _target_: langchain_community.cross_encoders.HuggingFaceCrossEncoder
+          model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
         top_n: 3
 
-# --- pipeline assembly ---
+# ----------------- 2. Pipeline assembly -----------------
 pipeline:
-  # --- Data Ingestion Pipeline ---
   ingestion:
-#    loaders:
-#      - components.loaders.pdf
-#      - components.loaders.docx
-#      - components.loaders.txt
-#      - components.loaders.image
     splitter: components.splitters.english_recursive
-    # To switch to Chinese, change splitter and embedder:
-    # splitter: components.splitters.chinese_specialized
-    # embedder: components.embedders.multilingual_mpnet
     embedder: components.embedders.minilm_cpu
-    vector_store: components.vector_stores.faiss
 
-#pipeline:
-  #emedding: components.embedding.minilm_cpu
-  #splitter: components.splitter.recursive_splitter
-  #llm: components.llm.qwen2_7b
-  #retriever: components.retriever.vector_retriever
-  #reranker: components.reranker.ms_marco
-
-  # --- Query Pipeline ---
   query:
-    llm: components.llms.qwen2_ollama
+    llm: components.llms.mistral_ollama
     retriever: components.retrievers.vector_search
-#    reranker: components.rerankers.cross_encoder
+    # reranker: components.rerankers.cross_encoder    # Phase 2 (FR-4)
 
+    # The query-time embedder is always pipeline.ingestion.embedder: an index and
+    # the queries against it must share an embedding model or the vectors are
+    # incomparable. Not repeated here on purpose.
     prompt: |
       You are a helpful and precise assistant. Answer the user's question based only on the following context.
       If the answer is not available in the context, say "I could not find the answer in the provided documents."
       Do not use any prior knowledge.
 
       Context: {context}
-      
+
       Question: {question}
       Answer:
-      
-# ----------------- 3. General Settings -----------------
-data_path: "/home/harshit/RAG_System/docs"
-vector_store_path: "/home/harshit/RAG_System/vectorstore/db_faiss"
 
+# ----------------- 3. Paths -----------------
+# Relative to THIS FILE's directory, so a fresh clone works anywhere (NFR-11).
+# Override either with RAG_DATA_PATH / RAG_VECTOR_STORE_PATH; point at a
+# different config file with RAG_CONFIG.
+paths:
+  data: corpus
+  vector_store: vectorstore/db_faiss

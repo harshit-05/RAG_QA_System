@@ -13,8 +13,13 @@ from rag_qa.registry import build_object, resolve_ref
 from rag_qa.vectorstore import open_store
 
 
-def build_rag_chain(config_path="config.yaml"):
-    """Builds the entire RAG chain from a YAML config file."""
+def build_rag_chain(config_path=None):
+    """Builds the entire RAG chain from a YAML config file.
+
+    ``config_path=None`` matters: passing a literal default here would count as an
+    explicit argument and silently defeat ``$RAG_CONFIG``. Let
+    :func:`rag_qa.config.load_config` own the precedence.
+    """
     config = load_config(config_path)
 
     query_pipeline_config = config["pipeline"]["query"]

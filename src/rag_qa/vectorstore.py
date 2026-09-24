@@ -15,14 +15,14 @@ from langchain_community.vectorstores import FAISS
 def create_store(chunks, embeddings, config):
     """Build a fresh index from chunks and persist it to disk."""
     db = FAISS.from_documents(chunks, embeddings)
-    db.save_local(config["vector_store_path"])
+    db.save_local(config["paths"]["vector_store"])
     return db
 
 
 def open_store(embeddings, config):
     """Open the persisted index built by a previous ingestion run."""
     return FAISS.load_local(
-        config["vector_store_path"],
+        config["paths"]["vector_store"],
         embeddings,
         allow_dangerous_deserialization=True,
     )

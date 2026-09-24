@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | Done (2026-09-25) — commit pending, maintainer commits manually |
 | **Closes** | ISS-01, ISS-02, ISS-11, DEC-4 (rename half) |
 | **Depends on** | S0-3 |
 | **Model** | fable |
@@ -121,10 +121,92 @@ The `_target_` list IS the LangChain 0.2→1.x migration surface for config.
 Check each printed `ok:` line — that's the proof each class was actually
 imported from the locked versions, not assumed.
 
+## Verification results (2026-09-25)
+
+All 10 `_target_`s import cleanly against the locked versions — this is the
+proof for ISS-03, whose `CrossEncoderRerank` never existed under that name:
+
+```text
+ok: langchain_community.document_loaders.{PyPDFLoader,Docx2txtLoader,TextLoader}
+ok: langchain_text_splitters.RecursiveCharacterTextSplitter
+ok: langchain_huggingface.HuggingFaceEmbeddings
+ok: langchain_ollama.ChatOllama                       (mistral + qwen2 entries)
+ok: langchain_classic.retrievers.ContextualCompressionRetriever
+ok: langchain_classic.retrievers.document_compressors.CrossEncoderReranker
+ok: langchain_community.cross_encoders.HuggingFaceCrossEncoder
+```
+
+Paths resolve absolute against the config file's directory, honour
+`RAG_DATA_PATH` / `RAG_VECTOR_STORE_PATH`, and — the actual ISS-02 test —
+resolve identically when run from `/tmp` via `RAG_CONFIG`. A missing config
+now raises a `FileNotFoundError` naming the path instead of a `KeyError`
+cascade. `grep` checks for `/home/`, `cuda`, `".doc"`, `docs/`,
+`vector_stores` and `^#pipeline:` all return 0.
+
 ## Discovered
 
-—
+- **The reranker is defined but not wired.** Leaving the component in
+  `components.rerankers` (rather than commenting the whole block out) is what
+  lets the verification script import-check its class names; it stays inert
+  because `pipeline.query.reranker` is the line that is commented. Disabled
+  means "unreferenced by the pipeline", not "absent from the library".
+- **`langchain-classic` is used by that block but is only a transitive
+  dependency** (it arrives via `langchain-community`). Nothing imports it at
+  runtime while the reranker is off, so DEC-1 rule 1 holds today. If Phase 2
+  keeps this shape rather than the hand-rolled Runnable, it must become an
+  explicit dependency in `pyproject.toml` — added to Backlog.
+- **The story's own `grep -c "cuda"` check is prose-sensitive.** A comment
+  explaining _why_ the GPU embedders were deleted tripped it. Reworded the
+  comment so the check stays a valid signal rather than weakening the check.
+- `rag-ingest` is now genuinely runnable: its imports resolve, the corpus path
+  points at a real directory with 3 PDFs, and the old `FileNotFoundError` is
+  gone. Deliberately **not** executed here — it downloads the ~90 MB embedder
+  and does minutes of CPU embedding, which is S0-6's job (and `ingest.main()`
+  takes no arguments, so even `rag-ingest --help` would start a real run).
+- `rag-query` still fails at `ModuleNotFoundError: langchain`; that is S0-5.
+- ruff remains at exactly one finding, `BLE001` at `ingest.py:38` (ISS-05).
+
+### Review pass (2026-09-25) — one real bug, fixed before commit
+
+**`$RAG_CONFIG` was dead through both entry points.** `load_config` had the
+precedence right (explicit arg → `$RAG_CONFIG` → default), but `ingest.main`
+and `build_rag_chain` both defaulted to the literal `"config.yaml"`, which
+counts as an explicit argument and silently won. So the story's original claim
+that paths "resolve identically from /tmp via RAG_CONFIG" held only for direct
+`load_config()` calls, not for `rag-ingest` or `rag-query`. Both defaults are
+now `config_path=None`, letting `load_config` own the precedence, and
+`chain.py` carries a comment saying why the default must stay `None`.
+
+The S0-3 review had predicted this exact failure from the duplicated default.
+Lesson: a default value that duplicates a lower layer's fallback is not a
+convenience, it is an override that shadows the layer below.
+
+**Verification added**, since the old checks could not have caught it: a run
+through `ingest.main` (not `load_config`) from a different working directory
+with `$RAG_CONFIG` set, stubbing `load_documents` to stop before any real work.
+
+**Environment-variable relative paths now anchor to the caller's cwd**, while
+config-file relative paths keep anchoring to the config file's directory. That
+is the conventional split: `RAG_DATA_PATH=./mydocs` from `/tmp` resolves to
+`/tmp/mydocs`, which is what a shell user typing it expects, whereas
+`paths.data: corpus` in the file resolves next to the file so a clone runs
+anywhere. Both behaviours are verified and documented in `_resolve_path`.
+
+**Scope item that did not apply:** the story asked to update the comment on
+`scripts/fetch_dataset.py`'s download target, but that script has no `docs/`
+reference — it writes `train.parquet` into whatever directory it is run from.
+Nothing to update; its real problems are ISS-18 in Phase 1. The `.gitignore`
+comment that claimed those parquet files were "fetched by
+scripts/fetch_dataset.py" was inaccurate and was reworded.
+
+**Deferred to Phase 1 (FR-8), now in Backlog:** malformed configs still fail
+with raw internal errors rather than actionable ones — `paths: {data: }` raises
+a `pathlib` `TypeError` and an empty YAML file raises `AttributeError` on
+`NoneType`. Config _validation_ is Phase 1's job; S0-4 only had to make a
+_missing_ file clear, which it does.
 
 ## Deviation from plan
 
-—
+The corpus rename used a plain `mv`, not `git mv`, so that Claude stages
+nothing (see the collision rule in STATUS.md "Now"). Rename detection is
+computed from content at commit time, so `git log --follow` is unaffected.

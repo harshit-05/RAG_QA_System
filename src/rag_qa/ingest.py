@@ -16,7 +16,7 @@ from rag_qa.vectorstore import create_store
 def load_documents(config):
     """Dynamically loads documents using loaders defined in the config."""
     all_docs = []
-    data_path = config["data_path"]
+    data_path = config["paths"]["data"]
 
     loader_configs = config["components"]["loaders"].values()
 
@@ -44,7 +44,7 @@ def load_documents(config):
     return all_docs
 
 
-def main(config_path="config.yaml"):
+def main(config_path=None):
     """Builds the vector store from the ingestion pipeline defined in the config."""
     print("--- Starting Document Ingestion Engine ---")
     config = load_config(config_path)
@@ -68,7 +68,7 @@ def main(config_path="config.yaml"):
     print("Creating and saving the FAISS vector store...")
     create_store(chunks, embeddings, config)
 
-    print(f"--- Ingestion Complete. Vector store saved at '{config['vector_store_path']}' ---")
+    print(f"--- Ingestion Complete. Vector store saved at '{config['paths']['vector_store']}' ---")
 
 
 if __name__ == "__main__":

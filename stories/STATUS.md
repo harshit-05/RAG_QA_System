@@ -5,39 +5,39 @@
 
 ## Now
 
-**Next action:** implement S0-4 (WORKFLOW.md Step 3), the config repair plus the
-DEC-4 corpus rename.
+**Next action:** implement S0-5 (WORKFLOW.md Step 3) — the LangChain 1.x code
+migration. It is `plan-first: yes`, so start that session in plan mode.
 
-**Commit state (verified 2026-09-24).** ISS-09 is fully closed: `git ls-files`
-shows no parquet, FAISS index, cache, media or `.save` file. History:
+**S0-4 is done and reviewed, awaiting its commit** (maintainer commits manually):
+
+```bash
+git add -A
+git commit -m "S0-4: config repair — keys, relative paths, corpus rename (ISS-01, ISS-02, ISS-11)"
+git push origin main
+```
+
+`ADR.md` (untracked, ~1070 lines) gets swept in by `git add -A`. It is project
+documentation, so under DEC-4 it belongs in `docs/` — S0-7 moves it there.
+
+**Commit history so far** (S0-1 → S0-4; ISS-09 verified fully closed, `git
+ls-files` shows no parquet, FAISS index, cache, media or `.save` file):
 
 | Commit | Contents |
 | --- | --- |
 | `ee86e1f` | pre-v0.1 baseline: workflow kit + Phase 0 arch pass |
 | `f702dc8` | S0-1 hygiene (incomplete — missed four files) |
+| `e781b17` | S0-1 fixup **fused with** the S0-3 file moves |
 | `0987c60` | S0-2 uv project |
-| `e781b17` | S0-1 fixup **fused with** the S0-3 file moves — **not yet pushed** |
+| `2bc7658` | S0-3 module split + entry points |
 
-`e781b17` deliberately carries two stories' worth of change. The S0-3 `git mv`
-operations were staged when the fixup was committed, so the content merged; the
-commit message was amended to describe both rather than rewrite already-public
-history. Future sessions should read it as "S0-1 fixup + first half of S0-3",
-not as a one-story commit. **Root cause to avoid repeating: Claude must not run
-staging git commands (`git mv`, `git rm`, `git add`) while the maintainer commits
-manually — three collisions came from exactly that.**
-
-**One commit outstanding, manual** — the S0-3 module split in the working tree
-(`registry.py`, `config.py`, `vectorstore.py`, rewritten `chain.py`/`ingest.py`/
-`cli.py`/`evaluate.py`, `[project.scripts]`, story updates):
-
-```bash
-git add -A
-git commit -m "S0-3: split pipeline_builder into registry/config/vectorstore/chain, wire entry points (ISS-10, ISS-12)"
-git push origin main          # also pushes e781b17
-```
-
-Note `ADR.md` (1070 lines, untracked) will be swept in by `git add -A`. That is
-project documentation, so under DEC-4 it belongs in `docs/` — S0-7 moves it.
+`e781b17` deliberately carries two stories' worth of change: the S0-3 `git mv`
+operations were staged when the fixup was committed, so the content merged, and
+the message was amended to describe both rather than rewrite already-public
+history. Read it as "S0-1 fixup + first half of S0-3". **Rule that came out of
+it: Claude must not run staging git commands (`git mv`, `git rm`, `git add`)
+while the maintainer commits manually — three collisions came from exactly
+that.** S0-4's corpus rename therefore used a plain `mv`; rename detection is
+computed from content at commit time, so history is unaffected.
 
 The Phase 0 architecture pass is done: `ARCHITECTURE.md` Phase 0 is confirmed and
 DEC-1/DEC-2/DEC-4 are resolved below.
@@ -142,10 +142,10 @@ end to end. Exit ⇒ tag `v0.1`.
 
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
-| [S0-1](phase-0/S0-1-repo-hygiene.md) | Repo hygiene: gitignore + purge artifacts | ISS-09 | — | Done 2026-09-18 (commit pending) |
-| [S0-2](phase-0/S0-2-uv-init.md) | uv project: pyproject, pinned 3.12, lockfile | ISS-08 | S0-1, DEC-1 | Done 2026-09-18 (commit pending) |
-| [S0-3](phase-0/S0-3-collapse-trees.md) | Collapse v1/v2/temp into one package | ISS-10, ISS-12 | S0-2 | Done 2026-09-19 (commit pending) |
-| [S0-4](phase-0/S0-4-config-repair.md) | Config repair: keys, paths, dead blocks | ISS-01, ISS-02, ISS-11 | S0-3 | Todo |
+| [S0-1](phase-0/S0-1-repo-hygiene.md) | Repo hygiene: gitignore + purge artifacts | ISS-09 | — | Done 2026-09-18 |
+| [S0-2](phase-0/S0-2-uv-init.md) | uv project: pyproject, pinned 3.12, lockfile | ISS-08 | S0-1, DEC-1 | Done 2026-09-18 |
+| [S0-3](phase-0/S0-3-collapse-trees.md) | Collapse v1/v2/temp into one package | ISS-10, ISS-12 | S0-2 | Done 2026-09-19 |
+| [S0-4](phase-0/S0-4-config-repair.md) | Config repair: keys, paths, corpus rename | ISS-01, ISS-02, ISS-11, DEC-4 | S0-3 | Done 2026-09-25 (commit pending) |
 | [S0-5](phase-0/S0-5-langchain-migration.md) | Migrate code to resolved LangChain version | ISS-17 | S0-4, DEC-1 | Todo |
 | [S0-7](phase-0/S0-7-docs-layout.md) | Project docs into `docs/`; invert the CLAUDE.md corpus rule | DEC-4 | S0-4 | Todo |
 | [S0-6](phase-0/S0-6-end-to-end-proof.md) | End-to-end proof: ingest + answered query | — (exit) | S0-5, S0-7, DEC-2 | Todo |
@@ -193,8 +193,16 @@ added after the initial sharding (DEC-4) and runs between S0-5 and S0-6, so the
   if S0-6 slips, this is worth a standalone fix (ISS-20).
 - Error handling: ISS-05 (collect ingestion failures, non-zero exit) and
   ISS-06 (REPL try/except around invoke). Phase 1.
+- Malformed configs fail with raw internal errors instead of actionable ones:
+  `paths: {data: }` raises a `pathlib` `TypeError`, an empty YAML file raises
+  `AttributeError` on `NoneType`. The Pydantic schema (FR-8) is the right place
+  to fix this, not ad-hoc guards in `load_config`. Phase 1.
 - Hosted-LLM fallback: `groq_llama3` config entry behind an optional extra +
   `.with_fallbacks()` in `chain.py`. Phase 1.
+- `langchain-classic` is referenced by the (disabled) reranker component but is
+  only a transitive dependency via `langchain-community`. If Phase 2 keeps the
+  `ContextualCompressionRetriever` + `CrossEncoderReranker` shape instead of a
+  hand-rolled Runnable, declare it explicitly in `pyproject.toml`. Phase 2.
 - RAGAs judge must be pointed at local Ollama explicitly (default is OpenAI);
   a full metric sweep on CPU is hours — Colab/Kaggle offload candidate. Phase 2.
 - Ingestion manifest records embedder model name + dimension; refuse to open

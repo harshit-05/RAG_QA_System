@@ -18,8 +18,8 @@ htmlcov/
 vectorstore/
 # scratch copies; never a source of truth
 temp/
-# data files no loader ingests; fetched by scripts/fetch_dataset.py
-docs/*.parquet
+# data files no configured loader can read; kept on disk, never tracked
+corpus/*.parquet
 # RAGAs run artifacts (Phase 2)
 eval_output/
 # machine-specific overrides (SRS §8.3)
