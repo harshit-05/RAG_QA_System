@@ -5,11 +5,42 @@
 
 ## Now
 
-**Next action:** implement S0-3 (WORKFLOW.md Step 3). S0-1 and S0-2 are done
-and verified on disk (2026-09-18) but **three commits are still pending**, to be
-made manually — recipe in pre-flight caveat 1 below, which must be followed
-exactly or S0-1 is silently undone. The Phase 0 architecture pass is done:
-`ARCHITECTURE.md` Phase 0 is confirmed and DEC-1/DEC-2/DEC-4 are resolved below.
+**Next action:** implement S0-4 (WORKFLOW.md Step 3), the config repair plus the
+DEC-4 corpus rename.
+
+**Commit state (verified 2026-09-24).** ISS-09 is fully closed: `git ls-files`
+shows no parquet, FAISS index, cache, media or `.save` file. History:
+
+| Commit | Contents |
+| --- | --- |
+| `ee86e1f` | pre-v0.1 baseline: workflow kit + Phase 0 arch pass |
+| `f702dc8` | S0-1 hygiene (incomplete — missed four files) |
+| `0987c60` | S0-2 uv project |
+| `e781b17` | S0-1 fixup **fused with** the S0-3 file moves — **not yet pushed** |
+
+`e781b17` deliberately carries two stories' worth of change. The S0-3 `git mv`
+operations were staged when the fixup was committed, so the content merged; the
+commit message was amended to describe both rather than rewrite already-public
+history. Future sessions should read it as "S0-1 fixup + first half of S0-3",
+not as a one-story commit. **Root cause to avoid repeating: Claude must not run
+staging git commands (`git mv`, `git rm`, `git add`) while the maintainer commits
+manually — three collisions came from exactly that.**
+
+**One commit outstanding, manual** — the S0-3 module split in the working tree
+(`registry.py`, `config.py`, `vectorstore.py`, rewritten `chain.py`/`ingest.py`/
+`cli.py`/`evaluate.py`, `[project.scripts]`, story updates):
+
+```bash
+git add -A
+git commit -m "S0-3: split pipeline_builder into registry/config/vectorstore/chain, wire entry points (ISS-10, ISS-12)"
+git push origin main          # also pushes e781b17
+```
+
+Note `ADR.md` (1070 lines, untracked) will be swept in by `git add -A`. That is
+project documentation, so under DEC-4 it belongs in `docs/` — S0-7 moves it.
+
+The Phase 0 architecture pass is done: `ARCHITECTURE.md` Phase 0 is confirmed and
+DEC-1/DEC-2/DEC-4 are resolved below.
 
 ## Release mapping (per SRS §12, rev 1.1)
 
@@ -24,9 +55,8 @@ The final story of each phase performs the tag + version bump at close-out.
 
 ## Human prerequisites (do these anytime, no session needed)
 
-- [ ] `gh auth login` — gh CLI 2.96.0 is installed but not authenticated;
-      needed to push and for Phase 1 CI/PR work. (HTTPS remote → this also
-      sorts push credentials.)
+- [x] `gh auth login` — done 2026-09-24 as `harshit-05` (HTTPS, keyring;
+      scopes: repo, read:org, gist). Needed to push and for Phase 1 CI/PR work.
 
 - [x] Resolve DEC-1 / DEC-2 — done in the Phase 0 arch pass, 2026-09-18.
 
@@ -114,7 +144,7 @@ end to end. Exit ⇒ tag `v0.1`.
 | --- | --- | --- | --- | --- |
 | [S0-1](phase-0/S0-1-repo-hygiene.md) | Repo hygiene: gitignore + purge artifacts | ISS-09 | — | Done 2026-09-18 (commit pending) |
 | [S0-2](phase-0/S0-2-uv-init.md) | uv project: pyproject, pinned 3.12, lockfile | ISS-08 | S0-1, DEC-1 | Done 2026-09-18 (commit pending) |
-| [S0-3](phase-0/S0-3-collapse-trees.md) | Collapse v1/v2/temp into one package | ISS-10, ISS-12 | S0-2 | Todo |
+| [S0-3](phase-0/S0-3-collapse-trees.md) | Collapse v1/v2/temp into one package | ISS-10, ISS-12 | S0-2 | Done 2026-09-19 (commit pending) |
 | [S0-4](phase-0/S0-4-config-repair.md) | Config repair: keys, paths, dead blocks | ISS-01, ISS-02, ISS-11 | S0-3 | Todo |
 | [S0-5](phase-0/S0-5-langchain-migration.md) | Migrate code to resolved LangChain version | ISS-17 | S0-4, DEC-1 | Todo |
 | [S0-7](phase-0/S0-7-docs-layout.md) | Project docs into `docs/`; invert the CLAUDE.md corpus rule | DEC-4 | S0-4 | Todo |
@@ -143,7 +173,24 @@ added after the initial sharding (DEC-4) and runs between S0-5 and S0-6, so the
   path (`build_object({**cfg, "file_path": path})`). Needed before the
   Pydantic schema. Phase 1.
 - `build_rag_chain` must not mutate the config it is given (falls out of a
-  frozen Pydantic model). Phase 1.
+  frozen Pydantic model). Phase 1. **Confirmed live** at `src/rag_qa/chain.py:31`:
+  `resolve_ref` hands back a live reference into the config dict and the next
+  line writes a constructed retriever object into it, so "inert config" stops
+  being inert as soon as the reranker path runs. Harmless while every call
+  re-reads the YAML; it bites the moment a config is reused (Phase 2 API, eval
+  loops). **S0-5 already owns the immediate fix** (its scope forbids mutation);
+  this entry covers the structural guarantee.
+- Embedder resolution is duplicated: `chain.py:23` and `ingest.py:65-66` both
+  do `build_object(resolve_ref(cfg, cfg["pipeline"]["ingestion"]["embedder"]))`.
+  The two must agree or the index and queries use different vectors, so it wants
+  one shared helper rather than a convention. Phase 1.
+- `vectorstore.create_store`/`open_store` take the whole config to read one key
+  (`vector_store_path`). Narrow to the path itself so the Phase 3 store swap has
+  a smaller contract. Phase 1 or Phase 3, whichever touches it first.
+- `README.md` still documents the deleted `v1/`/`v2/` layout, `pip install -r
+  v1/requirements.txt`, a tracked screencast and image ingestion that never
+  existed — actively wrong on a public repo as of S0-3. S0-6 owns the rewrite;
+  if S0-6 slips, this is worth a standalone fix (ISS-20).
 - Error handling: ISS-05 (collect ingestion failures, non-zero exit) and
   ISS-06 (REPL try/except around invoke). Phase 1.
 - Hosted-LLM fallback: `groq_llama3` config entry behind an optional extra +

@@ -18,7 +18,9 @@ lives in `corpus/` and the name no longer lies. Runs before S0-6 so the
 
 ## Scope
 
-- `git mv SRS.md WORKFLOW.md ARCHITECTURE.md docs/` (creates the directory).
+- `git mv SRS.md WORKFLOW.md ARCHITECTURE.md ADR.md docs/` (creates the
+  directory). `ADR.md` is the decision-record log added 2026-09-24; it is
+  project documentation like the other three.
 - `README.md` and `CLAUDE.md` stay at repo root: CLAUDE.md auto-loads from the
   working directory upward, and GitHub renders README from root only.
 - `stories/` stays at repo root — it is working state, not documentation.
@@ -43,9 +45,9 @@ lives in `corpus/` and the name no longer lies. Runs before S0-6 so the
 ## Verification
 
 ```bash
-ls docs/                                  # → ARCHITECTURE.md  SRS.md  WORKFLOW.md
+ls docs/                                  # → ADR.md  ARCHITECTURE.md  SRS.md  WORKFLOW.md
 ls *.md                                   # → CLAUDE.md  README.md   (only these two at root)
-git status --short | grep -c '^R'         # → 3 (moves detected as renames)
+git status --short | grep -c '^R'         # → 4 (moves detected as renames)
 grep -rn "docs/" CLAUDE.md | head         # points at docs/SRS.md etc., corpus rule inverted
 grep -c "corpus/" CLAUDE.md               # → ≥1 (the inverted hard rule)
 # no dangling links to the old root paths, and no link to a file that does not exist:

@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | Done (2026-09-19) — commit pending, maintainer commits manually |
 | **Closes** | ISS-10, ISS-12 |
 | **Depends on** | S0-2 |
 | **Model** | opus-fast |
@@ -83,8 +83,46 @@ superseded by config-driven loaders). Confirm `ingest.py` no longer imports
 
 ## Discovered
 
-—
+- **The split is load-bearing already.** `rag-ingest` now resolves its entry
+  point and runs all the way to `FileNotFoundError: /home/harshit/RAG_System/docs`,
+  i.e. it fails only on ISS-02, while `rag-query` still stops at
+  `ModuleNotFoundError: langchain`. That asymmetry is the proof the dependency
+  direction is correct: ingestion no longer drags the query stack in with it.
+- **ruff finds exactly one issue**, and it is already catalogued: `BLE001`
+  blind `except Exception` at `ingest.py:38` — that is ISS-05, Phase 1 error
+  handling. Confirmed with `--isolated`, so it comes from ruff's own defaults,
+  not an inherited config. No ruff config is committed yet.
+- **Editor vs linter disagreement.** The IDE reports `E501` at 79 characters
+  while ruff's default is 88, so the same file looks clean or dirty depending
+  on which tool you ask. The Phase 1 CI story should commit an explicit
+  `[tool.ruff]` block (line-length + rule selection) so local, editor and CI
+  agree on one answer (NFR-9).
+- `evaluate.py`'s ragas/datasets/pandas imports were moved inside `main()`
+  so the module is importable without the optional `eval` extra installed.
+- `get_component_from_path` renamed to `resolve_ref` per ARCHITECTURE.md §0.2.
+- `build_rag_chain` still takes a `config_path`, not a loaded config dict.
+  S0-5 changes the signature (its verification block already assumes the new
+  one: `build_rag_chain(load_config('config.yaml'))`).
+
+### Multi-angle review pass (2026-09-24)
+
+Eight review angles run over the S0-3 diff; findings verified against the code
+before recording. Nothing was fixed here — all of it is either another story's
+scope or pre-existing, per CLAUDE.md's no-detour rule.
+
+| Finding | Disposition |
+| --- | --- |
+| `chain.py:31` mutates the loaded config: `resolve_ref` returns a live reference and a built retriever is written into it, so config stops being inert on the reranker path | Carried over from v2 unchanged. **S0-5 scope** already forbids it; structural guarantee in Backlog |
+| `config.yaml:48` still defines `llmS` while `:95` references `components.llms` — `rag-query` will `KeyError` the first time it runs | ISS-01, **S0-4 scope**. Confirmed still present |
+| Embedder resolution duplicated between `chain.py:23` and `ingest.py:65-66` | New → Backlog (Phase 1). They must agree or index and query vectors diverge |
+| Loaders bypass the `build_object` funnel that Phase 1's import allowlist attaches to | Already in Backlog |
+| `vectorstore.py` functions take the whole config to read one key | New → Backlog |
+| `README.md` still documents `v1/`/`v2/`, `pip install`, and image ingestion | S0-6 owns the rewrite; flagged in Backlog as actively wrong meanwhile |
+| Git history: `e781b17` fuses the S0-1 fixup with the S0-3 moves | Deliberate, message amended to match; root cause and rule recorded in STATUS.md "Now" |
+| STATUS.md pending-commits section stale | Fixed in this close-out |
 
 ## Deviation from plan
 
-—
+None in scope. The story's `grep -c '"""' chain.py` spot-check is a weak test
+(it counts docstring lines, and a healthy file scores 3); replaced in practice
+by a direct grep for the dead block's marker comments, which finds nothing.

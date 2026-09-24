@@ -25,6 +25,10 @@ dependencies = [
     "pydantic-settings>=2.10",
 ]
 
+[project.scripts]
+rag-ingest = "rag_qa.ingest:main"
+rag-query = "rag_qa.cli:main"
+
 [project.optional-dependencies]
 # Evaluation harness. Wired into CI as a quality gate in Phase 2 (FR-7).
 eval = [
