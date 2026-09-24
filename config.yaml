@@ -26,13 +26,44 @@ components:
       chunk_overlap: 150
 
   embedders:
-    # This host has no NVIDIA GPU, so device is pinned to cpu. The former
-    # minilm_gpu / multilingual_mpnet entries selected a GPU device and were
-    # deleted rather than left as traps for a future session.
+    # Model and device are two independent axes, so each entry names both.
+    # `pipeline.ingestion.embedder` below picks one; nothing else needs editing.
+    #
+    # Two things to know before switching:
+    #
+    # 1. Changing embedder invalidates an existing index. A different model means
+    #    different vectors, and a different dimension (384 vs 768) means the
+    #    index will not even load. Switch, then re-run `rag-ingest`.
+    # 2. A `_cuda` entry needs BOTH an NVIDIA GPU and a CUDA torch build. This
+    #    project's lockfile installs CPU-only torch on purpose (DEC-1 rule 2),
+    #    so using one means changing the torch source in pyproject.toml too.
+    #    On this host it fails fast and clearly ("Torch not compiled with CUDA
+    #    enabled"), so it is a documented option, never a silent degradation.
+
+    # Default. Fast, 384-dim, and the only one this host can actually run.
     minilm_cpu:
       _target_: langchain_huggingface.HuggingFaceEmbeddings
       model_name: "sentence-transformers/all-MiniLM-L6-v2"
       model_kwargs: {"device": "cpu"}
+
+    # Same model on a GPU. Intended for the Colab/Kaggle bulk re-embedding runs
+    # in the GPU offload notes in stories/STATUS.md, not for this machine.
+    minilm_cuda:
+      _target_: langchain_huggingface.HuggingFaceEmbeddings
+      model_name: "sentence-transformers/all-MiniLM-L6-v2"
+      model_kwargs: {"device": "cuda"}
+
+    # Non-English or mixed-language corpora. 768-dim, so a larger index and
+    # noticeably slower on CPU, but it runs here.
+    multilingual_mpnet_cpu:
+      _target_: langchain_huggingface.HuggingFaceEmbeddings
+      model_name: "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+      model_kwargs: {"device": "cpu"}
+
+    multilingual_mpnet_cuda:
+      _target_: langchain_huggingface.HuggingFaceEmbeddings
+      model_name: "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+      model_kwargs: {"device": "cuda"}
 
   llms:
     # DEC-2: mistral is the Phase 0 query model — same weight class as qwen2:7b
@@ -81,6 +112,10 @@ components:
 pipeline:
   ingestion:
     splitter: components.splitters.english_recursive
+    # Swap this line to change embedding model or device, then re-run
+    # `rag-ingest` (a new embedder invalidates the existing index):
+    #   components.embedders.minilm_cuda              GPU, needs a CUDA torch build
+    #   components.embedders.multilingual_mpnet_cpu   non-English corpora
     embedder: components.embedders.minilm_cpu
 
   query:

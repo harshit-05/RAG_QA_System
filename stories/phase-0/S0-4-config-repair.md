@@ -66,10 +66,11 @@ locked dependency versions, and no path assumes a particular home directory.
 - Delete remaining commented-out config carcasses (duplicate `#pipeline:`
   block etc.).
 
-- Host has **no NVIDIA GPU**: the selected embedder must stay
-  `minilm_cpu`; delete the `device: cuda` component entries
-  (`minilm_gpu`, `multilingual_mpnet`) or clearly comment them as
-  non-functional-on-this-host examples.
+- Host has **no NVIDIA GPU**: the embedder _selected by the pipeline_ must be a
+  `_cpu` entry. Keep `_cuda` entries in the component library as documented
+  options (FR-1 is about swappability, and `device: cuda` here fails loudly
+  with `AssertionError: Torch not compiled with CUDA enabled` rather than
+  degrading silently). Name every entry for both axes, model and device.
 
 ## Out of scope
 
@@ -107,8 +108,14 @@ EOF
 uv run python -c "from rag_qa.config import load_config; c = load_config('config.yaml'); print(c['paths'])"   # absolute paths under this checkout
 RAG_DATA_PATH=/tmp/x uv run python -c "from rag_qa.config import load_config; print(load_config('config.yaml')['paths']['data'])"   # → /tmp/x
 grep -c "/home/" config.yaml              # → 0
-grep -c "cuda" config.yaml                # → 0
 grep -c '".doc"' config.yaml              # → 0
+# The GPU check is about what the pipeline SELECTS, not whether the string
+# "cuda" appears — _cuda entries are legitimate library options (see Scope):
+uv run python -c "
+import yaml; c = yaml.safe_load(open('config.yaml'))
+sel = c['pipeline']['ingestion']['embedder']
+assert sel.endswith('_cpu'), f'CPU-only host must not select {sel}'
+print('selected embedder is CPU:', sel)"
 git ls-files corpus/                      # → the three .pdf files (rename detected)
 ls docs 2>&1                              # → No such file or directory (S0-7 recreates it)
 git check-ignore -v corpus/0000.parquet   # → matched by corpus/*.parquet
@@ -191,6 +198,34 @@ is the conventional split: `RAG_DATA_PATH=./mydocs` from `/tmp` resolves to
 `/tmp/mydocs`, which is what a shell user typing it expects, whereas
 `paths.data: corpus` in the file resolves next to the file so a clone runs
 anywhere. Both behaviours are verified and documented in `_resolve_path`.
+
+**Reversed my own call on the GPU embedders (maintainer challenge, 2026-09-25).**
+I had deleted `minilm_gpu` and `multilingual_mpnet` on the grounds that a
+`device: cuda` entry was a landmine for a CPU-only host. That reasoning was
+wrong on the facts and wrong on the design:
+
+- **Wrong on facts.** Verified: `device: cuda` here raises
+  `AssertionError: Torch not compiled with CUDA enabled` immediately at model
+  load. Loud and clear, not a silent degradation, so it was never a landmine.
+- **Wrong on design.** FR-1 is precisely that every stage is swappable from
+  config. Removing an axis of configuration to protect against a loud error
+  cuts against the reason the `_target_` architecture exists.
+- **Worst part:** `multilingual_mpnet` was a _model_ choice, not a device
+  choice, and the v2 config documented it as the way to handle non-English
+  corpora. Deleting it lost a real capability under cover of GPU hygiene.
+
+Now restored as an explicit two-axis library: `minilm_cpu` (default),
+`minilm_cuda`, `multilingual_mpnet_cpu`, `multilingual_mpnet_cuda`, each naming
+both model and device, with the pipeline selecting the CPU entry and a comment
+listing the alternatives. Documented caveats: switching embedder invalidates the
+index (different vectors, and 384 vs 768 dimensions will not even load), and a
+`_cuda` entry additionally needs a CUDA torch build, which the lockfile
+deliberately does not install.
+
+The story's `grep -c "cuda" → 0` check was replaced, because my own change made
+it fail for the right reason. The check now asserts what actually matters, that
+`pipeline.ingestion.embedder` resolves to a `_cpu` entry, instead of testing for
+the presence of a string.
 
 **Scope item that did not apply:** the story asked to update the comment on
 `scripts/fetch_dataset.py`'s download target, but that script has no `docs/`

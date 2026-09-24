@@ -193,6 +193,16 @@ added after the initial sharding (DEC-4) and runs between S0-5 and S0-6, so the
   if S0-6 slips, this is worth a standalone fix (ISS-20).
 - Error handling: ISS-05 (collect ingestion failures, non-zero exit) and
   ISS-06 (REPL try/except around invoke). Phase 1.
+- GPU embedder path is declarable but not installable: the `_cuda` embedder
+  entries need a CUDA torch build, while the lockfile pins CPU-only torch
+  (DEC-1 rule 2). Add an optional `cuda` extra with a CUDA torch index so
+  `uv sync --extra cuda` makes those entries real, for the Colab/Kaggle
+  re-embedding path. Phase 1.
+- Device selection would be cleaner as one setting than as duplicated embedder
+  entries per device (`minilm_cpu` / `minilm_cuda` differ by one field).
+  `pydantic-settings` arrives in Phase 1 and handles env-var interpolation
+  properly, e.g. `device: ${RAG_EMBED_DEVICE:-cpu}`; do it there rather than
+  hand-rolling interpolation in `load_config` now. Phase 1.
 - Malformed configs fail with raw internal errors instead of actionable ones:
   `paths: {data: }` raises a `pathlib` `TypeError`, an empty YAML file raises
   `AttributeError` on `NoneType`. The Pydantic schema (FR-8) is the right place
