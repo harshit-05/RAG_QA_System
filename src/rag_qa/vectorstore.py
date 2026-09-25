@@ -7,22 +7,28 @@ migrating FAISS to Qdrant/pgvector means rewriting these two bodies and nothing 
 Safety invariant (ISS-16): ``allow_dangerous_deserialization=True`` unpickles the
 index, which is only safe because the index directory is produced exclusively by
 ``rag-ingest`` on this host. Never point this at an index from an untrusted source.
+
+Both functions take the store's location, not the whole config: the smallest contract
+that works, so a Phase 3 backend needing a host and collection instead of a directory
+changes the argument here and at two call sites, not a config shape everyone reads.
 """
+
+from pathlib import Path
 
 from langchain_community.vectorstores import FAISS
 
 
-def create_store(chunks, embeddings, config):
-    """Build a fresh index from chunks and persist it to disk."""
+def create_store(chunks, embeddings, path: Path) -> FAISS:
+    """Build a fresh index from chunks and persist it to ``path``."""
     db = FAISS.from_documents(chunks, embeddings)
-    db.save_local(config["paths"]["vector_store"])
+    db.save_local(str(path))
     return db
 
 
-def open_store(embeddings, config):
-    """Open the persisted index built by a previous ingestion run."""
+def open_store(embeddings, path: Path) -> FAISS:
+    """Open the persisted index a previous ingestion run wrote to ``path``."""
     return FAISS.load_local(
-        config["paths"]["vector_store"],
+        str(path),
         embeddings,
         allow_dangerous_deserialization=True,
     )

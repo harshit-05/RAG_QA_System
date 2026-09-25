@@ -20,7 +20,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 
-from rag_qa.registry import build_object, resolve_ref
+from rag_qa.registry import build_object
+from rag_qa.schema import RagConfig
 from rag_qa.vectorstore import open_store
 
 
@@ -50,32 +51,33 @@ def format_docs(docs):
     )
 
 
-def build_rag_chain(config):
-    """Build the RAG chain from a loaded config dict (see :func:`rag_qa.config.load_config`).
+def build_rag_chain(config: RagConfig):
+    """Build the RAG chain from a loaded config (see :func:`rag_qa.config.load_config`).
 
-    Never mutates ``config``: the old implementation wrote a live retriever object
-    into the config dict on the reranker path, so a reused config stopped being inert.
-    Deliberately silent (no progress prints) because the Phase 2 API calls it too;
-    front ends print their own progress.
+    Cannot mutate ``config``: it is frozen, and every component dict used here is a
+    fresh copy from ``spec()`` / ``kwargs()``. (The old implementation wrote a live
+    retriever object into the config dict on the reranker path, so a reused config
+    stopped being inert.) Deliberately silent (no progress prints) because the Phase 2
+    API calls it too; front ends print their own progress.
     """
-    query_config = config["pipeline"]["query"]
+    query = config.pipeline.query
 
-    llm = build_object(resolve_ref(config, query_config["llm"]))
+    llm = build_object(config.component(query.llm).spec())
     # The query-time embedder is always the ingestion embedder: an index and the
     # queries against it must share an embedding model.
-    embeddings = build_object(resolve_ref(config, config["pipeline"]["ingestion"]["embedder"]))
+    embeddings = build_object(config.component(config.pipeline.ingestion.embedder).spec())
 
-    retriever = open_store(embeddings, config).as_retriever(
-        **resolve_ref(config, query_config["retriever"])
+    retriever = open_store(embeddings, config.paths.vector_store).as_retriever(
+        **config.retriever(query.retriever).kwargs()
     )
-    if "reranker" in query_config:  # disabled until Phase 2 (FR-4)
-        reranker_config = {**resolve_ref(config, query_config["reranker"]), "base_retriever": retriever}
-        retriever = build_object(reranker_config)
+    if query.reranker is not None:  # disabled until Phase 2 (FR-4)
+        reranker_spec = {**config.component(query.reranker).spec(), "base_retriever": retriever}
+        retriever = build_object(reranker_spec)
 
     prompt = ChatPromptTemplate.from_messages(
         [
-            ("system", query_config["prompt"]["system"]),
-            ("human", query_config["prompt"]["human"]),
+            ("system", query.prompt.system),
+            ("human", query.prompt.human),
         ]
     )
     to_prompt_inputs = RunnableLambda(

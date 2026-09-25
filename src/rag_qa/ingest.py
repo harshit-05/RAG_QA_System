@@ -13,7 +13,8 @@ import sys
 from dataclasses import dataclass, field
 
 from rag_qa.config import load_config
-from rag_qa.registry import build_object, import_from_string, resolve_ref
+from rag_qa.registry import build_object, import_from_string
+from rag_qa.schema import RagConfig
 from rag_qa.vectorstore import create_store
 
 
@@ -36,16 +37,18 @@ class IngestReport:
         return "\n".join(lines)
 
 
-def load_documents(config, report):
+def load_documents(config: RagConfig, report: IngestReport) -> list:
     """Dynamically loads documents using loaders defined in the config.
 
     Loader errors are recorded in ``report.failed`` and the run continues; turning
     any failure into a non-zero exit is ISS-05 (Phase 1).
     """
     all_docs = []
-    data_path = config["paths"]["data"]
+    data_path = config.paths.data
 
-    loader_configs = config["components"]["loaders"].values()
+    # Plain dicts, so the extension matching below is unchanged; S1-3 replaces it
+    # with the pipeline-level extension map.
+    loader_configs = [spec.spec() for spec in config.components.loaders.values()]
 
     print(f"Loading documents from '{data_path}'...")
     for filename in sorted(os.listdir(data_path)):
@@ -74,21 +77,21 @@ def load_documents(config, report):
     return all_docs
 
 
-def ingest(config):
+def ingest(config: RagConfig) -> IngestReport:
     """Build and persist the vector store from the configured ingestion pipeline."""
     report = IngestReport()
-    ingestion_config = config["pipeline"]["ingestion"]
+    ingestion = config.pipeline.ingestion
 
     documents = load_documents(config, report)
     report.documents = len(documents)
     if not documents:
         return report
 
-    text_splitter = build_object(resolve_ref(config, ingestion_config["splitter"]))
+    text_splitter = build_object(config.component(ingestion.splitter).spec())
     chunks = text_splitter.split_documents(documents)
     report.chunks = len(chunks)
 
-    embeddings = build_object(resolve_ref(config, ingestion_config["embedder"]))
+    embeddings = build_object(config.component(ingestion.embedder).spec())
     # Embedding is the longest step of ingestion and is otherwise silent. Turn on
     # the embedder's own progress bar for this instance only: the query path
     # builds a separate instance, so rag-query stays quiet, and the config itself
@@ -96,7 +99,7 @@ def ingest(config):
     if hasattr(embeddings, "show_progress"):
         embeddings.show_progress = True
     print(f"Embedding {len(chunks)} chunks and saving the vector store...")
-    create_store(chunks, embeddings, config)
+    create_store(chunks, embeddings, config.paths.vector_store)
     return report
 
 
@@ -111,7 +114,7 @@ def main(config_path=None):
     if not report.documents:
         print("Error: No documents were loaded. Exiting.")
         sys.exit(1)
-    print(f"--- Ingestion Complete. Vector store saved at '{config['paths']['vector_store']}' ---")
+    print(f"--- Ingestion Complete. Vector store saved at '{config.paths.vector_store}' ---")
 
 
 if __name__ == "__main__":

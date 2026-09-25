@@ -5,9 +5,10 @@
 
 ## Now
 
-**Next action: implement [S1-1](phase-1/S1-1-config-schema.md)** — WORKFLOW.md
-Step 3, fresh session, plan-first (the story says so). Phase 1 is sharded into
-eight stories; run them in the **Depends** order of the Phase 1 table below.
+**Next action: implement [S1-2](phase-1/S1-2-target-allowlist.md)** —
+WORKFLOW.md Step 3 (opus-fast, not plan-first). S1-1 is done and committed
+(`801ddea`, 2026-09-26); S1-3 and S1-7 are also unblocked by it. Run the rest in
+the **Depends** order of the Phase 1 table below.
 
 **The Phase 1 architecture pass is done** (2026-09-25): `ARCHITECTURE.md` has a
 confirmed Phase 1 section (§1.1–§1.7) and DEC-6 … DEC-12 are resolved below.
@@ -175,7 +176,7 @@ Design: ARCHITECTURE.md §1.1–§1.7.
 
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
-| [S1-1](phase-1/S1-1-config-schema.md) | Validate the config with a frozen Pydantic model | FR-8, ISS-01, ISS-11, NFR-11 | — | Todo |
+| [S1-1](phase-1/S1-1-config-schema.md) | Validate the config with a frozen Pydantic model | FR-8, ISS-01, ISS-11, NFR-11 | — | Done 2026-09-26 |
 | [S1-2](phase-1/S1-2-target-allowlist.md) | Allowlist `_target_` imports; stand up CI | ISS-04 | S1-1 | Todo |
 | [S1-3](phase-1/S1-3-own-loaders.md) | Own loaders, extension map, recursive walk | ISS-13, FR-2, DEC-5 step 1 | S1-1 | Todo |
 | [S1-4](phase-1/S1-4-error-handling-cli.md) | Explicit error handling and a real CLI surface | ISS-05, ISS-06, ISS-18, NFR-7 | S1-3 | Todo |
@@ -268,6 +269,20 @@ reason**. Reconciled in the Phase 1 architecture pass, 2026-09-25.
 - **Not yet storied — per-loader splitter strategies** (SRS §7.2): chunking
   configurable per document type. The `_target_` mechanism already supports it;
   it needs more splitter entries and a per-loader default, not new architecture.
+
+### Found in S1-1 (2026-09-26)
+
+- **For S1-6 — ruff's default is now 788 rules.** Ruff 0.16 widened its
+  defaults well beyond `E4/E7/E9/F`, so S1-6's "explicit rule set rather than the
+  default — at minimum `E`, `F`, `I`, `B`, `UP`" would *narrow* the gate. Start
+  from the default and `extend-select`/`ignore` with reasons.
+- **FR-8 follow-up — prompt placeholders unchecked.** A `human` prompt missing
+  `{context}` silently answers without retrieval. One validator on `Prompt`.
+  Not yet storied; small enough to ride S1-5 or S1-6 if the maintainer agrees.
+- **For S1-8 doc hygiene.** (a) Ollama keeps the last model resident about
+  5 min (`keep_alive`), so pre-flight caveat 8's `free -h` under-reports — run
+  `ollama ps` / `ollama stop <model>` first. (b) `gemma2:9b` is now pulled; add
+  it to CLAUDE.md's environment facts.
 
 ### Later phases
 

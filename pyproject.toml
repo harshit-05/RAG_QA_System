@@ -1,6 +1,6 @@
 [project]
 name = "rag-qa-system"
-version = "0.1.0"
+version = "0.2.0.dev0"
 description = "Config-driven local RAG question-answering engine built on LangChain, FAISS and Ollama."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -55,6 +55,9 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["hatchling"]

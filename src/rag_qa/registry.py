@@ -3,9 +3,11 @@
 This module is pure Python by contract (ARCHITECTURE.md §0.2): it must not import
 LangChain, so the config machinery stays testable without the ML stack installed.
 
-Phase 1 adds the import allowlist (ISS-04) and Pydantic validation *here*, not in
-callers, which is why every ``_target_`` in the system funnels through
-:func:`build_object`.
+Config validation lives in :mod:`rag_qa.schema` (S1-1); dotted pipeline references
+are resolved by :meth:`rag_qa.schema.RagConfig.component`, which replaced
+``resolve_ref``. The import allowlist (ISS-04) lands *here*, in
+:func:`import_from_string`, in S1-2: every ``_target_`` in the system reaches that
+one function, whether through :func:`build_object` or directly.
 """
 
 from importlib import import_module
@@ -35,16 +37,3 @@ def build_object(config_dict):
         return [build_object(item) for item in config_dict]
     else:
         return config_dict
-
-
-def resolve_ref(config, path_str):
-    """Navigate a dot-separated path in the config dictionary.
-
-    Resolves a pipeline reference such as ``components.llms.mistral_ollama``
-    to the component dict it names. Was ``get_component_from_path`` in v2.
-    """
-    keys = path_str.split('.')
-    value = config
-    for key in keys:
-        value = value[key]
-    return value
