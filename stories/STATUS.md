@@ -5,21 +5,22 @@
 
 ## Now
 
-**Next action:** implement S0-7 (move the long-form docs into `docs/`, invert
-the CLAUDE.md corpus rule), then S0-6 (real corpus run + tag `v0.1`).
+**Next action:** implement S0-6, the Phase 0 exit: delete the stale index,
+ingest the real corpus, answer real questions with a pasted transcript,
+rewrite `README.md`, bump to `0.1.0`, and tag `v0.1`.
 
-**S0-5 is done and verified, awaiting its commit** (maintainer commits manually):
+**S0-7 is done and verified, awaiting its commit** (maintainer commits manually):
 
 ```bash
 git add -A
-git commit -m "S0-5: migrate chain to LangChain 1.x LCEL, stream answers with sources (ISS-17, FR-5)"
+git commit -m "S0-7: move project docs into docs/, invert the corpus rule (DEC-4)"
 git push origin main
 ```
 
-`rag-query` works end to end as of S0-5: verified on a scratch corpus with
-`phi3`, including a correct refusal. The repo's stale `vectorstore/db_faiss`
-index (pickled under LangChain 0.2) is still on disk and still unloadable;
-S0-6 deletes it and builds the real one.
+Project docs now live in `docs/`; the corpus is `corpus/`. `rag-query` works
+end to end as of S0-5 (commit `6630222`), verified on a scratch corpus with
+`phi3`. The repo's stale `vectorstore/db_faiss` index, pickled under
+LangChain 0.2, is still on disk and still unloadable; S0-6 deletes it.
 
 **Commit history so far** (S0-1 → S0-4; ISS-09 verified fully closed, `git
 ls-files` shows no parquet, FAISS index, cache, media or `.save` file):
@@ -33,6 +34,7 @@ ls-files` shows no parquet, FAISS index, cache, media or `.save` file):
 | `2bc7658` | S0-3 module split + entry points |
 | `e16c07d` | S0-4 config repair + corpus rename |
 | `ebcfc2e` | S0-4 follow-up: GPU and multilingual embedders restored as config axes |
+| `6630222` | S0-5 LangChain 1.x LCEL chain, streaming CLI with sources |
 
 `e781b17` deliberately carries two stories' worth of change: the S0-3 `git mv`
 operations were staged when the fixup was committed, so the content merged, and
@@ -150,8 +152,8 @@ end to end. Exit ⇒ tag `v0.1`.
 | [S0-2](phase-0/S0-2-uv-init.md) | uv project: pyproject, pinned 3.12, lockfile | ISS-08 | S0-1, DEC-1 | Done 2026-09-18 |
 | [S0-3](phase-0/S0-3-collapse-trees.md) | Collapse v1/v2/temp into one package | ISS-10, ISS-12 | S0-2 | Done 2026-09-19 |
 | [S0-4](phase-0/S0-4-config-repair.md) | Config repair: keys, paths, corpus rename | ISS-01, ISS-02, ISS-11, DEC-4 | S0-3 | Done 2026-09-25 |
-| [S0-5](phase-0/S0-5-langchain-migration.md) | Migrate code to resolved LangChain version | ISS-17 | S0-4, DEC-1 | Done 2026-09-25 (commit pending) |
-| [S0-7](phase-0/S0-7-docs-layout.md) | Project docs into `docs/`; invert the CLAUDE.md corpus rule | DEC-4 | S0-4 | Todo |
+| [S0-5](phase-0/S0-5-langchain-migration.md) | Migrate code to resolved LangChain version | ISS-17 | S0-4, DEC-1 | Done 2026-09-25 |
+| [S0-7](phase-0/S0-7-docs-layout.md) | Project docs into `docs/`; invert the CLAUDE.md corpus rule | DEC-4 | S0-4 | Done 2026-09-25 (commit pending) |
 | [S0-6](phase-0/S0-6-end-to-end-proof.md) | End-to-end proof: ingest + answered query | — (exit) | S0-5, S0-7, DEC-2 | Todo |
 
 Execution order follows the **Depends** column, not the story number: S0-7 was

@@ -7,11 +7,11 @@ prototype to production via a spec-driven story loop.
 
 1. `stories/STATUS.md` — the board: current story, open decisions, backlog.
 2. The active story file in `stories/phase-N/` — your scope for this session.
-3. `ARCHITECTURE.md` (if it exists for the current phase) — design already
+3. `docs/ARCHITECTURE.md` (if it exists for the current phase) — design already
    confirmed; follow it, don't re-litigate it.
 
-4. `SRS.md` — full spec with FR/NFR/ISS IDs; consult when a story cites an ID.
-5. `WORKFLOW.md` — the process rules; follow steps 3–5 for implementation.
+4. `docs/SRS.md` — full spec with FR/NFR/ISS IDs; consult when a story cites an ID.
+5. `docs/WORKFLOW.md` — the process rules; follow steps 3–5 for implementation.
 
 ## Hard rules
 
@@ -25,8 +25,10 @@ prototype to production via a spec-driven story loop.
 - Python tooling is **uv only** (`uv add`, `uv run`, `uv sync`) — never
   bare pip, never conda. Interpreter is pinned via `.python-version`.
 
-- `docs/` is the RAG document corpus, NOT project documentation. Never put
-  markdown docs there; never ingest repo docs. Project docs live at root.
+- `corpus/` is the RAG document corpus: everything in it gets embedded, and
+  the text loader reads `.md`. Never put project docs there; never ingest
+  repo docs. Project docs live in `docs/`, except `README.md` and
+  `CLAUDE.md`, which stay at the repo root. (DEC-4.)
 
 - Never commit binaries, indexes (`vectorstore/`), `__pycache__`, or media.
 - Before ending a session: update the story file status + STATUS.md.

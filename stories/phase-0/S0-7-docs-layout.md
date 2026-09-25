@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | Done (2026-09-25) — commit pending, maintainer commits manually |
 | **Closes** | DEC-4 (move half) |
 | **Depends on** | S0-4 (the corpus rename must land first — `docs/` has to be free) |
 | **Model** | opus-fast |
@@ -66,10 +66,55 @@ so `git log --follow` still works, and that the inverted rule in `CLAUDE.md`
 now says `corpus/` where it used to say `docs/`. A stale rule here is worse
 than no rule, because every future session reads it as authoritative.
 
+## Verification results (2026-09-25)
+
+| Check | Result |
+| --- | --- |
+| `ls docs/` | `ADR.md ARCHITECTURE.md SRS.md WORKFLOW.md` |
+| `ls *.md` at root | `CLAUDE.md README.md` only |
+| Renames the commit will record | 4: `ADR`, `ARCHITECTURE`, `SRS` at R100, `WORKFLOW` at R090 |
+| CLAUDE.md read list | all three paths now under `docs/` |
+| CLAUDE.md corpus rule | inverted: names `corpus/`, sends project docs to `docs/` |
+| Dangling markdown links | none |
+| Ingestion data path | `corpus/`, which contains no `.md` files |
+| Package imports | unaffected |
+
+The three R100 renames double as proof that `SRS.md`, `ADR.md` and
+`ARCHITECTURE.md` are byte-identical to their committed versions, so the
+"no SRS edits" rule held.
+
+**How renames were checked without staging.** Nothing is staged (the
+no-staging rule in STATUS.md), so `git status` shows deletes plus untracked
+files, and the story's original `git status | grep '^R'` check cannot pass
+before commit. Instead the commit was built in a throwaway index
+(`GIT_INDEX_FILE` pointing into the scratchpad), diffed with `-M`, and
+discarded. The real index was confirmed empty afterwards.
+
 ## Discovered
 
-—
+- **Which references to change was a real decision**, not a mechanical
+  find-and-replace. The rule applied: change a reference when someone will
+  _act_ on it as a location, and leave it when it is a citation by name.
+  Changed: CLAUDE.md's read-first list, and WORKFLOW.md's copy-paste prompt
+  templates. Left: citations such as "ARCHITECTURE.md §0.4" in stories and
+  the board, historical notes about the pre-rename `docs/` corpus, and
+  everything inside `ADR.md`. Each doc name exists exactly once, so
+  citations stay unambiguous, and rewriting dozens of them would be churn.
+- **Two WORKFLOW.md templates were write instructions**, not just reads:
+  "write it to ARCHITECTURE.md" and "it goes into ARCHITECTURE.md". Left at
+  the root path, a future session following them literally could create a
+  second, empty `ARCHITECTURE.md` at the root and split the design record in
+  two. Those were the most important edits in this story.
+- `ADR.md` is not in CLAUDE.md's read-first list, so a new session will not
+  find the decision log unless something points it there. Adding a pointer is
+  an editorial change outside this story's scope; left for the maintainer.
+- `README.md` still documents a `docs/` of "Documentation and reports" and
+  the deleted `v1/`/`v2/` layout. S0-6 rewrites it.
 
 ## Deviation from plan
 
-—
+One content change beyond link fixes: WORKFLOW.md's closing rule said
+"`docs/` is the RAG corpus... Project docs live at repo root". The move makes
+that rule false, and a false rule in a process doc is worse than none, so it
+now names `corpus/` and sends project docs to `docs/`. No other wording in
+the moved docs changed.

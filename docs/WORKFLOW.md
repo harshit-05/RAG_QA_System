@@ -44,11 +44,11 @@ release mapping table in stories/STATUS.md.
 Start a **fresh session in plan mode** (Shift+Tab in the CLI, or the plan
 toggle in VS Code). Paste:
 
-> Read CLAUDE.md, SRS.md §12 Phase N, and stories/STATUS.md. In plan mode,
+> Read CLAUDE.md, docs/SRS.md §12 Phase N, and stories/STATUS.md. In plan mode,
 > produce the architecture for Phase N only: file/module layout, key
 > interfaces, library choices with versions, and how each open decision in
 > STATUS.md should be resolved (with recommendation). Do not write code.
-> When I confirm, write it to ARCHITECTURE.md under a "Phase N" section and
+> When I confirm, write it to docs/ARCHITECTURE.md under a "Phase N" section and
 > update the Decisions log in stories/STATUS.md.
 
 This is your **one confirmation pass** — read the plan, redirect anything you
@@ -61,7 +61,7 @@ Model: **Fable** for this step (it's the judgment-heavy one).
 
 Same session, after the architecture is confirmed:
 
-> Shard ARCHITECTURE.md Phase N into stories in stories/phase-N/ using
+> Shard docs/ARCHITECTURE.md Phase N into stories in stories/phase-N/ using
 > stories/TEMPLATE.md. Each story: completable in one session, independently
 > verifiable, ordered by dependency, tagged with the SRS IDs it closes.
 > Add them to the board in stories/STATUS.md.
@@ -75,7 +75,7 @@ Fresh session (or `/clear`). One story per session — this keeps context
 small and matches scattered work sessions. Paste:
 
 > Read CLAUDE.md, then stories/phase-0/S0-3-collapse-trees.md. Implement
-> ONLY this story. Follow ARCHITECTURE.md; do not expand scope. Run every
+> ONLY this story. Follow docs/ARCHITECTURE.md; do not expand scope. Run every
 > command in its Verification section and show me the output. Stop before
 > committing.
 
@@ -126,7 +126,7 @@ with the next story.
   split it in the story file and do half — don't push through.
 
 - **Never carry design decisions in chat.** If something got decided in
-  conversation, it goes into ARCHITECTURE.md or the Decisions log in
+  conversation, it goes into docs/ARCHITECTURE.md or the Decisions log in
   STATUS.md before the session ends, or it didn't happen.
 
 - **Start every session with "Read CLAUDE.md"** — it chains to the board
@@ -151,5 +151,6 @@ with the next story.
   explicit "amend the SRS" session, with the change noted in its revision
   block. Stories cite the SRS; they don't mutate it.
 
-- Don't put working docs in `docs/` — that directory is the RAG corpus and
-  gets ingested. Project docs live at repo root or in `stories/`.
+- Don't put working docs in `corpus/` — that directory is the RAG corpus and
+  gets ingested. Project docs live in `docs/` (plus `README.md` and
+  `CLAUDE.md` at the root) or in `stories/`.
