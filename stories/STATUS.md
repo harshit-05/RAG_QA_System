@@ -5,18 +5,20 @@
 
 ## Now
 
-**Next action: the Phase 1 architecture pass** — WORKFLOW.md Step 1, in plan
-mode, then shard Phase 1 into stories (Step 2). Resolve or re-confirm the
-Phase 1 items in the Backlog below as part of that pass.
+**Next action: implement [S1-1](phase-1/S1-1-config-schema.md)** — WORKFLOW.md
+Step 3, fresh session, plan-first (the story says so). Phase 1 is sharded into
+eight stories; run them in the **Depends** order of the Phase 1 table below.
+
+**The Phase 1 architecture pass is done** (2026-09-25): `ARCHITECTURE.md` has a
+confirmed Phase 1 section (§1.1–§1.7) and DEC-6 … DEC-12 are resolved below.
+Implementation sessions follow it and do not re-litigate it. Every Phase 1
+backlog item was resolved or re-confirmed in that pass — each line in the
+Backlog now names its owning story or its re-deferral.
 
 **Phase 0 is complete and released as `v0.1`** (2026-09-25): tag on
 `ae15a23`, pushed to GitHub along with `main`. The exit criterion was met
 literally: a fresh clone ran `uv sync`, ingested the corpus and answered
 through `rag-query`.
-
-This board update itself was made after the release commit. If it shows as
-modified, commit it first:
-`git commit -am "STATUS: record v0.1 release, next is the Phase 1 arch pass"`.
 
 **Known quality gap carried into Phase 1+:** retrieval is reliable, but the
 7B model sometimes misstates retrieved facts (S0-6 fact-check: misattributed
@@ -164,6 +166,32 @@ Execution order follows the **Depends** column, not the story number: S0-7 was
 added after the initial sharding (DEC-4) and runs between S0-5 and S0-6, so the
 `v0.1` tag ships the final layout.
 
+## Phase 1 — Make it trustworthy
+
+Exit criterion (SRS §12): CI is green and would have caught every Phase-0 bug.
+The second half is literal — `tests/test_config_regressions.py` (S1-5) encodes
+each Phase-0 bug as a case. Exit ⇒ tag `v0.2`, version 0.2.0.
+Design: ARCHITECTURE.md §1.1–§1.7.
+
+| Story | Title | Closes | Depends | Status |
+| --- | --- | --- | --- | --- |
+| [S1-1](phase-1/S1-1-config-schema.md) | Validate the config with a frozen Pydantic model | FR-8, ISS-01, ISS-11, NFR-11 | — | Todo |
+| [S1-2](phase-1/S1-2-target-allowlist.md) | Allowlist `_target_` imports; stand up CI | ISS-04 | S1-1 | Todo |
+| [S1-3](phase-1/S1-3-own-loaders.md) | Own loaders, extension map, recursive walk | ISS-13, FR-2, DEC-5 step 1 | S1-1 | Todo |
+| [S1-4](phase-1/S1-4-error-handling-cli.md) | Explicit error handling and a real CLI surface | ISS-05, ISS-06, ISS-18, NFR-7 | S1-3 | Todo |
+| [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | Todo |
+| [S1-6](phase-1/S1-6-types-and-lint.md) | Type annotations, ruff and mypy configuration | ISS-19, NFR-9 | S1-5 | Todo |
+| [S1-7](phase-1/S1-7-cuda-extra.md) | GPU embedder path installable (CPU/CUDA torch variants) | FR-1 (GPU axis) | S1-1 | Todo |
+| [S1-8](phase-1/S1-8-phase-1-exit.md) | Phase 1 exit: audit gate, doc hygiene, 0.2.0 | — (exit) | S1-6, S1-7 | Todo |
+
+CI lands in S1-2, not at the end, so every later story closes on green rather
+than the whole phase arriving unverified at once. Each gate is added by the
+story that makes it passable (ruff + pytest in S1-2, coverage in S1-5, mypy in
+S1-6, pip-audit in S1-8) and blocks from that moment (DEC-11). S1-2 lands the ruff
+gate on a tree that already has 4 default-rule errors, so it suppresses them with
+`noqa` tags naming S1-4, and S1-4 removes them. S1-7 depends only on S1-1 and can
+be run whenever convenient before S1-8.
+
 ## Decisions log
 
 | ID | Decision | Status | Notes |
@@ -173,53 +201,78 @@ added after the initial sharding (DEC-4) and runs between S0-5 and S0-6, so the
 | DEC-4 | Repo layout: `docs/` currently holds the RAG corpus, colliding with the universal convention that `docs/` is project documentation | **Resolved 2026-09-18: corpus → `corpus/`, `docs/` becomes project documentation** | Maintainer decision. The old name needed a CLAUDE.md hard rule to stay safe, and the text loader claims `.md`, so a project doc dropped in there gets embedded into the index. Renamed in S0-4 (which rewrites every path anyway); `SRS.md` / `WORKFLOW.md` / `ARCHITECTURE.md` move into `docs/` in S0-7, which also inverts the CLAUDE.md rule. `CLAUDE.md` and `README.md` stay at root (auto-load; GitHub renders README from root only). `stories/` stays at root as working state. |
 | DEC-5 | `langchain-community` was sunset 2026-05-22 (issue #674): frozen, unmaintained, warns on import. We use it for FAISS, the loaders, and the disabled cross-encoder | **Resolved 2026-09-25: staged exit, keep through Phase 0** | Nothing is broken; the lock pins it and `langchain-core<2` bounds drift. Exit rides planned work: loaders → ~40 lines of own code on `pypdf`/`docx2txt` (Phase 1, with the loader-selection item); cross-encoder → `sentence-transformers` directly (Phase 2 reranker); FAISS → `langchain-qdrant` (Phase 3). After Phase 3 both `langchain-community` and its transitive `langchain-classic` leave `pyproject.toml`. No official standalone FAISS/loader package exists; the unofficial `langchain-faiss` 0.1.1 is rejected on supply-chain grounds. |
 | DEC-3 | Vector store for Phase 3: Qdrant vs pgvector | **Lean: Qdrant** (decide in Phase 3 arch pass) | Native hybrid dense+sparse, one container, no Postgres to run. pgvector only if a Postgres already exists in the deployment. Store-specific code is confined to `vectorstore.py` so either works. |
+| DEC-6 | Config validation: how far Pydantic reaches into the call sites | **Resolved 2026-09-25: frozen `RagConfig`, attribute access everywhere** | `load_config()` returns a frozen model, not a dict; typed component kinds (`extra="forbid"`) make ISS-01 and ISS-11 unwritable; component leaves stay `extra="allow"` (ADR-010); retrievers get their own `RetrieverSpec` (no `_target_` — typing them as components fails the real config, verified). Non-mutation becomes structural via the access path: call sites only get fresh copies from `component(ref).spec()`/`.kwargs()` — `frozen=True` alone does not freeze nested dicts (verified). **Verified trap:** a field literally named `_target_` is silently dropped by Pydantic (leading underscore ⇒ private attribute; `model_dump()` returned `{}`) — the schema must use `target: str = Field(alias="_target_")` and dump `by_alias=True`. S1-1. ARCHITECTURE.md §1.1, §1.4. |
+| DEC-7 | Where the `_target_` allowlist lives, and whether it is configurable | **Resolved 2026-09-25: hardcoded, inside `import_from_string`** | Enforcing at the import funnel rather than in `build_object` covers `ingest.py`'s direct call — the gap ADR-015 flagged. Not config-overridable and no env escape hatch: an allowlist the config can edit is not an allowlist. `langchain_classic.` is allowed as a *config* prefix (disabled reranker entry); ADR-007 governs *source* imports and is unaffected. Load string-checks prefixes (nested too) and never imports; a separate `check_imports` helper, used by tests, catches misspelled classes (ISS-03). S1-2. Closes ISS-04. |
+| DEC-8 | DEC-5 step 1: replace the `langchain-community` loaders now or later | **Resolved 2026-09-25: now, in Phase 1** | Own `PdfLoader`/`DocxLoader`/`TextLoader` on `pypdf`/`docx2txt`; `extensions` leaves the component entries for `pipeline.ingestion.loaders`, giving one instantiation path; discovery becomes recursive (ISS-13). Afterwards `langchain_community` is imported only by `vectorstore.py`. Risk is citation metadata, so the story records the `v0.1` chunk-count + citation baseline before changing anything and must reproduce it. S1-3. |
+| DEC-9 | NFR-6 (timeout / retry / circuit-breaking): Phase 1 or later | **Resolved 2026-09-25: Phase 1 does error handling only** | ISS-05 (collect failures, exit non-zero — NFR-7) and ISS-06 (REPL try/except) are S1-4. Timeout, retry-with-backoff and circuit-breaking (SRS §11 Resilience) need the service shape and move to Phase 3 with the serving decision. Deferred deliberately, not by omission. |
+| DEC-10 | Device selection: collapse the `_cpu`/`_cuda` embedder entries into one env-driven setting | **Resolved 2026-09-25: no — the entries stay explicit** | The backlog item assumed pydantic-settings interpolates `device: ${RAG_EMBED_DEVICE:-cpu}` inside YAML values. **It does not** — there is no `${VAR:-default}` expansion for arbitrary values. With the CUDA torch variant (DEC-12), one sync command plus repointing `pipeline.ingestion.embedder` is already a one-line switch, so the four entries restored in `ebcfc2e` stay as FR-1 axes. |
+| DEC-11 | CI: host, hermeticity and how hard the gates bite | **Resolved 2026-09-25: GitHub Actions, hermetic suite, blocking gates** | No Ollama, no model download, no network in tests: `DeterministicFakeEmbedding` (verified present in core 1.6.3) + a fake chat model. Gate order: `ruff check` → `mypy` (`disallow_untyped_defs` on `src/rag_qa`) → `pytest --cov-fail-under=80` (omitting `evaluate.py`, Phase 2 + `eval` extra) → `pip-audit`. Each gate blocks from the story that adds it. **No `ruff format --check` in Phase 1** — the tree is unformatted and a whole-tree reformat is the diff that gets rubber-stamped → backlog. |
+| DEC-12 | Making the declared GPU embedder entries actually installable | **Resolved 2026-09-25: uv-conflicting CPU/CUDA torch variants; plain `uv sync` stays CPU** | Each variant routed to its own index, `explicit = true` on both. **Mechanism chosen by S1-7's spike**: extras have no default, so torch-only-in-extras would make a plain sync pull PyPI CUDA torch via `sentence-transformers`. Preferred: dependency groups + `default-groups = ["dev", "cpu"]`; fallback: extras with `--extra cpu` on every install path. S1-7 re-runs the S0-2 smoke test on the **installed env** (the lock legitimately holds both variants): core 1.x, `torch 2.14.0+cpu`, zero `nvidia-*`. CUDA is verifiable here as a **resolve only** — this host is CPU-only. |
 
-## Backlog (discovered, not yet storied)
+## Backlog
+
+Every line below is either **claimed by a story** or **explicitly deferred with a
+reason**. Reconciled in the Phase 1 architecture pass, 2026-09-25.
+
+### Claimed by a Phase 1 story
 
 - `scripts/fetch_dataset.py` (moved from `docs/dataset.py` in S0-1) uses a
   HuggingFace `/blob/` URL that downloads HTML, no timeout, and writes into
-  the corpus dir (ISS-18) — Phase 1 story.
+  the corpus dir (ISS-18) → **S1-4**.
 - Loader selection via `pipeline.ingestion.loaders` keyed by extension; drop
   the `extensions` key from `_target_` dicts so there is one instantiation
-  path (`build_object({**cfg, "file_path": path})`). Needed before the
-  Pydantic schema. Phase 1.
-- `build_rag_chain` must not mutate the config it is given (falls out of a
-  frozen Pydantic model). Phase 1. **Confirmed live** at `src/rag_qa/chain.py:31`:
-  `resolve_ref` hands back a live reference into the config dict and the next
-  line writes a constructed retriever object into it, so "inert config" stops
-  being inert as soon as the reranker path runs. Harmless while every call
-  re-reads the YAML; it bites the moment a config is reused (Phase 2 API, eval
-  loops). **S0-5 already owns the immediate fix** (its scope forbids mutation);
-  this entry covers the structural guarantee.
-- Embedder resolution is duplicated: `chain.py:23` and `ingest.py:65-66` both
+  path (`build_object({**cfg, "file_path": path})`) → **S1-3** (DEC-8).
+- `build_rag_chain` must not mutate the config it is given → **S1-1**, where it
+  falls out of a frozen Pydantic model (DEC-6). Pre-S0-5, `resolve_ref` handed
+  back a live reference into the config dict and the next line wrote a
+  constructed retriever into it. S0-5 fixed the instance (`chain.py:72` now
+  copies); S1-1 removes the class of bug by only handing out copies.
+- Embedder resolution is duplicated: `chain.py:66` and `ingest.py:91` both
   do `build_object(resolve_ref(cfg, cfg["pipeline"]["ingestion"]["embedder"]))`.
-  The two must agree or the index and queries use different vectors, so it wants
-  one shared helper rather than a convention. Phase 1.
+  The two must agree or the index and queries use different vectors — a silent
+  wrong-answer bug, not a crash → **S1-3**, as `components.build_embedder`.
 - `vectorstore.create_store`/`open_store` take the whole config to read one key
   (`vector_store_path`). Narrow to the path itself so the Phase 3 store swap has
-  a smaller contract. Phase 1 or Phase 3, whichever touches it first.
-- `README.md` still documents the deleted `v1/`/`v2/` layout, `pip install -r
-  v1/requirements.txt`, a tracked screencast and image ingestion that never
-  existed — actively wrong on a public repo as of S0-3. S0-6 owns the rewrite;
-  if S0-6 slips, this is worth a standalone fix (ISS-20).
+  a smaller contract → **S1-1**.
 - Error handling: ISS-05 (collect ingestion failures, non-zero exit) and
-  ISS-06 (REPL try/except around invoke). Phase 1.
-- GPU embedder path is declarable but not installable: the `_cuda` embedder
-  entries need a CUDA torch build, while the lockfile pins CPU-only torch
-  (DEC-1 rule 2). Add an optional `cuda` extra with a CUDA torch index so
-  `uv sync --extra cuda` makes those entries real, for the Colab/Kaggle
-  re-embedding path. Phase 1.
-- Device selection would be cleaner as one setting than as duplicated embedder
-  entries per device (`minilm_cpu` / `minilm_cuda` differ by one field).
-  `pydantic-settings` arrives in Phase 1 and handles env-var interpolation
-  properly, e.g. `device: ${RAG_EMBED_DEVICE:-cpu}`; do it there rather than
-  hand-rolling interpolation in `load_config` now. Phase 1.
+  ISS-06 (REPL try/except around invoke) → **S1-4** (DEC-9).
+- `rag-ingest` and `rag-query` take no arguments, so `rag-ingest --help` starts
+  a real ingestion run. Add `argparse` with `--help` and `--config` → **S1-4**.
 - Malformed configs fail with raw internal errors instead of actionable ones:
   `paths: {data: }` raises a `pathlib` `TypeError`, an empty YAML file raises
   `AttributeError` on `NoneType`. The Pydantic schema (FR-8) is the right place
-  to fix this, not ad-hoc guards in `load_config`. Phase 1.
-- Hosted-LLM fallback: `groq_llama3` config entry behind an optional extra +
-  `.with_fallbacks()` in `chain.py`. Phase 1.
+  to fix this, not ad-hoc guards in `load_config` → **S1-1**.
+- Turn the S0-5 deprecation gate into a pytest (record warnings in-process,
+  allow only the DEC-5 sunset notice, keep the negative control). Never use a
+  command-line `-W error` gate here: `langchain_core` overrides it on import
+  → **S1-5**.
+- GPU embedder path is declarable but not installable: the `_cuda` embedder
+  entries need a CUDA torch build, while the lockfile pins CPU-only torch
+  (DEC-1 rule 2) → **S1-7** (DEC-12).
+
+### Re-deferred or dropped in the Phase 1 pass
+
+- **Dropped — device selection as one env-driven setting.** The item assumed
+  `pydantic-settings` interpolates `device: ${RAG_EMBED_DEVICE:-cpu}` inside
+  YAML values; it does not (no `${VAR:-default}` expansion for arbitrary
+  values). The CUDA torch variant (DEC-12) makes the switch one line anyway. See **DEC-10**.
+- **Phase 3 — hosted-LLM fallback** (`groq_llama3` entry behind an optional
+  extra + `.with_fallbacks()` in `chain.py`). Moved out of Phase 1: it widens
+  the DEC-1 import surface and needs an API key, for something Phase 1 could
+  only exercise against a fake failing LLM. It belongs with the Phase 3 serving
+  decision (NFR-2), which is the problem it actually solves.
+- **Phase 3 — NFR-6** timeout / retry-with-backoff / circuit-breaking, per
+  **DEC-9**.
+- **Backlog — `ruff format`.** Not gated in Phase 1: the tree is unformatted and
+  a whole-tree reformat is the kind of diff that gets rubber-stamped (DEC-11).
+- **Not yet storied — per-loader splitter strategies** (SRS §7.2): chunking
+  configurable per document type. The `_target_` mechanism already supports it;
+  it needs more splitter entries and a per-loader default, not new architecture.
+
+### Later phases
+
+- Chunk metadata: content hash of the source file + ingestion timestamp
+  (SRS §7.3). Phase 2, with the manifest that needs them.
 - `langchain-classic` is referenced by the (disabled) reranker component but is
   only a transitive dependency via `langchain-community`. If Phase 2 keeps the
   `ContextualCompressionRetriever` + `CrossEncoderReranker` shape instead of a
@@ -231,24 +284,25 @@ added after the initial sharding (DEC-4) and runs between S0-5 and S0-6, so the
 - NFR-2 (<2 s first token) is unachievable CPU-only — revise the SLO or plan
   GPU serving in the Phase 3 arch pass.
 
-- Turn the S0-5 deprecation gate into a pytest (record warnings in-process,
-  allow only the DEC-5 sunset notice, keep the negative control). Never use a
-  command-line `-W error` gate here: `langchain_core` overrides it on import.
-  Phase 1.
-- `rag-ingest` and `rag-query` take no arguments, so `rag-ingest --help` starts
-  a real ingestion run. Add `argparse` with `--help` and `--config`. Phase 1.
 - CLI "Sources" lists what was retrieved, not what the answer used, so a
   refusal still shows a source. Fix with a relevance threshold or citation
   parsing, tuned by the eval harness. Phase 2.
 - `ChatOllama` leaves its HTTP client open (`ResourceWarning: unclosed socket`
   at exit). Harmless in the CLI; the Phase 2 API must own and close the
   chain's client across its lifecycle. Phase 2.
-- DEC-5 exit tasks, one per phase: own loaders (Phase 1), cross-encoder via
-  `sentence-transformers` (Phase 2), drop `langchain-community` and
-  `langchain-classic` from `pyproject.toml` after the Qdrant move (Phase 3).
-
-- Phase 1+ stories: shard after Phase 0 exit via WORKFLOW.md Step 2.
+- DEC-5 exit tasks, one per phase: own loaders (**Phase 1 → S1-3**),
+  cross-encoder via `sentence-transformers` (Phase 2), drop
+  `langchain-community` and `langchain-classic` from `pyproject.toml` after the
+  Qdrant move (Phase 3).
+- Phase 2+ stories: shard at each phase exit via WORKFLOW.md Step 2.
 
 ## Done
 
-(nothing yet)
+**Phase 0 — shipped as `v0.1` (`ae15a23`, 2026-09-25).** S0-1 repo hygiene ·
+S0-2 uv project · S0-3 single package · S0-4 config repair + corpus rename ·
+S0-5 LangChain 1.x LCEL chain with streaming · S0-7 docs layout · S0-6
+end-to-end proof. Per-story detail in `stories/phase-0/`; the Phase 0 table
+above is the index.
+
+**Architecture passes.** Phase 0 confirmed 2026-09-18 (DEC-1/2/4, later DEC-5);
+Phase 1 confirmed 2026-09-25 (DEC-6 … DEC-12), sharded into S1-1 … S1-8.
