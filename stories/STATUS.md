@@ -5,21 +5,18 @@
 
 ## Now
 
-**Phase 0 is complete.** The exit criterion was met literally: a fresh clone
-ran `uv sync`, ingested the corpus and answered through `rag-query`. What is
-left is manual: commit S0-6, tag `v0.1`, and push.
+**Next action: the Phase 1 architecture pass** — WORKFLOW.md Step 1, in plan
+mode, then shard Phase 1 into stories (Step 2). Resolve or re-confirm the
+Phase 1 items in the Backlog below as part of that pass.
 
-```bash
-git add -A
-git commit -m "S0-6: end-to-end proof on the real corpus, README, release 0.1.0 (Phase 0 exit)"
-git tag -a v0.1 -m "v0.1: Phase 0 complete; runs end to end"
-git push origin main
-git push origin v0.1
-```
+**Phase 0 is complete and released as `v0.1`** (2026-09-25): tag on
+`ae15a23`, pushed to GitHub along with `main`. The exit criterion was met
+literally: a fresh clone ran `uv sync`, ingested the corpus and answered
+through `rag-query`.
 
-S0-7 (`55344bd`) is committed but was not yet pushed; the push above sends it
-too. **Next session:** the Phase 1 architecture pass, WORKFLOW.md Step 1, in
-plan mode.
+This board update itself was made after the release commit. If it shows as
+modified, commit it first:
+`git commit -am "STATUS: record v0.1 release, next is the Phase 1 arch pass"`.
 
 **Known quality gap carried into Phase 1+:** retrieval is reliable, but the
 7B model sometimes misstates retrieved facts (S0-6 fact-check: misattributed
@@ -41,6 +38,7 @@ ls-files` shows no parquet, FAISS index, cache, media or `.save` file):
 | `ebcfc2e` | S0-4 follow-up: GPU and multilingual embedders restored as config axes |
 | `6630222` | S0-5 LangChain 1.x LCEL chain, streaming CLI with sources |
 | `55344bd` | S0-7 project docs into `docs/`, corpus rule inverted |
+| `ae15a23` | S0-6 end-to-end proof, README, 0.1.0 — tagged `v0.1` |
 
 `e781b17` deliberately carries two stories' worth of change: the S0-3 `git mv`
 operations were staged when the fixup was committed, so the content merged, and
@@ -58,7 +56,7 @@ DEC-1/DEC-2/DEC-4 are resolved below.
 
 | Phase exit | Git tag | Package version |
 | --- | --- | --- |
-| Phase 0 | `v0.1` | 0.1.0 — **exit met 2026-09-25**; tag pending maintainer |
+| Phase 0 | `v0.1` | 0.1.0 — **released 2026-09-25** (`ae15a23`) |
 | Phase 1 | `v0.2` | 0.2.0 |
 | Phase 2 | `v0.3` | 0.3.0 |
 | Phase 3 (SRS complete) | `v1.0` | 1.0.0 |
@@ -160,7 +158,7 @@ end to end. Exit ⇒ tag `v0.1`.
 | [S0-4](phase-0/S0-4-config-repair.md) | Config repair: keys, paths, corpus rename | ISS-01, ISS-02, ISS-11, DEC-4 | S0-3 | Done 2026-09-25 |
 | [S0-5](phase-0/S0-5-langchain-migration.md) | Migrate code to resolved LangChain version | ISS-17 | S0-4, DEC-1 | Done 2026-09-25 |
 | [S0-7](phase-0/S0-7-docs-layout.md) | Project docs into `docs/`; invert the CLAUDE.md corpus rule | DEC-4 | S0-4 | Done 2026-09-25 |
-| [S0-6](phase-0/S0-6-end-to-end-proof.md) | End-to-end proof: ingest + answered query | — (exit) | S0-5, S0-7, DEC-2 | Done 2026-09-25 (commit + tag pending) |
+| [S0-6](phase-0/S0-6-end-to-end-proof.md) | End-to-end proof: ingest + answered query | — (exit) | S0-5, S0-7, DEC-2 | Done 2026-09-25 |
 
 Execution order follows the **Depends** column, not the story number: S0-7 was
 added after the initial sharding (DEC-4) and runs between S0-5 and S0-6, so the

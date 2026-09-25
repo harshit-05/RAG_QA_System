@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done (2026-09-25) — commit and `v0.1` tag pending, maintainer commits manually |
+| **Status** | Done (2026-09-25) — committed `ae15a23`, released as `v0.1` |
 | **Closes** | — (Phase 0 exit criterion, SRS §12) |
 | **Depends on** | S0-5 (DEC-2 resolved 2026-09-18: `mistral`, `phi3` fallback) |
 | **Model** | opus-fast |
