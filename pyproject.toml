@@ -1,6 +1,6 @@
 [project]
 name = "rag-qa-system"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Config-driven local RAG question-answering engine built on LangChain, FAISS and Ollama."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"

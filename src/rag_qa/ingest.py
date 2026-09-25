@@ -62,6 +62,7 @@ def load_documents(config, report):
                     loader = LoaderClass(file_path)
                     docs = loader.load()
                     all_docs.extend(docs)
+                    print(f"    {len(docs)} pages/sections")
                 except Exception as e:
                     print(f"    Error loading {filename}: {e}")
                     report.failed.append((filename, str(e)))
@@ -88,6 +89,12 @@ def ingest(config):
     report.chunks = len(chunks)
 
     embeddings = build_object(resolve_ref(config, ingestion_config["embedder"]))
+    # Embedding is the longest step of ingestion and is otherwise silent. Turn on
+    # the embedder's own progress bar for this instance only: the query path
+    # builds a separate instance, so rag-query stays quiet, and the config itself
+    # is never modified. Embedders without the switch simply run without a bar.
+    if hasattr(embeddings, "show_progress"):
+        embeddings.show_progress = True
     print(f"Embedding {len(chunks)} chunks and saving the vector store...")
     create_store(chunks, embeddings, config)
     return report
