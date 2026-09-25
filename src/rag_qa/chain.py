@@ -1,48 +1,88 @@
-"""Query chain construction.
+"""Query chain construction: the LCEL composition fixed by ARCHITECTURE.md §0.4.
 
-Still the legacy ``RetrievalQA`` shape from v2; S0-5 replaces it with the LCEL
-composition in ARCHITECTURE.md §0.4 and changes the signature to take a loaded
-config rather than a path.
+Contract, relied on by the CLI now and by the Phase 2 API and evaluation harness:
+
+    chain.invoke({"question": q}) -> {"question": str, "context": list[Document], "answer": str}
+
+Streaming (``chain.stream`` / ``chain.astream``) yields ``question``, then the whole
+``context`` in one chunk, then ``answer`` token by token. That order is what lets a
+streaming client show citations before the first answer token arrives.
+
+Imports come only from ``langchain_core`` plus our own modules (DEC-1 rule 1). None
+of the legacy chain helpers: the ``RetrievalQA`` this replaces now lives only in the
+maintenance-mode "classic" package, which application code never imports.
 """
 
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
+from operator import itemgetter
+from pathlib import Path
 
-from rag_qa.config import load_config
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+
 from rag_qa.registry import build_object, resolve_ref
 from rag_qa.vectorstore import open_store
 
 
-def build_rag_chain(config_path=None):
-    """Builds the entire RAG chain from a YAML config file.
+def citation(doc):
+    """Human-readable source for one chunk: ``file.pdf, p. 3``.
 
-    ``config_path=None`` matters: passing a literal default here would count as an
-    explicit argument and silently defeat ``$RAG_CONFIG``. Let
-    :func:`rag_qa.config.load_config` own the precedence.
+    Uses the loader's ``page_label`` (the printed page number) when present, falls
+    back to the 0-indexed ``page`` plus one, and omits the page for formats that
+    have none (docx, txt).
     """
-    config = load_config(config_path)
+    metadata = doc.metadata
+    name = Path(metadata.get("source", "unknown source")).name
+    page = metadata.get("page_label")
+    if page is None and "page" in metadata:
+        page = metadata["page"] + 1
+    return f"{name}, p. {page}" if page is not None else name
 
-    query_pipeline_config = config["pipeline"]["query"]
 
-    llm = build_object(resolve_ref(config, query_pipeline_config["llm"]))
-    embeddings = build_object(resolve_ref(config, config["pipeline"]["ingestion"]["embedder"]))
-    print("Loading vector store...")
-    db = open_store(embeddings, config)
-    base_retriever = db.as_retriever(**resolve_ref(config, query_pipeline_config["retriever"]))
-    final_retriever = base_retriever
-    if "reranker" in query_pipeline_config:
-        print("Building re-ranker...")
-        reranker_config = resolve_ref(config, query_pipeline_config["reranker"])
-        reranker_config["base_retriever"] = base_retriever
-        final_retriever = build_object(reranker_config)
+def format_docs(docs):
+    """Render retrieved chunks for the prompt, numbered so the model can cite them.
 
-    prompt = PromptTemplate(template=query_pipeline_config["prompt"], input_variables=["context", "question"])
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=final_retriever,
-        return_source_documents=True,
-        chain_type_kwargs={"prompt": prompt}
+    The CLI prints sources with the same ``[n]`` numbering, so a citation in the
+    answer maps directly to a line in the source list.
+    """
+    return "\n\n".join(
+        f"[{i}] ({citation(doc)})\n{doc.page_content}" for i, doc in enumerate(docs, 1)
     )
-    print("RAG chain built successfully.")
-    return qa_chain
+
+
+def build_rag_chain(config):
+    """Build the RAG chain from a loaded config dict (see :func:`rag_qa.config.load_config`).
+
+    Never mutates ``config``: the old implementation wrote a live retriever object
+    into the config dict on the reranker path, so a reused config stopped being inert.
+    Deliberately silent (no progress prints) because the Phase 2 API calls it too;
+    front ends print their own progress.
+    """
+    query_config = config["pipeline"]["query"]
+
+    llm = build_object(resolve_ref(config, query_config["llm"]))
+    # The query-time embedder is always the ingestion embedder: an index and the
+    # queries against it must share an embedding model.
+    embeddings = build_object(resolve_ref(config, config["pipeline"]["ingestion"]["embedder"]))
+
+    retriever = open_store(embeddings, config).as_retriever(
+        **resolve_ref(config, query_config["retriever"])
+    )
+    if "reranker" in query_config:  # disabled until Phase 2 (FR-4)
+        reranker_config = {**resolve_ref(config, query_config["reranker"]), "base_retriever": retriever}
+        retriever = build_object(reranker_config)
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", query_config["prompt"]["system"]),
+            ("human", query_config["prompt"]["human"]),
+        ]
+    )
+    to_prompt_inputs = RunnableLambda(
+        lambda x: {"context": format_docs(x["context"]), "question": x["question"]}
+    )
+
+    return (
+        RunnablePassthrough.assign(context=itemgetter("question") | retriever)
+        | RunnablePassthrough.assign(answer=to_prompt_inputs | prompt | llm | StrOutputParser())
+    )

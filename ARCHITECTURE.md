@@ -66,6 +66,19 @@ moves `SRS.md`, `WORKFLOW.md` and this file into `docs/` and inverts the CLAUDE.
 directory upward, the latter is what GitHub renders. `stories/` stays at root as
 working state, not documentation.
 
+**DEC-5 — Staged exit from `langchain-community` (added 2026-09-25, S0-5).** The package
+was sunset on 2026-05-22 (official issue #674): frozen, unmaintained, and it emits a
+`DeprecationWarning` on import. This amends DEC-1 rule 1, whose import surface included it
+for FAISS and the loaders. It stays through Phase 0, since nothing is broken and the lock
+plus the `langchain-core<2` bound hold it steady. The exit rides work already planned:
+loaders become our own ~40 lines on `pypdf`/`docx2txt` in Phase 1, the cross-encoder calls
+`sentence-transformers` directly in Phase 2, and FAISS leaves with the Phase 3 move to
+`langchain-qdrant`. After Phase 3, `langchain-community` and its transitive
+`langchain-classic` are removed from `pyproject.toml`. Consequence for testing: a
+command-line `-W error::DeprecationWarning` gate is unusable here, because
+`langchain_core` overrides it on import. Deprecation checks record warnings in-process,
+allow only the sunset notice, and carry a negative control.
+
 **DEC-3 (lean, decided in the Phase 3 pass) — Qdrant over pgvector.** Native hybrid
 dense + sparse retrieval, one container, no Postgres to operate. pgvector wins only if a
 Postgres already exists in the deployment. Nothing store-specific lives outside
@@ -149,6 +162,19 @@ chain = (
 model can cite. The CLI prints `answer`, then one line per context document. Phase 2
 FastAPI calls `chain.astream` on the same object; Phase 2 eval feeds `answer` and
 `context` to RAGAs. `build_rag_chain` must not mutate the config it is given.
+
+**As built in S0-5 (verified 2026-09-25):**
+
+- Signature is `build_rag_chain(config)`, taking a loaded config dict, not a path. It is
+  silent (no progress prints) so the Phase 2 API can call it; front ends print progress.
+- **Stream order is `question` → the whole `context` in one chunk → `answer` token by
+  token.** So a streaming client can send citations before the first answer token. The
+  Phase 2 SSE endpoint should emit a `sources` event from the `context` chunk, then
+  `token` events, then `done`.
+- Citations render as `file.pdf, p. <page_label>`, falling back to `page + 1`, with no
+  page for docx/txt. The CLI numbers sources `[n]` exactly as the prompt does.
+- The prompt is split into `system` (instructions) and `human` (retrieved context plus
+  question), which is the structural separation OWASP LLM01 asks for.
 
 ### 0.5 Vector store seam
 

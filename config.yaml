@@ -78,6 +78,15 @@ components:
       num_ctx: 4096
       num_predict: 512
       validate_model_on_init: true
+    # DEC-2 light fallback (2.2 GB vs mistral's ~5 GB resident). Use it when free
+    # memory is tight: point pipeline.query.llm here. Same settings otherwise.
+    phi3_ollama:
+      _target_: langchain_ollama.ChatOllama
+      model: "phi3"
+      temperature: 0
+      num_ctx: 4096
+      num_predict: 512
+      validate_model_on_init: true
     # Kept for the DEC-2 revisit once the eval harness exists (Phase 2).
     # Not pulled on this host: enabling this without `ollama pull qwen2:7b`
     # fails fast at construction thanks to validate_model_on_init.
@@ -126,15 +135,21 @@ pipeline:
     # The query-time embedder is always pipeline.ingestion.embedder: an index and
     # the queries against it must share an embedding model or the vectors are
     # incomparable. Not repeated here on purpose.
-    prompt: |
-      You are a helpful and precise assistant. Answer the user's question based only on the following context.
-      If the answer is not available in the context, say "I could not find the answer in the provided documents."
-      Do not use any prior knowledge.
+    # Instructions and retrieved content live in different chat roles (OWASP
+    # LLM01): the system turn holds the rules, the human turn holds the untrusted
+    # context. Wording carried over from v2 unchanged, except the trailing
+    # "Answer:" cue, which the assistant turn now replaces.
+    # {context} is filled with numbered chunks, "[1] (file.pdf, p. 3)\n...".
+    prompt:
+      system: |
+        You are a helpful and precise assistant. Answer the user's question based only on the following context.
+        If the answer is not available in the context, say "I could not find the answer in the provided documents."
+        Do not use any prior knowledge.
+      human: |
+        Context:
+        {context}
 
-      Context: {context}
-
-      Question: {question}
-      Answer:
+        Question: {question}
 
 # ----------------- 3. Paths -----------------
 # Relative to THIS FILE's directory, so a fresh clone works anywhere (NFR-11).

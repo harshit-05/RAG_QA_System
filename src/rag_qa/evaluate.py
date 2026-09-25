@@ -24,9 +24,10 @@ def main():
     )
 
     from rag_qa.chain import build_rag_chain
+    from rag_qa.config import load_config
 
     print("Building RAG chain for evaluation...")
-    rag_chain = build_rag_chain()
+    rag_chain = build_rag_chain(load_config())
 
     # Load evaluation questions
     questions = []
@@ -39,9 +40,9 @@ def main():
     answers = []
     contexts = []
     for query in questions:
-        result = rag_chain.invoke({"query": query})
-        answers.append(result["result"])
-        contexts.append([doc.page_content for doc in result["source_documents"]])
+        result = rag_chain.invoke({"question": query})
+        answers.append(result["answer"])
+        contexts.append([doc.page_content for doc in result["context"]])
 
     # Create a dataset for RAGAs
     data = {

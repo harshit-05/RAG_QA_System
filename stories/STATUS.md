@@ -5,19 +5,21 @@
 
 ## Now
 
-**Next action:** implement S0-5 (WORKFLOW.md Step 3) — the LangChain 1.x code
-migration. It is `plan-first: yes`, so start that session in plan mode.
+**Next action:** implement S0-7 (move the long-form docs into `docs/`, invert
+the CLAUDE.md corpus rule), then S0-6 (real corpus run + tag `v0.1`).
 
-**S0-4 is done and reviewed, awaiting its commit** (maintainer commits manually):
+**S0-5 is done and verified, awaiting its commit** (maintainer commits manually):
 
 ```bash
 git add -A
-git commit -m "S0-4: config repair — keys, relative paths, corpus rename (ISS-01, ISS-02, ISS-11)"
+git commit -m "S0-5: migrate chain to LangChain 1.x LCEL, stream answers with sources (ISS-17, FR-5)"
 git push origin main
 ```
 
-`ADR.md` (untracked, ~1070 lines) gets swept in by `git add -A`. It is project
-documentation, so under DEC-4 it belongs in `docs/` — S0-7 moves it there.
+`rag-query` works end to end as of S0-5: verified on a scratch corpus with
+`phi3`, including a correct refusal. The repo's stale `vectorstore/db_faiss`
+index (pickled under LangChain 0.2) is still on disk and still unloadable;
+S0-6 deletes it and builds the real one.
 
 **Commit history so far** (S0-1 → S0-4; ISS-09 verified fully closed, `git
 ls-files` shows no parquet, FAISS index, cache, media or `.save` file):
@@ -29,6 +31,8 @@ ls-files` shows no parquet, FAISS index, cache, media or `.save` file):
 | `e781b17` | S0-1 fixup **fused with** the S0-3 file moves |
 | `0987c60` | S0-2 uv project |
 | `2bc7658` | S0-3 module split + entry points |
+| `e16c07d` | S0-4 config repair + corpus rename |
+| `ebcfc2e` | S0-4 follow-up: GPU and multilingual embedders restored as config axes |
 
 `e781b17` deliberately carries two stories' worth of change: the S0-3 `git mv`
 operations were staged when the fixup was committed, so the content merged, and
@@ -145,8 +149,8 @@ end to end. Exit ⇒ tag `v0.1`.
 | [S0-1](phase-0/S0-1-repo-hygiene.md) | Repo hygiene: gitignore + purge artifacts | ISS-09 | — | Done 2026-09-18 |
 | [S0-2](phase-0/S0-2-uv-init.md) | uv project: pyproject, pinned 3.12, lockfile | ISS-08 | S0-1, DEC-1 | Done 2026-09-18 |
 | [S0-3](phase-0/S0-3-collapse-trees.md) | Collapse v1/v2/temp into one package | ISS-10, ISS-12 | S0-2 | Done 2026-09-19 |
-| [S0-4](phase-0/S0-4-config-repair.md) | Config repair: keys, paths, corpus rename | ISS-01, ISS-02, ISS-11, DEC-4 | S0-3 | Done 2026-09-25 (commit pending) |
-| [S0-5](phase-0/S0-5-langchain-migration.md) | Migrate code to resolved LangChain version | ISS-17 | S0-4, DEC-1 | Todo |
+| [S0-4](phase-0/S0-4-config-repair.md) | Config repair: keys, paths, corpus rename | ISS-01, ISS-02, ISS-11, DEC-4 | S0-3 | Done 2026-09-25 |
+| [S0-5](phase-0/S0-5-langchain-migration.md) | Migrate code to resolved LangChain version | ISS-17 | S0-4, DEC-1 | Done 2026-09-25 (commit pending) |
 | [S0-7](phase-0/S0-7-docs-layout.md) | Project docs into `docs/`; invert the CLAUDE.md corpus rule | DEC-4 | S0-4 | Todo |
 | [S0-6](phase-0/S0-6-end-to-end-proof.md) | End-to-end proof: ingest + answered query | — (exit) | S0-5, S0-7, DEC-2 | Todo |
 
@@ -161,6 +165,7 @@ added after the initial sharding (DEC-4) and runs between S0-5 and S0-6, so the
 | DEC-1 | LangChain: migrate to 1.x vs pin legacy 0.2.x | **Resolved 2026-09-18: migrate to 1.x** | Verified resolve: core 1.6.3, community 0.4.2, ollama 1.1.0, huggingface 1.2.2, text-splitters 1.1.2, classic 1.0.8 (transitive only). Rules: app code imports only `langchain_core` / `_text_splitters` / `_community` / `_huggingface` / `_ollama`; chain is hand-composed LCEL, no `langchain_classic` imports in Phase 0–1; PyTorch index `explicit = true`. Full rationale: ARCHITECTURE.md §0.1. |
 | DEC-2 | Query LLM: pull `qwen2:7b` vs repoint to already-pulled `mistral` | **Resolved 2026-09-18: `mistral`, `phi3` fallback** | Same weight class as qwen2:7b, so the reason is zero download + known-good here, not RAM. `qwen2_ollama` entry stays in config unused. All Ollama entries: `temperature 0`, `num_ctx 4096`, `num_predict 512`, `validate_model_on_init true`; retriever `k 5`. Revisit with the Phase 2 eval harness. |
 | DEC-4 | Repo layout: `docs/` currently holds the RAG corpus, colliding with the universal convention that `docs/` is project documentation | **Resolved 2026-09-18: corpus → `corpus/`, `docs/` becomes project documentation** | Maintainer decision. The old name needed a CLAUDE.md hard rule to stay safe, and the text loader claims `.md`, so a project doc dropped in there gets embedded into the index. Renamed in S0-4 (which rewrites every path anyway); `SRS.md` / `WORKFLOW.md` / `ARCHITECTURE.md` move into `docs/` in S0-7, which also inverts the CLAUDE.md rule. `CLAUDE.md` and `README.md` stay at root (auto-load; GitHub renders README from root only). `stories/` stays at root as working state. |
+| DEC-5 | `langchain-community` was sunset 2026-05-22 (issue #674): frozen, unmaintained, warns on import. We use it for FAISS, the loaders, and the disabled cross-encoder | **Resolved 2026-09-25: staged exit, keep through Phase 0** | Nothing is broken; the lock pins it and `langchain-core<2` bounds drift. Exit rides planned work: loaders → ~40 lines of own code on `pypdf`/`docx2txt` (Phase 1, with the loader-selection item); cross-encoder → `sentence-transformers` directly (Phase 2 reranker); FAISS → `langchain-qdrant` (Phase 3). After Phase 3 both `langchain-community` and its transitive `langchain-classic` leave `pyproject.toml`. No official standalone FAISS/loader package exists; the unofficial `langchain-faiss` 0.1.1 is rejected on supply-chain grounds. |
 | DEC-3 | Vector store for Phase 3: Qdrant vs pgvector | **Lean: Qdrant** (decide in Phase 3 arch pass) | Native hybrid dense+sparse, one container, no Postgres to run. pgvector only if a Postgres already exists in the deployment. Store-specific code is confined to `vectorstore.py` so either works. |
 
 ## Backlog (discovered, not yet storied)
@@ -219,6 +224,22 @@ added after the initial sharding (DEC-4) and runs between S0-5 and S0-6, so the
   an index built with a different embedder. Phase 2.
 - NFR-2 (<2 s first token) is unachievable CPU-only — revise the SLO or plan
   GPU serving in the Phase 3 arch pass.
+
+- Turn the S0-5 deprecation gate into a pytest (record warnings in-process,
+  allow only the DEC-5 sunset notice, keep the negative control). Never use a
+  command-line `-W error` gate here: `langchain_core` overrides it on import.
+  Phase 1.
+- `rag-ingest` and `rag-query` take no arguments, so `rag-ingest --help` starts
+  a real ingestion run. Add `argparse` with `--help` and `--config`. Phase 1.
+- CLI "Sources" lists what was retrieved, not what the answer used, so a
+  refusal still shows a source. Fix with a relevance threshold or citation
+  parsing, tuned by the eval harness. Phase 2.
+- `ChatOllama` leaves its HTTP client open (`ResourceWarning: unclosed socket`
+  at exit). Harmless in the CLI; the Phase 2 API must own and close the
+  chain's client across its lifecycle. Phase 2.
+- DEC-5 exit tasks, one per phase: own loaders (Phase 1), cross-encoder via
+  `sentence-transformers` (Phase 2), drop `langchain-community` and
+  `langchain-classic` from `pyproject.toml` after the Qdrant move (Phase 3).
 
 - Phase 1+ stories: shard after Phase 0 exit via WORKFLOW.md Step 2.
 
