@@ -8,12 +8,14 @@ from pydantic import ValidationError
 
 from rag_qa.schema import ComponentSpec, RagConfig, RetrieverSpec
 
+# Targets sit under an allowed prefix (the load-time allowlist check, ISS-04) but name
+# modules that don't exist: loading is a string check and never imports (DEC-7).
 MINIMAL: dict[str, Any] = {
     "components": {
-        "loaders": {"txt": {"_target_": "pkg.Loader", "extensions": [".txt"]}},
-        "splitters": {"split": {"_target_": "pkg.Splitter", "chunk_size": 10}},
-        "embedders": {"embed": {"_target_": "pkg.Embedder", "model_kwargs": {"device": "cpu"}}},
-        "llms": {"llm": {"_target_": "pkg.LLM"}},
+        "loaders": {"txt": {"_target_": "rag_qa.stub.Loader", "extensions": [".txt"]}},
+        "splitters": {"split": {"_target_": "rag_qa.stub.Splitter", "chunk_size": 10}},
+        "embedders": {"embed": {"_target_": "rag_qa.stub.Embedder", "model_kwargs": {"device": "cpu"}}},
+        "llms": {"llm": {"_target_": "rag_qa.stub.LLM"}},
         "retrievers": {"search": {"search_kwargs": {"k": 5}}},
     },
     "pipeline": {
@@ -37,9 +39,9 @@ def config() -> RagConfig:
 
 def test_target_round_trips_under_its_real_key() -> None:
     # The trap this guards: a field named literally `_target_` is silently dropped.
-    spec = ComponentSpec.model_validate({"_target_": "pkg.Cls", "model": "m"})
-    assert spec.target == "pkg.Cls"
-    assert spec.spec() == {"_target_": "pkg.Cls", "model": "m"}
+    spec = ComponentSpec.model_validate({"_target_": "rag_qa.stub.Cls", "model": "m"})
+    assert spec.target == "rag_qa.stub.Cls"
+    assert spec.spec() == {"_target_": "rag_qa.stub.Cls", "model": "m"}
 
 
 def test_component_without_target_is_rejected() -> None:
@@ -78,7 +80,7 @@ def test_retriever_kwargs_are_plain_and_a_copy(config: RagConfig) -> None:
 
 def test_retriever_entry_rejects_a_target() -> None:
     with pytest.raises(ValidationError, match="unknown key '_target_'"):
-        RetrieverSpec.model_validate({"_target_": "pkg.Retriever", "search_kwargs": {}})
+        RetrieverSpec.model_validate({"_target_": "rag_qa.stub.Retriever", "search_kwargs": {}})
 
 
 def test_accessors_refuse_the_wrong_kind(config: RagConfig) -> None:

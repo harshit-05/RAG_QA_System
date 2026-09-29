@@ -5,10 +5,12 @@
 
 ## Now
 
-**Next action: implement [S1-2](phase-1/S1-2-target-allowlist.md)** —
-WORKFLOW.md Step 3 (opus-fast, not plan-first). S1-1 is done and committed
-(`801ddea`, 2026-09-26); S1-3 and S1-7 are also unblocked by it. Run the rest in
-the **Depends** order of the Phase 1 table below.
+**Next action: finish [S1-2](phase-1/S1-2-target-allowlist.md)** — it is in
+review with local verification passed (2026-09-26). Its last check is CI on
+GitHub, which needs (1) the `workflow` token scope (Human prerequisites below),
+then (2) commit and push, then (3) `gh run list` shows green. After that: S1-3
+(S1-7 is also unblocked). S1-1 is done and committed (`b22a37a`, 2026-09-26).
+Run the rest in the **Depends** order of the Phase 1 table below.
 
 **The Phase 1 architecture pass is done** (2026-09-25): `ARCHITECTURE.md` has a
 confirmed Phase 1 section (§1.1–§1.7) and DEC-6 … DEC-12 are resolved below.
@@ -70,6 +72,14 @@ The final story of each phase performs the tag + version bump at close-out.
 
 - [x] `gh auth login` — done 2026-09-24 as `harshit-05` (HTTPS, keyring;
       scopes: repo, read:org, gist). Needed to push and for Phase 1 CI/PR work.
+
+- [ ] **Add the `workflow` scope — blocks pushing S1-2.** GitHub rejects any
+      push that adds or changes `.github/workflows/*.yml` without it. git
+      pushes through a `cache` credential helper, not gh, so run both:
+      `gh auth refresh -h github.com -s workflow` (browser prompt), then
+      `gh auth setup-git` (git uses gh's token for github.com from then on).
+      Alternative: add `workflow` to the cached PAT ("Workflows: write" if
+      fine-grained).
 
 - [x] Resolve DEC-1 / DEC-2 — done in the Phase 0 arch pass, 2026-09-18.
 
@@ -177,7 +187,7 @@ Design: ARCHITECTURE.md §1.1–§1.7.
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
 | [S1-1](phase-1/S1-1-config-schema.md) | Validate the config with a frozen Pydantic model | FR-8, ISS-01, ISS-11, NFR-11 | — | Done 2026-09-26 |
-| [S1-2](phase-1/S1-2-target-allowlist.md) | Allowlist `_target_` imports; stand up CI | ISS-04 | S1-1 | Todo |
+| [S1-2](phase-1/S1-2-target-allowlist.md) | Allowlist `_target_` imports; stand up CI | ISS-04 | S1-1 | In review 2026-09-26 (CI pending push) |
 | [S1-3](phase-1/S1-3-own-loaders.md) | Own loaders, extension map, recursive walk | ISS-13, FR-2, DEC-5 step 1 | S1-1 | Todo |
 | [S1-4](phase-1/S1-4-error-handling-cli.md) | Explicit error handling and a real CLI surface | ISS-05, ISS-06, ISS-18, NFR-7 | S1-3 | Todo |
 | [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | Todo |

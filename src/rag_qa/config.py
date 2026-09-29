@@ -13,12 +13,14 @@ machine's home directory. See :class:`rag_qa.schema.Paths` for the full rule.
 """
 
 import os
+from collections.abc import Iterable
 from pathlib import Path
 
 import yaml
 from pydantic import ValidationError
 from pydantic_core import ErrorDetails
 
+from rag_qa.registry import import_from_string
 from rag_qa.schema import PathContext, RagConfig
 from rag_qa.settings import ENV_CONFIG, PATH_ENV_VARS, EnvSettings
 
@@ -82,6 +84,30 @@ def load_config(config_path: str | os.PathLike[str] | None = None) -> RagConfig:
         # `from None`: the rendered message says everything the Pydantic dump would,
         # and a chained dump is the "1 validation error for RagConfig" wall FR-8 bans.
         raise ConfigError(_render(path, e)) from None
+
+
+def check_imports(config: RagConfig, refs: Iterable[str]) -> None:
+    """Import every ``_target_`` the named components use, without building anything.
+
+    Deliberately **not** called by :func:`load_config`: loading never imports (DEC-7),
+    so a component that is defined but unused (the disabled reranker) loads without
+    its package being imported. Tests and tooling call this for the references they
+    care about, typically ``config.references().values()``. Catches what a string
+    check cannot: a class name that does not exist (ISS-03), a missing package, or a
+    re-exported name the allowlist refuses.
+
+    Raises :class:`ConfigError` listing every failure, one ``location: problem`` line
+    each.
+    """
+    problems = []
+    for ref in refs:
+        for where, target in config.targets(ref):
+            try:
+                import_from_string(target)
+            except ImportError as e:
+                problems.append(f"  {ref}.{where}: {e}")
+    if problems:
+        raise ConfigError("Config targets that cannot be imported:\n" + "\n".join(problems))
 
 
 def _render(path: Path, error: ValidationError) -> str:

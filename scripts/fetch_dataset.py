@@ -1,7 +1,8 @@
+import logging
 import os
+
 import requests
 from datasets import load_dataset
-import logging
 
 # Enable basic logging
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +26,7 @@ if not os.path.exists(local_path):
         print(f"Successfully downloaded {local_path}")
     except requests.exceptions.RequestException as e:
         print(f"Failed to download {url}. Error: {e}")
-        exit()  # Stop the script if download fails
+        exit()  # noqa: PLR1722  # S1-4 (ISS-18) — stop the script if download fails
 else:
     print(f"{local_path} already exists. Skipping download.")
 
@@ -42,5 +43,5 @@ try:
     print("\n--- First Example (Train Split) ---")
     print(army_dataset['train'][0])
 
-except Exception as e:
+except Exception as e:  # noqa: BLE001  # S1-4 (ISS-18)
     print(f"\nAn error occurred during dataset generation: {e}")

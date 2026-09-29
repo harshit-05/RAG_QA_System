@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done (2026-09-26) — `801ddea` |
+| **Status** | Done (2026-09-26) — `b22a37a` |
 | **Closes** | FR-8, ISS-01, ISS-11, NFR-11 (re-verified) |
 | **Depends on** | — (first Phase 1 story; ARCHITECTURE.md §1.1 DEC-6, §1.4) |
 | **Model** | fable |

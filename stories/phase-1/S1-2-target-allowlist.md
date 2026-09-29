@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | In review (2026-09-26) — local verification passed; CI (step 5) runs after the push |
 | **Closes** | ISS-04 (OWASP LLM07/08) |
 | **Depends on** | S1-1 (ARCHITECTURE.md §1.1 DEC-7, DEC-11) |
 | **Model** | opus-fast |
@@ -93,6 +93,28 @@ grep -rn "noqa" src scripts
 gh run list --limit 1 && gh run view --log-failed 2>/dev/null | head -20
 ```
 
+### Results (2026-09-26)
+
+| Check | Result |
+| --- | --- |
+| 1. allowlist bites | pass: `os.system`, `subprocess.Popen` and `builtins.eval` refused by prefix; `rag_qa.registry.import_module` refused by the defining-module check (see Deviation); `rag_qa.registry.build_object` allowed |
+| 2. `pytest tests/test_registry.py` | pass: **23 passed in 3.66 s**. Full suite: **65 passed**, run with `HF_HUB_OFFLINE=1` as CI does |
+| 3a. `rag-ingest`, real config | pass: 561 pages → 1,708 chunks, 0 failed. The loaders go through the direct `import_from_string` call site, so this is the ADR-015 path, now covered |
+| 3b. `rag-query`, real config, **mistral** | pass: answer word-for-word identical to S1-1's mistral run (`temperature: 0`), same 5 sources, 8 m 48 s including ingest |
+| every target in `config.yaml` | all 14 pass both checks, including the unreferenced reranker's three; each class is defined inside its own allowlisted package |
+| 4. ADR-007 import grep | 0 |
+| 6. `grep -rn noqa src scripts` | the three S1-4-tagged suppressions, plus S1-1's `TRY004` in `schema.py` (reason in the comment above it) |
+| `uv sync --locked` / `ruff check` (whole project, as CI runs them) | pass / All checks passed |
+| 5. CI on GitHub | **pending the push**; the `workflow` token scope is needed first (Discovered) |
+
+The two refusal messages a maintainer can hit:
+
+```text
+_target_ 'os.system' is outside the import allowlist (ISS-04). Allowed module prefixes: 'langchain_core.', 'langchain_community.', 'langchain_huggingface.', 'langchain_ollama.', 'langchain_text_splitters.', 'langchain_classic.', 'rag_qa.'. The list is fixed in rag_qa/registry.py and deliberately not configurable (DEC-7).
+
+_target_ 'rag_qa.registry.import_module' resolves to <function import_module ...>, defined in 'importlib', which is outside the import allowlist (ISS-04). A name an allowed module re-exports does not count; name the object where it is defined. Allowed module prefixes: ...
+```
+
 ## Review notes for the human
 
 Check the enforcement point: it must be `import_from_string`, so that
@@ -105,8 +127,44 @@ or network beyond the package index.
 
 ## Discovered
 
-(Filled during implementation.)
+- **A prefix-only allowlist was bypassable from inside our own package.**
+  `rag_qa.registry` does `from importlib import import_module`, so
+  `rag_qa.registry.import_module` passes a prefix check. `build_object` with
+  `{name: subprocess}` then imported any module on the path, running its
+  top-level code — arbitrary code execution from inside the allowlist (verified
+  2026-09-26, before the fix). A scan of the allowlisted LangChain packages
+  found them re-exporting `import_module` too. Closed by the defining-module
+  check (Deviation).
+- **Pushing this story needs the GitHub `workflow` token scope.** GitHub rejects
+  a push that adds or changes `.github/workflows/*.yml` unless the token has
+  it. The `gh` token has `gist`, `read:org`, `repo`, and git pushes through a
+  `cache` credential helper whose token scopes can't be inspected. The fix is
+  `gh auth refresh -h github.com -s workflow`, then `gh auth setup-git` →
+  STATUS prerequisites.
+- **S1-1's hash changed on amend**: `801ddea` → `b22a37a`. The story file and
+  board are corrected in this commit, since a commit cannot record its own
+  hash.
+- `setup-uv` v10's inputs were checked at the pinned SHA, not assumed:
+  `version`, `enable-cache` (default now `auto`) and `cache-python` all exist.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **Addition: a second allowlist check, on where the object is defined.**
+  After resolving a `_target_`, `import_from_string` also requires the object's
+  `__module__` to be under an allowed prefix. It refuses re-exported names and
+  module objects (which have no `__module__`). The story specified a prefix
+  check only, and that alone does not meet its own goal ("the config stops
+  being arbitrary code execution"); see Discovered. It cost the real config
+  nothing: all 14 targets pass.
+- **Addition: `RagConfig.references()` and `RagConfig.targets(ref)`**, the
+  public helpers `check_imports` needed (retrievers yield no targets).
+  `references()` is also what S1-5's real-config import test will iterate.
+- **Addition: `HF_HUB_OFFLINE=1` in CI**, a tripwire that turns an accidental
+  model download in a test into a loud failure instead of a silent ~90 MB fetch
+  (DEC-11's "no model download").
+- **Test fixture change in S1-1's `test_schema.py`**: the fake `pkg.*` targets
+  moved to `rag_qa.stub.*`. The new load-time check correctly rejected them;
+  they are never imported, since loading is a string check.
+- The step-3 run used mistral on the real config: 7.4 GB was available once RAM
+  was freed. The first ingest ran through a phi3 scratch config at 5.5 GB,
+  per pre-flight caveat 8.

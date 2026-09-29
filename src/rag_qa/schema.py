@@ -19,12 +19,14 @@ copies. A caller mutating what it got back cannot reach the config.
 """
 
 import difflib
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
+
+from rag_qa.registry import allowlist_hint, is_allowed
 
 #: Fallbacks used only when the config file omits a ``paths`` entry.
 PATH_DEFAULTS = {
@@ -36,6 +38,25 @@ PATH_DEFAULTS = {
 def _did_you_mean(word: str, candidates: Iterable[str]) -> str:
     match = difflib.get_close_matches(word, list(candidates), n=1)
     return f" (did you mean {match[0]!r}?)" if match else ""
+
+
+def iter_targets(node: Any, path: str = "") -> Iterator[tuple[str, Any]]:
+    """Every ``_target_`` in a component spec, nested ones included, with its location.
+
+    Locations are relative to the spec: ``_target_`` for the component itself,
+    ``base_compressor.model._target_`` for one nested inside it. Nesting matters:
+    ISS-03's broken class name sat two levels down inside the reranker.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            here = f"{path}.{key}" if path else str(key)
+            if key == "_target_":
+                yield here, value
+            else:
+                yield from iter_targets(value, here)
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            yield from iter_targets(item, f"{path}[{index}]")
 
 
 class _Strict(BaseModel):
@@ -74,6 +95,25 @@ class ComponentSpec(BaseModel):
     # model_dump() comes back empty (verified 2026-09-25). Every build_object call
     # would then fail far from the cause.
     target: str = Field(alias="_target_")
+
+    @model_validator(mode="after")
+    def check_allowlist(self) -> "ComponentSpec":
+        """Every ``_target_`` here, nested ones too, is under an allowed prefix (ISS-04).
+
+        A string check only: loading never imports (DEC-7), so a defined-but-unused
+        component (the disabled reranker) costs nothing. Import-time checks, including
+        where the object is defined, happen in ``registry.import_from_string``.
+        """
+        blocked = [
+            f"{where} {target!r}" for where, target in iter_targets(self.spec())
+            if not is_allowed(target)
+        ]
+        if blocked:
+            raise ValueError(
+                f"{'; '.join(blocked)}: outside the import allowlist (ISS-04). "
+                f"{allowlist_hint()}"
+            )
+        return self
 
     def spec(self) -> dict[str, Any]:
         """A fresh ``build_object`` dict: ``_target_`` plus every kwarg, deep-copied."""
@@ -264,6 +304,22 @@ class RagConfig(_Strict):
         if name not in entries:
             return f"'components.{kind}' has no entry {name!r}{_did_you_mean(name, entries)}"
         return None
+
+    def references(self) -> dict[str, str]:
+        """Every pipeline reference in use, by slot, e.g. ``{'pipeline.query.llm': ...}``."""
+        refs = {}
+        for stage, slot in _SLOT_KINDS:
+            ref = getattr(getattr(self.pipeline, stage), slot)
+            if ref is not None:
+                refs[f"pipeline.{stage}.{slot}"] = ref
+        return refs
+
+    def targets(self, ref: str) -> list[tuple[str, str]]:
+        """The ``_target_``s a reference would import, with locations; none for retrievers."""
+        spec = self._lookup(ref)
+        if isinstance(spec, RetrieverSpec):
+            return []
+        return list(iter_targets(spec.spec()))
 
     def component(self, ref: str) -> ComponentSpec:
         """The buildable component a dotted reference names, e.g. ``components.llms.x``."""

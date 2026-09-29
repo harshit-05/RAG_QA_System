@@ -66,7 +66,7 @@ def load_documents(config: RagConfig, report: IngestReport) -> list:
                     docs = loader.load()
                     all_docs.extend(docs)
                     print(f"    {len(docs)} pages/sections")
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001  # S1-4 (ISS-05)
                     print(f"    Error loading {filename}: {e}")
                     report.failed.append((filename, str(e)))
                 loader_found = True
