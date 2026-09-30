@@ -20,6 +20,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 
+from rag_qa.components import build_embedder, build_llm
 from rag_qa.registry import build_object
 from rag_qa.schema import RagConfig
 from rag_qa.vectorstore import open_store
@@ -62,10 +63,10 @@ def build_rag_chain(config: RagConfig):
     """
     query = config.pipeline.query
 
-    llm = build_object(config.component(query.llm).spec())
-    # The query-time embedder is always the ingestion embedder: an index and the
-    # queries against it must share an embedding model.
-    embeddings = build_object(config.component(config.pipeline.ingestion.embedder).spec())
+    llm = build_llm(config)
+    # The same embedder ingestion used — build_embedder is the one place that choice
+    # is made (see rag_qa.components).
+    embeddings = build_embedder(config)
 
     retriever = open_store(embeddings, config.paths.vector_store).as_retriever(
         **config.retriever(query.retriever).kwargs()
