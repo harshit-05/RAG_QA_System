@@ -90,6 +90,37 @@ MALFORMED = [
         ["unknown key 'serch_kwargs'", "did you mean 'search_kwargs'"],
         id="retriever option typo",
     ),
+    # --- the S1-3 loader map ---
+    pytest.param(
+        lambda c: c["components"]["loaders"]["pdf"].update(extensions=[".pdf"]),
+        ["components:", "'extensions' moved", "pipeline.ingestion.loaders"],
+        id="pre-S1-3 extensions key left in a loader",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"]["loaders"].update({"PDF": "components.loaders.pdf"}),
+        ["pipeline.ingestion:", "'PDF'", "can never match", "lowercase"],
+        id="extension key without its dot",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"]["loaders"].update({".Md": "components.loaders.txt"}),
+        ["'.Md'", "can never match"],
+        id="uppercase extension key",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"]["loaders"].update({".pdf": "components.loaders.pfd"}),
+        ["pipeline.ingestion.loaders['.pdf']", "no entry 'pfd'", "did you mean 'pdf'"],
+        id="loader reference typo",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"]["loaders"].update({".pdf": "components.llms.mistral_ollama"}),
+        ["pipeline.ingestion.loaders['.pdf']", "points into components.llms", "components.loaders"],
+        id="loader map pointing at the wrong kind",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"].pop("loaders"),
+        ["pipeline.ingestion.loaders: required key is missing"],
+        id="no loader map",
+    ),
 ]
 
 

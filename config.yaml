@@ -8,16 +8,14 @@
 # ----------------- 1. Component library -----------------
 components:
   loaders:
+    # Our own loaders on pypdf / docx2txt (DEC-5 step 1, S1-3); which file types
+    # use which loader is pipeline.ingestion.loaders below, not a key here.
     pdf:
-      _target_: langchain_community.document_loaders.PyPDFLoader
-      extensions: [".pdf"]
+      _target_: rag_qa.loaders.PdfLoader
     docx:
-      # .doc is deliberately absent: docx2txt cannot read the legacy binary format.
-      _target_: langchain_community.document_loaders.Docx2txtLoader
-      extensions: [".docx"]
+      _target_: rag_qa.loaders.DocxLoader
     txt:
-      _target_: langchain_community.document_loaders.TextLoader
-      extensions: [".txt", ".md"]
+      _target_: rag_qa.loaders.TextLoader
 
   splitters:
     english_recursive:
@@ -120,6 +118,14 @@ components:
 # ----------------- 2. Pipeline assembly -----------------
 pipeline:
   ingestion:
+    # File extension → loader. The corpus is walked recursively; a file whose
+    # lowercased suffix is not listed here is skipped (reported, not failed).
+    # .doc is deliberately absent: docx2txt cannot read the legacy binary format.
+    loaders:
+      ".pdf": components.loaders.pdf
+      ".docx": components.loaders.docx
+      ".txt": components.loaders.txt
+      ".md": components.loaders.txt
     splitter: components.splitters.english_recursive
     # Swap this line to change embedding model or device, then re-run
     # `rag-ingest` (a new embedder invalidates the existing index):

@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | In review (2026-09-30) — local verification passed; on branch `s1-3-own-loaders`, CI + PR pending |
 | **Closes** | ISS-13, FR-2 (recursive discovery), DEC-5 step 1 of 3 |
 | **Depends on** | S1-1 (ARCHITECTURE.md §1.1 DEC-8, §1.3) |
 | **Model** | fable |
@@ -83,6 +83,55 @@ uv run pytest tests/test_loaders.py tests/test_components.py -q
 grep -rnE "^\s*(from|import) langchain_community" src/rag_qa/ | grep -v vectorstore.py | wc -l   # → 0
 ```
 
+### Results (2026-09-30)
+
+**Risk call: branch.** This is the first story that can silently degrade answers
+without failing anything. It replaces every loader, changes the config shape and
+refactors `chain.py` / `ingest.py`. So it goes on `s1-3-own-loaders`, then a PR
+into `main`.
+
+**Steps 1–2: before/after on the whole index, not one query.** The FAISS
+docstore holds every chunk, so the snapshot recorded all 1,708: citation string,
+SHA-1 of the text and metadata keys. Baseline taken on `f68eee3` with the
+`langchain_community` loaders; "after" re-ingested with ours.
+
+| Check | Before (`PyPDFLoader`) | After (`PdfLoader`) |
+| --- | --- | --- |
+| pages / chunks | 561 / 1,708 | 561 / 1,708 |
+| chunks whose **citation** differs (index order) | — | **0 / 1,708** |
+| chunks whose **text** differs (SHA-1, index order) | — | **0 / 1,708**: byte-identical, stronger than the story's chunk-count bar |
+| fixed query's 5 citations | p. 9, 340, 477, 233, 81 | identical |
+| metadata key sets | 3 different sets, 11–14 keys by PDF producer | **1 set, 5 keys**, all 1,708 chunks |
+
+Metadata: kept `source`, `page`, `page_label`, `total_pages`; added `loader`;
+dropped the PDF document-info fields `author`, `creationdate`, `creator`,
+`keywords`, `moddate`, `producer`, `ptex.fullbanner`, `rgid`, `subject`,
+`title`, `trapped`.
+
+The snapshot queried the retriever directly: retrieval is LLM-independent, so
+this is seconds instead of a 7-minute mistral run. The story's literal step-2
+command then ran end to end twice, and the rewritten `chain.py` behaves
+identically in both:
+
+- **phi3** through a scratch config (5.8 GB free, below mistral's ~6 GB): keys
+  `['answer', 'context', 'question']`, the same 5 citations, and an answer
+  word-for-word identical to S1-1's phi3 run.
+- **mistral on the real, unmodified config**, once RAM was freed (9.0 GB): the
+  same 5 citations, and an answer word-for-word identical to the S1-1 and S1-2
+  mistral runs (7 m 21 s).
+
+| Check | Result |
+| --- | --- |
+| 3. recursion on real files (3 PDFs only under `sub/`) | pass: all three found as `sub/…`, 561 pages → 1,708 chunks. Index pointed at scratch too; the repo index was untouched (mtime checked) |
+| 4. `pytest tests/test_loaders.py tests/test_components.py` | pass: **27 passed**. Full suite **104 passed**, `HF_HUB_OFFLINE=1` |
+| 5. `langchain_community` imports outside `vectorstore.py` | **0**; the only one left is `vectorstore.py:18` (FAISS) |
+| review: embedder construction | only `components.build_embedder`, called from `ingest.py:97` and `chain.py:69` |
+| review: direct `import_from_string` callers | `registry.build_object` and `config.check_imports` only; the old loader call site is gone |
+| ADR-009, at runtime | importing `rag_qa.ingest` does not load `rag_qa.chain` |
+| parity oracle tests | ours == `PyPDFLoader` on the fixture PDF and the real 13-page PDF (text + `source`/`page`/`page_label`/`total_pages`); == `Docx2txtLoader`, == old `TextLoader` |
+| upgrading an old config | the pre-S1-3 `config.yaml` from `main` fails with *"'extensions' moved out of the loader entries into pipeline.ingestion.loaders (S1-3)…"* plus *"pipeline.ingestion.loaders: required key is missing"* |
+| ruff (whole project) | All checks passed |
+
 ## Review notes for the human
 
 The before/after citation list is the whole review — if those strings differ,
@@ -95,8 +144,53 @@ byte-identical text.
 
 ## Discovered
 
-(Filled during implementation.)
+- **Verification step 3 as written would overwrite the real index.** It sets
+  `RAG_DATA_PATH` to the scratch corpus but not `RAG_VECTOR_STORE_PATH`, so
+  `rag-ingest` saves the scratch build over `vectorstore/db_faiss`. It ran with
+  both overrides set. Worth fixing in the story template's habits: any
+  verification that ingests a scratch corpus sets both paths.
+- **PDF metadata was producer-dependent.** `PyPDFLoader` copied each PDF's own
+  document-info dict onto every page, so chunks carried 3 different key sets
+  (11–14 keys), including `ptex.fullbanner` and `rgid`. After: one uniform
+  5-key set. If Phase 2's `GET /v1/documents` wants a title or author, read them
+  from the PDF there, once per document, not per chunk.
+- **The ADR-009 grep in the habit list gives a false positive:** `^(from|import)
+  .*chain` matches `langchain_core`. The runtime check (`import rag_qa.ingest`
+  leaves `rag_qa.chain` unloaded) is the reliable form → S1-5 regression suite.
+- **The `langchain-community` sunset warning now comes from one line only,**
+  `vectorstore.py:18` (FAISS). That is the DEC-5 exit made visible; Phase 3's
+  Qdrant move removes the last one.
+- **File names in ingestion output are now relative paths** (`sub/report.docx`),
+  both printed and in `IngestReport.skipped` / `.failed`, so same-named files in
+  different subdirectories stay distinguishable. S1-4's tests should expect that
+  form.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **Fixtures are generated at test time, not stored in `tests/fixtures/`.**
+  CLAUDE.md forbids committing binaries, and a PDF and a DOCX are binaries. So
+  `conftest.py` writes them, as a hand-built 3-page PDF labelled i, ii, 1 and a
+  3-part DOCX, plus a nested corpus with an uppercase suffix and an unmapped
+  type. Hand-built because pypdf only adds objects through a private API.
+- **`total_pages` kept, beyond the story's four-key contract.** `PyPDFLoader`
+  emitted it, it is always meaningful, and dropping it would be a regression for
+  nothing.
+- **Additions beyond scope, all small and in service of it:**
+  - a migration error for a pre-S1-3 config (`extensions` left in a loader
+    entry), which would otherwise load and then fail at build time as an
+    unexplained `TypeError`;
+  - validation that extension keys are lowercase with their dot (`"PDF"` or
+    `".Md"` could never match a file);
+  - `discover_files` names a missing corpus directory, where `rglob` would
+    silently yield nothing;
+  - `TextLoader` pins UTF-8 (the old one used the locale's encoding), with an
+    `encoding` kwarg;
+  - one reference walk (`RagConfig._slots`) shared by validation and
+    `references()`, so the loader map can't be checked but not listed, or the
+    reverse.
+- **Parity tests against the loaders being replaced** (`PyPDFLoader`,
+  `Docx2txtLoader`, `TextLoader`) as oracles, including one real corpus PDF.
+  They go when `langchain-community` leaves in Phase 3.
+- Before/after compared all 1,708 chunks from the docstore rather than one
+  query's five, and retrieval ran without the LLM. The literal step-2 command
+  was still run once, after, end to end.

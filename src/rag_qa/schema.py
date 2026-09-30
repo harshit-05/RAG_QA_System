@@ -145,6 +145,23 @@ class Components(_Strict):
     retrievers: dict[str, RetrieverSpec]
     rerankers: dict[str, ComponentSpec] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def check_loader_shape(self) -> "Components":
+        """Catch a pre-S1-3 config: ``extensions`` left inside a loader entry.
+
+        Without this it would load fine (leaf kwargs are open) and then fail at build
+        time as ``TypeError: unexpected keyword argument 'extensions'`` — far from the
+        cause, for anyone upgrading an older config.
+        """
+        stale = [name for name, spec in self.loaders.items() if "extensions" in (spec.model_extra or {})]
+        if stale:
+            raise ValueError(
+                f"loaders {', '.join(map(repr, stale))}: 'extensions' moved out of the loader "
+                f"entries into pipeline.ingestion.loaders (S1-3), which maps each extension "
+                f"to a loader, e.g. \".pdf\": components.loaders.pdf. Remove it here"
+            )
+        return self
+
 
 class Prompt(_Strict):
     system: str
@@ -152,8 +169,23 @@ class Prompt(_Strict):
 
 
 class Ingestion(_Strict):
+    #: File extension → loader reference, e.g. ``".pdf": components.loaders.pdf``.
+    #: A file whose lowercased suffix is not a key here is skipped, not failed.
+    loaders: dict[str, str]
     splitter: str
     embedder: str
+
+    @model_validator(mode="after")
+    def check_extensions(self) -> "Ingestion":
+        """Keys must be what a file's lowercased suffix can equal, or they never match."""
+        bad = [ext for ext in self.loaders if not (ext.startswith(".") and len(ext) > 1 and ext == ext.lower())]
+        if bad:
+            raise ValueError(
+                f"loaders: extension keys {', '.join(map(repr, bad))} can never match a file. "
+                f"Use a lowercase suffix with its dot, e.g. '.pdf' (files are matched on "
+                f"their lowercased suffix, so '.pdf' also covers REPORT.PDF)"
+            )
+        return self
 
 
 class Query(_Strict):
@@ -272,17 +304,28 @@ class RagConfig(_Strict):
     # the defaults go through Paths.anchor too, so they come out absolute as well.
     paths: Paths = Field(default_factory=dict, validate_default=True)
 
+    def _slots(self) -> Iterator[tuple[str, str, str]]:
+        """Every pipeline reference in use: ``(location, reference, required kind)``.
+
+        The one walk both :meth:`check_references` and :meth:`references` use, so a
+        new slot (like the S1-3 loader map) cannot be validated but not listed, or
+        listed but not validated.
+        """
+        for (stage, slot), kind in _SLOT_KINDS.items():
+            ref = getattr(getattr(self.pipeline, stage), slot)
+            if ref is not None:
+                yield f"pipeline.{stage}.{slot}", ref, kind
+        for extension, ref in self.pipeline.ingestion.loaders.items():
+            yield f"pipeline.ingestion.loaders[{extension!r}]", ref, "loaders"
+
     @model_validator(mode="after")
     def check_references(self) -> "RagConfig":
         """Every pipeline reference names an existing component of the right kind."""
         problems = []
-        for (stage, slot), kind in _SLOT_KINDS.items():
-            ref = getattr(getattr(self.pipeline, stage), slot)
-            if ref is None:
-                continue
+        for location, ref, kind in self._slots():
             problem = self._reference_problem(ref, kind)
             if problem:
-                problems.append(f"pipeline.{stage}.{slot}: {problem}")
+                problems.append(f"{location}: {problem}")
         if problems:
             raise ValueError("\n".join(problems))
         return self
@@ -307,12 +350,7 @@ class RagConfig(_Strict):
 
     def references(self) -> dict[str, str]:
         """Every pipeline reference in use, by slot, e.g. ``{'pipeline.query.llm': ...}``."""
-        refs = {}
-        for stage, slot in _SLOT_KINDS:
-            ref = getattr(getattr(self.pipeline, stage), slot)
-            if ref is not None:
-                refs[f"pipeline.{stage}.{slot}"] = ref
-        return refs
+        return {location: ref for location, ref, _ in self._slots()}
 
     def targets(self, ref: str) -> list[tuple[str, str]]:
         """The ``_target_``s a reference would import, with locations; none for retrievers."""

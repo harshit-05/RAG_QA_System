@@ -12,7 +12,7 @@ from rag_qa.schema import ComponentSpec, RagConfig, RetrieverSpec
 # modules that don't exist: loading is a string check and never imports (DEC-7).
 MINIMAL: dict[str, Any] = {
     "components": {
-        "loaders": {"txt": {"_target_": "rag_qa.stub.Loader", "extensions": [".txt"]}},
+        "loaders": {"txt": {"_target_": "rag_qa.stub.Loader"}},
         "splitters": {"split": {"_target_": "rag_qa.stub.Splitter", "chunk_size": 10}},
         "embedders": {"embed": {"_target_": "rag_qa.stub.Embedder", "model_kwargs": {"device": "cpu"}}},
         "llms": {"llm": {"_target_": "rag_qa.stub.LLM"}},
@@ -20,6 +20,7 @@ MINIMAL: dict[str, Any] = {
     },
     "pipeline": {
         "ingestion": {
+            "loaders": {".txt": "components.loaders.txt"},
             "splitter": "components.splitters.split",
             "embedder": "components.embedders.embed",
         },
