@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-09-26) — local verification passed; CI (step 5) runs after the push |
+| **Status** | Done (2026-09-29) — `1f1d6ff`; CI green on first run. Review follow-up 2026-09-30 (targets must be classes) — pending commit |
 | **Closes** | ISS-04 (OWASP LLM07/08) |
 | **Depends on** | S1-1 (ARCHITECTURE.md §1.1 DEC-7, DEC-11) |
 | **Model** | opus-fast |
@@ -73,7 +73,7 @@ from rag_qa.registry import import_from_string
 for bad in ['os.system', 'subprocess.Popen', 'builtins.eval']:
     try: import_from_string(bad); print('LEAK:', bad)
     except ImportError as e: print('blocked:', bad, '|', e)
-print(import_from_string('rag_qa.registry.build_object').__name__)  # allowed
+print(import_from_string('rag_qa.config.ConfigError').__name__)  # allowed (a class; functions are refused since the follow-up)
 "
 
 # 2. a config naming a blocked target fails at LOAD, before any build
@@ -105,7 +105,7 @@ gh run list --limit 1 && gh run view --log-failed 2>/dev/null | head -20
 | 4. ADR-007 import grep | 0 |
 | 6. `grep -rn noqa src scripts` | the three S1-4-tagged suppressions, plus S1-1's `TRY004` in `schema.py` (reason in the comment above it) |
 | `uv sync --locked` / `ruff check` (whole project, as CI runs them) | pass / All checks passed |
-| 5. CI on GitHub | **pending the push**; the `workflow` token scope is needed first (Discovered) |
+| 5. CI on GitHub | pass (2026-09-29): run `36610223687` on `1f1d6ff`, 47 s, every step green. Log checked, not just the badge: 97 packages installed, `torch==2.14.0+cpu`, **0** `nvidia-*` wheels, `ruff` All checks passed, **65 passed** in 14.9 s with `HF_HUB_OFFLINE=1` |
 
 The two refusal messages a maintainer can hit:
 
@@ -134,7 +134,8 @@ or network beyond the package index.
   top-level code — arbitrary code execution from inside the allowlist (verified
   2026-09-26, before the fix). A scan of the allowlisted LangChain packages
   found them re-exporting `import_module` too. Closed by the defining-module
-  check (Deviation).
+  check (Deviation) — **only partly**: the scan looked for re-exports of
+  `import_module`, not for functions that wrap it. See the second review below.
 - **Pushing this story needs the GitHub `workflow` token scope.** GitHub rejects
   a push that adds or changes `.github/workflows/*.yml` unless the token has
   it. The `gh` token has `gist`, `read:org`, `repo`, and git pushes through a
@@ -146,6 +147,69 @@ or network beyond the package index.
   hash.
 - `setup-uv` v10's inputs were checked at the pinned SHA, not assumed:
   `version`, `enable-cache` (default now `auto`) and `cache-python` all exist.
+- **CI runs on the runner's system Python 3.12.3, not uv-managed 3.12.13**
+  (found in the run log, 2026-09-29). `.python-version` pins only `3.12`, and
+  uv prefers a matching system interpreter, so CI tests a patch release ten
+  versions behind this host. `cache-python: true` therefore does nothing, and
+  its comment in `ci.yml` ("the uv-managed 3.12") is wrong. Harmless today.
+  Fix: set `UV_PYTHON_PREFERENCE: only-managed` in the job env and correct the
+  comment, in the next story that edits `ci.yml` (S1-5) → STATUS backlog.
+
+### Second review (2026-09-30)
+
+- **Import helpers *defined* in an allowed package passed both checks.**
+  `langchain_core.utils.utils.guard_import` (public name
+  `langchain_core.utils.guard_import`) wraps `importlib.import_module`, and
+  `langchain_core._import_utils.import_attr` returns any attribute of any module.
+  Both are defined in `langchain_core`, so the defining-module check let them
+  through, and the load-time prefix check did too. Run against `1f1d6ff`:
+  `build_object({_target_: …guard_import, module_name: colorsys})` imported
+  `colorsys`; `import_attr(attr_name=Popen, module_name="", package=subprocess)`
+  returned the live `subprocess.Popen`. That is the same import-anything
+  capability the first Discovered item treated as arbitrary code execution.
+  **Closed by the follow-up** (check 3, below).
+- **Instances were not refused, despite the code comment.** `registry.py` said
+  instances have no `__module__`; they inherit it from their class. A
+  module-level callable instance of an allowlisted class would have passed check
+  2 and been called by `build_object`. No abusable instance was found. **Closed
+  by the same follow-up**, and the comment is corrected.
+- **Still open: allowed classes with arbitrary kwargs are code execution.**
+  `HuggingFaceEmbeddings` passes `model_kwargs` unchanged into
+  `SentenceTransformer(model_name, **model_kwargs)`
+  (`langchain_huggingface/embeddings/huggingface.py:98`), which accepts
+  `trust_remote_code`. An embedder entry shaped like the four in `config.yaml`,
+  pointed at someone else's HF repo with `trust_remote_code: true`, downloads and
+  runs that repo's Python. Confirmed from source only (running it would execute
+  remote code). The SRS LLM07/08 requirement (code-loading from config is
+  allowlisted) is met as written; this story's Goal line ("the config stops being
+  arbitrary code execution") and ISS-04's "any kwargs" half are not. The config
+  stays trusted input, like code → STATUS backlog.
+
+### Follow-up: `_target_`s must be classes (2026-09-30)
+
+`import_from_string` gains **check 3**: the resolved object must be a class
+(`isinstance(obj, type)`). `build_object` instantiates what it gets, and every
+legitimate target is a class, so this refuses every module-level function and
+every instance with one rule, instead of blocking gadgets one at a time. It raises
+`ImportError` like the other two checks (targeted `noqa: TRY004` with the reason
+beside it), because `check_imports` and the callers catch only that. Tests were
+written first and failed against `1f1d6ff` (6 failed, 23 passed), including
+`build_object` actually running `guard_import`.
+
+Verification step 1's "allowed" example changed from the function
+`rag_qa.registry.build_object` to the class `rag_qa.config.ConfigError`, and so
+did `test_imports_an_allowed_path`, since functions are now refused.
+
+| Check | Result |
+| --- | --- |
+| `ruff check` | All checks passed |
+| full `pytest`, `HF_HUB_OFFLINE=1` | **71 passed** in 3.80 s (6 new cases) |
+| 1. allowlist bites | `os.system`, `subprocess.Popen`, `builtins.eval`, `guard_import`, `import_attr` all blocked; `rag_qa.config.ConfigError` allowed |
+| every target in `config.yaml` via `check_imports` | 14 targets import cleanly, all classes |
+| 4. ADR-007 import grep | 0 |
+| 6. `grep -rn noqa src scripts` | the three S1-4 tags, S1-1's `TRY004` in `schema.py`, and this follow-up's `TRY004` in `registry.py` |
+| 3. `rag-ingest` + `rag-query` | not re-run: the change only refuses non-class targets, and the `check_imports` row shows all 14 real targets are classes |
+| 5. CI | pending the push |
 
 ## Deviation from plan
 

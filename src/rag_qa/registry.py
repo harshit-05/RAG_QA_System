@@ -9,14 +9,19 @@ resolved by :meth:`rag_qa.schema.RagConfig.component`.
 **Import allowlist (ISS-04, DEC-7).** A ``_target_`` names code to import and call,
 so an unrestricted config is arbitrary code execution. :func:`import_from_string`
 is the one function every ``_target_`` reaches — through :func:`build_object` or
-directly — and it enforces two checks:
+directly — and it enforces three checks:
 
 1. the dotted path starts with one of :data:`ALLOWED_PREFIXES`;
 2. the object it resolves to is *defined* under one of them too (its
    ``__module__``). Without this, a name an allowed module merely re-exports passes
    check 1: ``rag_qa.registry.import_module`` is :func:`importlib.import_module`,
    and building it with ``name: subprocess`` imports any module on the path
-   (verified 2026-09-26). LangChain packages re-export it as well.
+   (verified 2026-09-26). LangChain packages re-export it as well;
+3. the object is a class. Check 2 does not stop helpers an allowed package defines
+   itself: ``langchain_core.utils.utils.guard_import`` imports any module and
+   ``langchain_core._import_utils.import_attr`` returns any attribute, e.g.
+   ``subprocess.Popen`` (verified 2026-09-30). Every legitimate ``_target_`` is a
+   class to instantiate, so this costs the real config nothing.
 
 :data:`ALLOWED_PREFIXES` is a constant on purpose: not config-overridable, no env
 escape hatch. An allowlist the config can edit is not an allowlist. Adding a
@@ -60,7 +65,7 @@ def import_from_string(dotted_path: str) -> Any:
     """Import a dotted path and return the attribute it names, if the allowlist permits.
 
     Raises ``ImportError`` if the path is outside :data:`ALLOWED_PREFIXES`, cannot be
-    imported, or resolves to something defined outside them.
+    imported, resolves to something defined outside them, or is not a class.
     """
     if not is_allowed(dotted_path):
         raise ImportError(
@@ -76,7 +81,8 @@ def import_from_string(dotted_path: str) -> Any:
         raise ImportError(f"Could not import {dotted_path!r}: {e}") from e
 
     # Check 2: where the object is *defined*, not where it was found. Module objects
-    # and instances have no __module__, so they are refused too.
+    # have no __module__, so they are refused here. Instances are not: they inherit
+    # __module__ from their class, which is why check 3 exists.
     defined_in = getattr(obj, "__module__", None)
     if not is_allowed(f"{defined_in}."):
         raise ImportError(
@@ -84,6 +90,18 @@ def import_from_string(dotted_path: str) -> Any:
             f"which is outside the import allowlist (ISS-04). A name an allowed module "
             f"re-exports does not count; name the object where it is defined. "
             f"{allowlist_hint()}."
+        )
+
+    # Check 3: a class, since build_object instantiates it. This refuses the functions
+    # allowed packages define themselves (langchain_core's guard_import imports any
+    # module; import_attr returns any attribute) and instances with a __call__.
+    # ImportError, not TypeError: every refusal here is one error type, the one
+    # check_imports and callers catch; a TypeError would escape as a raw traceback.
+    if not isinstance(obj, type):
+        raise ImportError(  # noqa: TRY004
+            f"_target_ {dotted_path!r} resolves to {obj!r}, which is not a class. A "
+            f"_target_ must name a class to instantiate: a function or instance, even "
+            f"one defined in an allowed package, can import or call anything (ISS-04)."
         )
     return obj
 

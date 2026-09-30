@@ -6,6 +6,7 @@ import pytest
 from conftest import REAL_CONFIG, MakeConfig
 from langchain_core.documents import Document
 
+from rag_qa import registry
 from rag_qa.config import ConfigError, check_imports, load_config
 from rag_qa.registry import ALLOWED_PREFIXES, build_object, import_from_string
 
@@ -13,7 +14,7 @@ from rag_qa.registry import ALLOWED_PREFIXES, build_object, import_from_string
 
 
 def test_imports_an_allowed_path() -> None:
-    assert import_from_string("rag_qa.registry.build_object") is build_object
+    assert import_from_string("rag_qa.config.ConfigError") is ConfigError
     assert import_from_string("langchain_core.documents.Document") is Document
 
 
@@ -62,6 +63,42 @@ def test_path_outside_the_allowlist_is_refused_before_import(path: str) -> None:
 def test_reexported_name_under_an_allowed_prefix_is_refused(path: str) -> None:
     with pytest.raises(ImportError, match="re-exports does not count"):
         import_from_string(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # Functions *defined* in an allowed package that wrap importlib: they pass the
+        # defining-module check, and building them imports any module on the path or
+        # hands back any attribute, e.g. subprocess.Popen (verified 2026-09-30).
+        pytest.param("langchain_core.utils.utils.guard_import", id="guard_import"),
+        pytest.param("langchain_core.utils.guard_import", id="guard_import, public name"),
+        pytest.param("langchain_core._import_utils.import_attr", id="import_attr"),
+    ],
+)
+def test_function_under_an_allowed_prefix_is_refused(path: str) -> None:
+    with pytest.raises(ImportError, match="is not a class"):
+        import_from_string(path)
+
+
+def test_building_an_import_helper_never_calls_it() -> None:
+    # Had guard_import run, it would raise its own "Could not import ..." instead.
+    with pytest.raises(ImportError, match="is not a class"):
+        build_object(
+            {
+                "_target_": "langchain_core.utils.utils.guard_import",
+                "module_name": "rag_qa_never_imported",
+            }
+        )
+
+
+def test_instance_under_an_allowed_prefix_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An instance inherits __module__ from its class, so the defining-module check
+    # passes it, and build_object would then call it.
+    probe = type("Probe", (), {"__module__": "rag_qa.stub", "__call__": lambda self: self})
+    monkeypatch.setattr(registry, "PROBE", probe(), raising=False)
+    with pytest.raises(ImportError, match="is not a class"):
+        import_from_string("rag_qa.registry.PROBE")
 
 
 def test_non_string_target_is_refused() -> None:
@@ -173,9 +210,18 @@ def test_check_imports_reports_a_nested_missing_class_with_its_location(
     assert "has no attribute 'CrossEncoderRerank'" in str(exc.value)
 
 
-def test_check_imports_catches_a_reexport_the_load_check_cannot(make_config: MakeConfig) -> None:
-    config = load_config(make_config(_set_llm_target("rag_qa.registry.import_module")))
-    with pytest.raises(ConfigError, match="re-exports does not count"):
+@pytest.mark.parametrize(
+    ("target", "refusal"),
+    [
+        pytest.param("rag_qa.registry.import_module", "re-exports does not count", id="re-export"),
+        pytest.param("langchain_core.utils.utils.guard_import", "is not a class", id="function"),
+    ],
+)
+def test_check_imports_catches_what_the_load_check_cannot(
+    make_config: MakeConfig, target: str, refusal: str
+) -> None:
+    config = load_config(make_config(_set_llm_target(target)))
+    with pytest.raises(ConfigError, match=refusal):
         check_imports(config, [config.pipeline.query.llm])
 
 

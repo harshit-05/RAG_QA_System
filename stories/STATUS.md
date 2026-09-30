@@ -5,12 +5,16 @@
 
 ## Now
 
-**Next action: finish [S1-2](phase-1/S1-2-target-allowlist.md)** — it is in
-review with local verification passed (2026-09-26). Its last check is CI on
-GitHub, which needs (1) the `workflow` token scope (Human prerequisites below),
-then (2) commit and push, then (3) `gh run list` shows green. After that: S1-3
-(S1-7 is also unblocked). S1-1 is done and committed (`b22a37a`, 2026-09-26).
-Run the rest in the **Depends** order of the Phase 1 table below.
+**First: commit and push the S1-2 review follow-up** (2026-09-30, `_target_`s
+must be classes; closes two allowlist bypasses found in review) and confirm CI is
+green. Details in the S1-2 story, "Second review".
+
+**Then: implement [S1-3](phase-1/S1-3-own-loaders.md)** — WORKFLOW.md
+Step 3, Model **fable**, not plan-first. S1-7 is also unblocked. **CI exists
+now** (S1-2, `1f1d6ff`, green on its first run 2026-09-29): every story from here
+on closes on a green `gh run list`, and each push that touches
+`.github/workflows/` needs the `workflow` scope (now granted). S1-1 `b22a37a`,
+S1-2 `1f1d6ff`. Run the rest in the **Depends** order of the Phase 1 table below.
 
 **The Phase 1 architecture pass is done** (2026-09-25): `ARCHITECTURE.md` has a
 confirmed Phase 1 section (§1.1–§1.7) and DEC-6 … DEC-12 are resolved below.
@@ -73,13 +77,11 @@ The final story of each phase performs the tag + version bump at close-out.
 - [x] `gh auth login` — done 2026-09-24 as `harshit-05` (HTTPS, keyring;
       scopes: repo, read:org, gist). Needed to push and for Phase 1 CI/PR work.
 
-- [ ] **Add the `workflow` scope — blocks pushing S1-2.** GitHub rejects any
-      push that adds or changes `.github/workflows/*.yml` without it. git
-      pushes through a `cache` credential helper, not gh, so run both:
-      `gh auth refresh -h github.com -s workflow` (browser prompt), then
-      `gh auth setup-git` (git uses gh's token for github.com from then on).
-      Alternative: add `workflow` to the cached PAT ("Workflows: write" if
-      fine-grained).
+- [x] **`workflow` scope** — done 2026-09-29. Token scopes are now `gist`,
+      `read:org`, `repo`, `workflow`, and git pushes to github.com through
+      `gh auth git-credential` (`gh auth setup-git`), no longer the `cache`
+      helper. Needed because GitHub rejects any push that adds or changes
+      `.github/workflows/*.yml` without that scope.
 
 - [x] Resolve DEC-1 / DEC-2 — done in the Phase 0 arch pass, 2026-09-18.
 
@@ -187,7 +189,7 @@ Design: ARCHITECTURE.md §1.1–§1.7.
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
 | [S1-1](phase-1/S1-1-config-schema.md) | Validate the config with a frozen Pydantic model | FR-8, ISS-01, ISS-11, NFR-11 | — | Done 2026-09-26 |
-| [S1-2](phase-1/S1-2-target-allowlist.md) | Allowlist `_target_` imports; stand up CI | ISS-04 | S1-1 | In review 2026-09-26 (CI pending push) |
+| [S1-2](phase-1/S1-2-target-allowlist.md) | Allowlist `_target_` imports; stand up CI | ISS-04 | S1-1 | Done 2026-09-29; review follow-up 2026-09-30 pending commit |
 | [S1-3](phase-1/S1-3-own-loaders.md) | Own loaders, extension map, recursive walk | ISS-13, FR-2, DEC-5 step 1 | S1-1 | Todo |
 | [S1-4](phase-1/S1-4-error-handling-cli.md) | Explicit error handling and a real CLI surface | ISS-05, ISS-06, ISS-18, NFR-7 | S1-3 | Todo |
 | [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | Todo |
@@ -293,6 +295,27 @@ reason**. Reconciled in the Phase 1 architecture pass, 2026-09-25.
   5 min (`keep_alive`), so pre-flight caveat 8's `free -h` under-reports — run
   `ollama ps` / `ollama stop <model>` first. (b) `gemma2:9b` is now pulled; add
   it to CLAUDE.md's environment facts.
+
+### Found in S1-2 (2026-09-29)
+
+- **For S1-5 (the next `ci.yml` edit) — pin CI to uv-managed Python.** CI ran
+  on the runner's system Python 3.12.3; this host develops on uv-managed
+  3.12.13. `.python-version` says only `3.12`, and uv prefers a matching system
+  interpreter. Add `UV_PYTHON_PREFERENCE: only-managed` to the job env and
+  correct the `cache-python` comment, which wrongly claims the uv-managed build
+  is used.
+- **`config.yaml` is trusted input, like code — state it (second review,
+  2026-09-30).** The allowlist restricts which classes a config can build, not the
+  kwargs it passes them. `HuggingFaceEmbeddings` forwards `model_kwargs` into
+  `SentenceTransformer`, so `trust_remote_code: true` plus someone else's HF repo
+  runs that repo's Python. ISS-04 stays closed (the SRS requirement is an
+  allowlist, and that is met), but the trust boundary needs saying where ISS-16
+  says it for the FAISS index: in the `registry.py` docstring and ARCHITECTURE §1,
+  "never load a config from an untrusted source". Cheap optional guard: reject
+  `trust_remote_code` anywhere in the config at load, beside the prefix check.
+  **Proposed owners:** the doc lines → S1-8 doc hygiene; the constraint that the
+  Phase 2 API must never let a request supply or override components → Phase 2
+  architecture pass. Full finding in the S1-2 story, "Second review".
 
 ### Later phases
 

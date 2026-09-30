@@ -93,8 +93,8 @@ def check_imports(config: RagConfig, refs: Iterable[str]) -> None:
     so a component that is defined but unused (the disabled reranker) loads without
     its package being imported. Tests and tooling call this for the references they
     care about, typically ``config.references().values()``. Catches what a string
-    check cannot: a class name that does not exist (ISS-03), a missing package, or a
-    re-exported name the allowlist refuses.
+    check cannot: a class name that does not exist (ISS-03), a missing package, a
+    re-exported name the allowlist refuses, or a target that is not a class.
 
     Raises :class:`ConfigError` listing every failure, one ``location: problem`` line
     each.
