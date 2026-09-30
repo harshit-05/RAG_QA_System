@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-09-30) — local verification passed; on branch `s1-3-own-loaders`, CI + PR pending |
+| **Status** | In review (2026-09-30) — `e92332b` on branch `s1-3-own-loaders`; review follow-up (corpus walk ignores hidden/lock files) pending commit; CI + PR pending |
 | **Closes** | ISS-13, FR-2 (recursive discovery), DEC-5 step 1 of 3 |
 | **Depends on** | S1-1 (ARCHITECTURE.md §1.1 DEC-8, §1.3) |
 | **Model** | fable |
@@ -164,6 +164,35 @@ byte-identical text.
   both printed and in `IngestReport.skipped` / `.failed`, so same-named files in
   different subdirectories stay distinguishable. S1-4's tests should expect that
   form.
+
+### Second review (2026-09-30)
+
+- **The recursive walk ingested hidden folders and Office lock files.** Probed on
+  `e92332b` with the real config over a working-folder layout: a
+  `.ipynb_checkpoints/notes-checkpoint.md` copy was **indexed** next to
+  `notes.md` (a duplicate competing for the `k: 5` slots); `.git/` was walked;
+  Word's `~$report.docx` lock file ends in `.docx`, so it landed in
+  `report.failed` ("File is not a zip file"). After S1-4 makes failures exit
+  non-zero, an open Word document would have broken ingestion. The flat
+  `os.listdir` never entered subfolders, so this arrived with ISS-13 itself.
+  **Fixed in the review follow-up:** `discover_files` leaves out any path with a
+  part starting with `.` (LibreOffice's `.~lock.*#` included) and names starting
+  with `~$`. They are not reported as skipped, since they were never documents.
+  Tests first: `sample_corpus` gained a hidden folder, a hidden file and a `~$`
+  file, and three tests failed against `e92332b` (the exact discovery list, the
+  loaded-documents map, and a new named test). After: **105 passed**, `ruff`
+  clean, the real `corpus/` discovers the same five files as before.
+- **Open: symlinks are handled inconsistently.** A symlinked *file* is followed,
+  even when it points outside the corpus (probe: `link.txt` → `../outside/`
+  was indexed). A symlinked *directory* is not walked: Python 3.12's `rglob`
+  does not follow directory symlinks. Not a security issue while the corpus is
+  trusted content (SRS §2.6), but the rule should be one deliberate choice, "skip
+  symlinks" or "follow both", stated in `discover_files`' docstring. Candidate
+  for S1-4, which already owns ingestion behaviour, or the Phase 2 upload path,
+  where the corpus stops being hand-curated.
+- **Resolved: the branch.** At review time the work was uncommitted on `main`
+  while this file said `s1-3-own-loaders`; it has since been committed there as
+  `e92332b` and pushed. The follow-up lands on the same branch and PR.
 
 ## Deviation from plan
 
