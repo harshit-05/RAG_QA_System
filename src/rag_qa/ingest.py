@@ -37,11 +37,25 @@ class IngestReport:
         return "\n".join(lines)
 
 
+def _ignored(relative: Path) -> bool:
+    """Hidden files and folders, and Office lock files: never corpus documents.
+
+    Recursion reaches folders the flat listing never did. A hidden folder such as
+    ``.ipynb_checkpoints`` holds copies that would be indexed twice and crowd the
+    top-k; ``.git`` holds nothing to index. Word's ``~$report.docx`` lock file ends
+    in ``.docx`` but is not one, so it would count as a failed file while the
+    document is open. LibreOffice's ``.~lock.*#`` is covered by the hidden rule.
+    """
+    return any(part.startswith(".") for part in relative.parts) or relative.name.startswith("~$")
+
+
 def discover_files(data_path: Path) -> list[Path]:
     """Every file under the corpus directory, subdirectories included (ISS-13).
 
-    Sorted by full path, which for a flat corpus is the old ``sorted(os.listdir())``
-    order — so chunk order, and with it the index, is unchanged for existing corpora.
+    Hidden paths and Office lock files are left out (:func:`_ignored`); they are not
+    reported as skipped, since they were never documents. Sorted by full path, which
+    for a flat corpus is the old ``sorted(os.listdir())`` order — so chunk order, and
+    with it the index, is unchanged for existing corpora.
     """
     if not data_path.is_dir():
         # rglob on a missing directory yields nothing rather than raising, which
@@ -49,7 +63,11 @@ def discover_files(data_path: Path) -> list[Path]:
         raise FileNotFoundError(
             f"Corpus directory not found: {data_path} (set by paths.data or RAG_DATA_PATH)"
         )
-    return sorted(path for path in data_path.rglob("*") if path.is_file())
+    return sorted(
+        path
+        for path in data_path.rglob("*")
+        if path.is_file() and not _ignored(path.relative_to(data_path))
+    )
 
 
 def load_documents(config: RagConfig, report: IngestReport) -> list:

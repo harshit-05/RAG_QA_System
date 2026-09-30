@@ -95,6 +95,12 @@ def sample_corpus(tmp_path: Path) -> Path:
         corpus/diagram.png             no loader mapped -> skipped
         corpus/sub/report.docx         one level down
         corpus/sub/deeper/LOUD.TXT     two levels down, uppercase suffix
+
+    and files a real working folder accumulates, which discovery must ignore::
+
+        corpus/.ipynb_checkpoints/notes-checkpoint.txt   hidden folder (a duplicate)
+        corpus/.draft.md                                 hidden file
+        corpus/sub/~$report.docx                         Word's lock file, not a docx
     """
     root = tmp_path / "corpus"
     (root / "sub" / "deeper").mkdir(parents=True)
@@ -108,6 +114,13 @@ def sample_corpus(tmp_path: Path) -> Path:
     (root / "diagram.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     write_docx(root / "sub" / "report.docx", ["Report title", "Report body"])
     (root / "sub" / "deeper" / "LOUD.TXT").write_text("Shouted text.\n", encoding="utf-8")
+
+    (root / ".ipynb_checkpoints").mkdir()
+    (root / ".ipynb_checkpoints" / "notes-checkpoint.txt").write_text(
+        "Plain text notes.\n", encoding="utf-8"
+    )
+    (root / ".draft.md").write_text("Not ready.\n", encoding="utf-8")
+    (root / "sub" / "~$report.docx").write_bytes(b"\x00" * 162)  # what Word writes
     return root
 
 

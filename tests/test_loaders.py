@@ -112,6 +112,16 @@ def test_discovery_is_recursive_and_sorted(sample_corpus: Path) -> None:
     ]
 
 
+def test_discovery_ignores_hidden_paths_and_office_lock_files(sample_corpus: Path) -> None:
+    # Recursion reaches folders the old flat listdir never did: a Jupyter checkpoint
+    # copy would be indexed twice and crowd the top-k, and Word's ~$ lock file ends
+    # in .docx, so it would count as a failed file while the document is open.
+    found = {p.relative_to(sample_corpus).as_posix() for p in discover_files(sample_corpus)}
+    assert not found & {
+        ".ipynb_checkpoints/notes-checkpoint.txt", ".draft.md", "sub/~$report.docx"
+    }
+
+
 def test_missing_corpus_directory_is_named(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="Corpus directory not found.*RAG_DATA_PATH"):
         discover_files(tmp_path / "nope")
