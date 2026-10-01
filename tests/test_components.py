@@ -67,9 +67,11 @@ def test_build_splitter_uses_the_configured_splitter(make_config: MakeConfig) ->
     words = " ".join(f"word{i:04d}" for i in range(600))  # ~5,400 characters
     chunks = splitter.split_text(words)
     assert len(chunks) > 1
-    assert max(len(chunk) for chunk in chunks) <= 1000
-    # Each chunk starts with the tail of the previous one: a shared run of text that
-    # exists (overlap is on) and stays within the configured 150 characters.
+    # Words are 9 characters with their space, so the splitter lands within one word
+    # of each bound. Both bounds, so a smaller chunk_size or overlap fails too.
+    assert all(900 < len(chunk) <= 1000 for chunk in chunks[:-1])
+    # Each chunk starts with the tail of the previous one: a shared run of text close
+    # to the configured 150 characters.
     for left, right in pairwise(chunks):
         shared = max((n for n in range(1, len(right) + 1) if left.endswith(right[:n])), default=0)
-        assert 0 < shared <= 150
+        assert 100 < shared <= 150
