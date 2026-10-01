@@ -22,6 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HF_HUB_OFFLINE: "1"
+      # Test on the same uv-managed CPython as development. .python-version says
+      # only "3.12", and uv would otherwise take the runner's system 3.12 (3.12.3
+      # in S1-2's run, ten patch releases behind).
+      UV_PYTHON_PREFERENCE: only-managed
     steps:
       # Actions pinned to full commit SHAs (supply chain, OWASP LLM05); the tag is
       # in the comment. Bump both together.
@@ -31,7 +35,7 @@ jobs:
         with:
           version: "0.11.8"      # the uv this project is developed with (CLAUDE.md)
           enable-cache: true     # keyed on uv.lock
-          cache-python: true     # the uv-managed 3.12 from .python-version
+          cache-python: true     # caches the managed CPython that UV_PYTHON_PREFERENCE selects
 
       # --locked fails if uv.lock has drifted from pyproject.toml, so this step is
       # also the lockfile check. CPU torch only (DEC-1 rule 2): no nvidia-* wheels.
@@ -41,5 +45,7 @@ jobs:
       - name: Lint
         run: uv run ruff check
 
+      # Coverage gate (NFR-8, S1-5): the threshold and what is omitted live in
+      # pyproject.toml's [tool.coverage], so a local `pytest --cov` enforces the same.
       - name: Test
-        run: uv run pytest
+        run: uv run pytest --cov=rag_qa
