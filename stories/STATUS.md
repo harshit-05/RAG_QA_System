@@ -225,6 +225,7 @@ be run whenever convenient before S1-8.
 | DEC-10 | Device selection: collapse the `_cpu`/`_cuda` embedder entries into one env-driven setting | **Resolved 2026-09-25: no — the entries stay explicit** | The backlog item assumed pydantic-settings interpolates `device: ${RAG_EMBED_DEVICE:-cpu}` inside YAML values. **It does not** — there is no `${VAR:-default}` expansion for arbitrary values. With the CUDA torch variant (DEC-12), one sync command plus repointing `pipeline.ingestion.embedder` is already a one-line switch, so the four entries restored in `ebcfc2e` stay as FR-1 axes. |
 | DEC-11 | CI: host, hermeticity and how hard the gates bite | **Resolved 2026-09-25: GitHub Actions, hermetic suite, blocking gates** | No Ollama, no model download, no network in tests: `DeterministicFakeEmbedding` (verified present in core 1.6.3) + a fake chat model. Gate order: `ruff check` → `mypy` (`disallow_untyped_defs` on `src/rag_qa`) → `pytest --cov-fail-under=80` (omitting `evaluate.py`, Phase 2 + `eval` extra) → `pip-audit`. Each gate blocks from the story that adds it. **No `ruff format --check` in Phase 1** — the tree is unformatted and a whole-tree reformat is the diff that gets rubber-stamped → backlog. |
 | DEC-12 | Making the declared GPU embedder entries actually installable | **Resolved 2026-09-25: uv-conflicting CPU/CUDA torch variants; plain `uv sync` stays CPU** | Each variant routed to its own index, `explicit = true` on both. **Mechanism chosen by S1-7's spike**: extras have no default, so torch-only-in-extras would make a plain sync pull PyPI CUDA torch via `sentence-transformers`. Preferred: dependency groups + `default-groups = ["dev", "cpu"]`; fallback: extras with `--extra cpu` on every install path. S1-7 re-runs the S0-2 smoke test on the **installed env** (the lock legitimately holds both variants): core 1.x, `torch 2.14.0+cpu`, zero `nvidia-*`. CUDA is verifiable here as a **resolve only** — this host is CPU-only. |
+| DEC-13 | Partial ingestion failure: replace the index with what loaded, or keep the previous one | **Resolved 2026-10-01: replace, exit 1** | Maintainer's call, raised by S1-4's third review. Some documents or folders unreadable → index the rest, save over the old index, exit 1 ("rebuilt without them"). Keeping the old index is safer when unattended, but one persistently bad file would block every update. Phase 1 ingests are hand-run and watched. Phase 2's hash manifest dissolves it: a failed document keeps its previously indexed chunks. Exit codes: 0 all indexed · 1 document/folder unreadable, nothing indexed, or unexpected error (traceback) · 2 cannot start. ARCHITECTURE.md §1.1. |
 
 ## Backlog
 
@@ -350,6 +351,33 @@ reason**. Reconciled in the Phase 1 architecture pass, 2026-09-25.
   corpus sets **both** `RAG_DATA_PATH` and `RAG_VECTOR_STORE_PATH`. With the
   first alone, the scratch build overwrites the real index. S1-3's step 3 is
   fixed; S1-4's step 2 has the same bug and is fixed in S1-4.
+
+### Found in S1-4 (2026-10-01)
+
+Small follow-ups; no single one is worth a story. Batch them into one "CLI polish"
+story, or ride whichever story next touches the file. They cover the CLI front
+ends, startup handling and `fetch_dataset.py`:
+
+- **`rag-query` startup is still unguarded.** Ollama being down
+  (`validate_model_on_init`) and Ctrl-C while models load both print a
+  traceback: they happen before the REPL's boundary exists. One startup
+  try/except with a clean message.
+- **The connection error doesn't name Ollama.** `Error: ConnectError: [Errno 111]
+  Connection refused` (seen live). Add a hint on connection failures: "Is Ollama
+  running? `systemctl status ollama`". Also, an empty `Answer:` header prints
+  before the error.
+- **Zero-count summary lines print on every run** ("Skipped 0 symlink(s)",
+  "Ignored 0 hidden or lock file(s)"). Print them only when nonzero.
+- **An unreadable corpus *root* is reported as `./: PermissionError`, exit 1.**
+  "Corpus directory not readable" with exit 2 would match "not found". The
+  summary's "Failed N file(s)" also counts folders now; reword it to "item(s)".
+- **`fetch_dataset.py`.** Its corpus guard checks only the repo's own `corpus/`,
+  not a configured `paths.data` / `RAG_DATA_PATH`. Nothing checks the `PAR1`
+  header, so a 200 response carrying HTML would be saved as parquet again.
+  `requests` is undeclared (transitive only).
+- **Backlog — the walk still descends into ignored trees** (`.git`) before
+  discarding them. `Path.walk` is top-down, so pruning `folders[:]` in place
+  would fix it.
 
 ### Later phases
 

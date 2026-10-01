@@ -331,6 +331,18 @@ lockfile legitimately holds both variants): a plain sync must still yield
 this host the CUDA path is verifiable only as a resolve, never as a run (CLAUDE.md GPU
 policy); the story states that as its limit rather than implying more.
 
+**DEC-13 (added 2026-10-01, S1-4) — A partial ingestion failure still replaces the
+index, and the run exits 1.** When some documents (or folders) cannot be read,
+`rag-ingest` indexes the rest, saves over the previous index, and exits 1, saying
+"rebuilt without them". The alternative was to keep the previous index whenever
+anything failed. It is safer for unattended re-ingests, but one persistently bad
+file would then block every update. Phase 1 ingests are run by hand and watched, so
+a loud partial rebuild gets re-run, not missed. Phase 2's hash manifest dissolves
+the choice: a document that fails keeps its previously indexed chunks, so the
+`/v1/ingest` job reports the failure without regressing the index. Exit codes: 0
+all indexed; 1 a document or folder unreadable, nothing indexed, or an unexpected
+error (traceback); 2 could not start.
+
 ### 1.2 Layout at Phase 1 exit
 
 ```text

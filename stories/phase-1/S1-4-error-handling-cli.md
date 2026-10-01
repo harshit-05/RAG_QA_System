@@ -206,6 +206,20 @@ CI and stays a script: keep the change minimal.
   update. Both are defensible. The Phase 2 job endpoint inherits whichever is
   chosen, so it should be recorded as a decision (a DEC entry or a line in
   ARCHITECTURE §1), not left implicit in a message. **Not changed in code.**
+  **Resolved 2026-10-01 → DEC-13: replace, exit 1** (maintainer's call). Phase 1
+  ingests are run by hand and watched, so a loud partial rebuild is re-run, not
+  missed. Phase 2's hash manifest dissolves the dilemma: a document that fails
+  keeps its previously indexed chunks.
+- **Third review (2026-10-01), checked and agreed.**
+  - The unreadable-folder tests fail against `b9c4e4e` for the right reasons
+    (4 failures, incl. the `--help` text) and pass after (132).
+  - The fixture restores permissions even when a test fails, and the tests skip
+    only as root (GitHub's runner is not root, so they run in CI).
+  - The real `corpus/` lists the same 5 files in the same order.
+  - New edge case: an unreadable corpus **root** is reported as `./:
+    PermissionError`, with exit 1 and nothing indexed. It is loud and correct,
+    but `./` is an odd name, and "not readable" would match "not found" better
+    with exit 2 ("cannot start") → backlog.
 
 ## Deviation from plan
 
