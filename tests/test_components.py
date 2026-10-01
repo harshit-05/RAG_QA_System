@@ -1,5 +1,6 @@
 """The shared assembly layer (S1-3): one way to build each component."""
 
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,9 @@ def test_build_loader_follows_the_extension_map(
 
 
 @pytest.mark.parametrize("filename", ["image.png", "old.doc", "no_suffix", "archive.tar.gz"])
-def test_unmapped_files_get_no_loader(make_config: MakeConfig, tmp_path: Path, filename: str) -> None:
+def test_unmapped_files_get_no_loader(
+    make_config: MakeConfig, tmp_path: Path, filename: str
+) -> None:
     assert build_loader(load_config(make_config()), tmp_path / filename) is None
 
 
@@ -57,6 +60,15 @@ def test_build_embedder_always_reads_the_ingestion_embedder(make_config: MakeCon
 
 
 def test_build_splitter_uses_the_configured_splitter(make_config: MakeConfig) -> None:
+    # Behaviour, not private fields: config.yaml says chunk_size 1000, overlap 150.
     splitter = build_splitter(load_config(make_config()))
     assert type(splitter).__name__ == "RecursiveCharacterTextSplitter"
-    assert splitter._chunk_size == 1000 and splitter._chunk_overlap == 150
+
+    words = " ".join(f"word{i:04d}" for i in range(600))  # ~5,400 characters
+    chunks = splitter.split_text(words)
+    assert len(chunks) > 1
+    assert max(len(chunk) for chunk in chunks) <= 1000
+    # Neighbouring chunks share text (the overlap), and no chunk repeats wholesale.
+    for left, right in pairwise(chunks):
+        assert right.split()[0] in left
+        assert left != right

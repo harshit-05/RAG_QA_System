@@ -29,8 +29,8 @@ ISS-08  CI's ``uv sync --locked`` (lockfile drift); pip-audit → S1-8
 ISS-09  ``test_repo_hygiene.py`` (nothing build-, index- or media-like tracked)
 ISS-10  not a CI check: structural (three copies of the tree), fixed in S0-3
 ISS-11  here (load)
-ISS-12  not caught yet: ruff has no unreachable-code rule; mypy's
-        ``warn_unreachable`` flags code after ``return`` (verified) → S1-6
+ISS-12  CI's mypy step: ``warn_unreachable = true`` (pyproject.toml) flags code
+        after ``return``; ruff 0.16 has no unreachable-code rule (S1-6)
 ISS-13  ``test_loaders.py`` (recursive walk); ``test_ingest.py`` (unreadable
         folders)
 ISS-14  a missing feature, not a regression: incremental ingest → Phase 2
@@ -114,7 +114,9 @@ def test_iss03_reranker_kind_key_typo_fails_at_load(make_config: MakeConfig) -> 
     assert "did you mean 'rerankers'" in message
 
 
-def test_iss03_reranker_on_the_langchain_meta_package_fails_at_load(make_config: MakeConfig) -> None:
+def test_iss03_reranker_on_the_langchain_meta_package_fails_at_load(
+    make_config: MakeConfig,
+) -> None:
     # v2 line 64 targeted `langchain.retrievers...`: the meta-package, which is not
     # a dependency (DEC-1) and is outside the import allowlist (ISS-04).
     def v2_target(c: dict[str, Any]) -> None:
