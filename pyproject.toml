@@ -42,6 +42,7 @@ dev = [
     "pytest>=8",
     "ruff>=0.13",
     "mypy>=1.17",
+    "pytest-cov>=7.1.0",
 ]
 
 # This host is CPU-only (no NVIDIA GPU). `explicit = true` is load-bearing: as a
@@ -58,6 +59,18 @@ torch = { index = "pytorch-cpu" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Coverage gate (NFR-8, S1-5). 80% is the SRS figure, deliberately not higher: a
+# higher bar invites tests written for the number rather than the behaviour.
+[tool.coverage.run]
+source = ["rag_qa"]
+# evaluate.py is Phase 2 work (FR-7) and imports the optional `eval` extra.
+omit = ["*/rag_qa/evaluate.py"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
 
 [build-system]
 requires = ["hatchling"]
