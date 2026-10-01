@@ -45,9 +45,11 @@ jobs:
       # The torch variant is chosen by dependency groups (S1-7): `cpu` is a default
       # group. If it is ever dropped, or an install reaches `--no-default-groups`,
       # torch arrives from PyPI as the CUDA build with GBs of nvidia-* wheels, and
-      # silently. Fail here instead.
+      # silently. Fail here instead. `--no-sync` is load-bearing: a plain `uv run`
+      # re-syncs to the default groups first, which would repair the second case
+      # and then pass, so it checks what the Install step actually installed.
       - name: CPU torch only (DEC-1 rule 2)
-        run: uv run python -c "import sys, torch; print(torch.__version__); sys.exit(0 if torch.__version__.endswith('+cpu') else 1)"
+        run: uv run --no-sync python -c "import sys, torch; print(torch.__version__); sys.exit(0 if torch.__version__.endswith('+cpu') else 1)"
 
       - name: Lint
         run: uv run ruff check
