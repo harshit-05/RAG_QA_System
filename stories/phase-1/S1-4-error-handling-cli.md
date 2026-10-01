@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-01) — all six verification steps passed (step 3 live, by the maintainer); second review's fixes applied (unreadable folders fail the run; exit-1 contract documented), one decision open (partial-index policy, see Discovered); branch `s1-4-error-handling-cli`, commit + CI + PR pending |
+| **Status** | Done (2026-10-01) — PR #2, rebase-merged into `main` as `eff50ea` + review follow-up `a6f21b3` + DEC-13 record `20c4a6a`; CI green on the branch, the PR and `main` |
 | **Closes** | ISS-05, ISS-06, ISS-18, NFR-7 |
 | **Depends on** | S1-3 (ARCHITECTURE.md §1.1 DEC-9) |
 | **Model** | opus-fast |
