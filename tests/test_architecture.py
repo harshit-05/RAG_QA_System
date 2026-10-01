@@ -57,11 +57,34 @@ def _imported_modules(path: Path) -> set[str]:
     return names
 
 
-@pytest.mark.parametrize("path", sorted(SRC.glob("*.py")), ids=lambda p: p.name)
-def test_no_legacy_langchain_imports_in_application_code(path: Path) -> None:
-    forbidden = {
+def _legacy_imports(path: Path) -> set[str]:
+    return {
         name
         for name in _imported_modules(path)
         if name == "langchain" or name.startswith(("langchain.", "langchain_classic"))
     }
+
+
+def application_files(root: Path) -> list[Path]:
+    """Every Python file of the package under ``root``, subpackages included."""
+    return sorted(root.rglob("*.py"))
+
+
+@pytest.mark.parametrize(
+    "path", application_files(SRC), ids=lambda p: p.relative_to(SRC).as_posix()
+)
+def test_no_legacy_langchain_imports_in_application_code(path: Path) -> None:
+    forbidden = _legacy_imports(path)
     assert forbidden == set(), f"{path.name} imports {sorted(forbidden)} (ADR-007, DEC-1)"
+
+
+def test_the_legacy_import_scan_reaches_subpackages(tmp_path: Path) -> None:
+    # Phase 2's API will likely be a subpackage (rag_qa/api/); a top-level-only
+    # scan would never read it.
+    (tmp_path / "api").mkdir()
+    (tmp_path / "__init__.py").write_text("")
+    (tmp_path / "api" / "routes.py").write_text("from langchain_classic.chains import X\n")
+    flagged = {
+        p.relative_to(tmp_path).as_posix() for p in application_files(tmp_path) if _legacy_imports(p)
+    }
+    assert flagged == {"api/routes.py"}
