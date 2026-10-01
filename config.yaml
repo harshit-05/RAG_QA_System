@@ -32,11 +32,13 @@ components:
     # 1. Changing embedder invalidates an existing index. A different model means
     #    different vectors, and a different dimension (384 vs 768) means the
     #    index will not even load. Switch, then re-run `rag-ingest`.
-    # 2. A `_cuda` entry needs BOTH an NVIDIA GPU and a CUDA torch build. This
-    #    project's lockfile installs CPU-only torch on purpose (DEC-1 rule 2),
-    #    so using one means changing the torch source in pyproject.toml too.
-    #    On this host it fails fast and clearly ("Torch not compiled with CUDA
-    #    enabled"), so it is a documented option, never a silent degradation.
+    # 2. A `_cuda` entry needs BOTH an NVIDIA GPU and the CUDA torch variant.
+    #    A plain `uv sync` installs CPU torch on purpose (DEC-1 rule 2); on a GPU
+    #    host (Colab/Kaggle) install the CUDA variant instead:
+    #        uv sync --no-group cpu --group cuda
+    #    On this host a `_cuda` entry fails fast and clearly ("Torch not compiled
+    #    with CUDA enabled"), so it is a documented option, never a silent
+    #    degradation.
 
     # Default. Fast, 384-dim, and the only one this host can actually run.
     minilm_cpu:
@@ -129,7 +131,7 @@ pipeline:
     splitter: components.splitters.english_recursive
     # Swap this line to change embedding model or device, then re-run
     # `rag-ingest` (a new embedder invalidates the existing index):
-    #   components.embedders.minilm_cuda              GPU, needs a CUDA torch build
+    #   components.embedders.minilm_cuda              GPU: `uv sync --no-group cpu --group cuda`
     #   components.embedders.multilingual_mpnet_cpu   non-English corpora
     embedder: components.embedders.minilm_cpu
 
