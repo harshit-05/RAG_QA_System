@@ -5,9 +5,12 @@
 
 ## Now
 
-**Next action: implement [S1-4](phase-1/S1-4-error-handling-cli.md)** —
-error handling and a real CLI (opus-fast, not plan-first), on a feature branch
-because it changes the ingestion exit-code contract. S1-7 is also unblocked.
+**Next action: land [S1-4](phase-1/S1-4-error-handling-cli.md) through its
+branch** (`s1-4-error-handling-cli` → push → CI → PR → merge). All six
+verification steps passed (2026-10-01), step 3 live by the maintainer. The branch
+is because it changes the ingestion exit-code contract: **0** ok, **1** a
+document unreadable or nothing indexed, **2** cannot start. Then S1-5 (S1-7 is
+also unblocked).
 Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` plus review follow-up `f68eee3`;
 S1-3 `3b0e77f` plus review follow-up `ddcd98f` (PR #1, the first story through a
 branch; 0 of 1,708 chunks changed). **CI exists**: every story closes on a green
@@ -192,7 +195,7 @@ Design: ARCHITECTURE.md §1.1–§1.7.
 | [S1-1](phase-1/S1-1-config-schema.md) | Validate the config with a frozen Pydantic model | FR-8, ISS-01, ISS-11, NFR-11 | — | Done 2026-09-26 |
 | [S1-2](phase-1/S1-2-target-allowlist.md) | Allowlist `_target_` imports; stand up CI | ISS-04 | S1-1 | Done 2026-09-29; review follow-up 2026-09-30 pending commit |
 | [S1-3](phase-1/S1-3-own-loaders.md) | Own loaders, extension map, recursive walk | ISS-13, FR-2, DEC-5 step 1 | S1-1 | Done 2026-09-30 (PR #1) |
-| [S1-4](phase-1/S1-4-error-handling-cli.md) | Explicit error handling and a real CLI surface | ISS-05, ISS-06, ISS-18, NFR-7 | S1-3 | Todo |
+| [S1-4](phase-1/S1-4-error-handling-cli.md) | Explicit error handling and a real CLI surface | ISS-05, ISS-06, ISS-18, NFR-7 | S1-3 | In review 2026-10-01 (branch `s1-4-error-handling-cli`) |
 | [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | Todo |
 | [S1-6](phase-1/S1-6-types-and-lint.md) | Type annotations, ruff and mypy configuration | ISS-19, NFR-9 | S1-5 | Todo |
 | [S1-7](phase-1/S1-7-cuda-extra.md) | GPU embedder path installable (CPU/CUDA torch variants) | FR-1 (GPU axis) | S1-1 | Todo |

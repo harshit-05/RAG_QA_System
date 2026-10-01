@@ -25,6 +25,16 @@ def create_store(chunks, embeddings, path: Path) -> FAISS:
     return db
 
 
+def store_exists(path: Path) -> bool:
+    """Whether a previous ingestion run left an index at ``path``.
+
+    Lives here, not in its callers, because what "an index exists" means is
+    store-specific (FAISS writes ``index.faiss`` + ``index.pkl``); the Phase 3 swap
+    rewrites this body with the other two.
+    """
+    return (Path(path) / "index.faiss").is_file() and (Path(path) / "index.pkl").is_file()
+
+
 def open_store(embeddings, path: Path) -> FAISS:
     """Open the persisted index a previous ingestion run wrote to ``path``."""
     return FAISS.load_local(
