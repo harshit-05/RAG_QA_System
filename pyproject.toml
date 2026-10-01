@@ -79,8 +79,17 @@ files = ["src/rag_qa"]
 disallow_untyped_defs = true
 warn_unreachable = true
 warn_unused_ignores = true
-# Packages without type stubs (docx2txt, faiss, pandas/datasets in the eval
-# extra) are treated as Any instead of failing the run.
+
+# Only the imports that have no stubs are treated as Any. A global
+# ignore_missing_imports would also hide a misspelled rag_qa import.
+[[tool.mypy.overrides]]
+module = [
+    "yaml",      # types-PyYAML would type it: backlog (STATUS.md, Found in S1-6)
+    "docx2txt",
+    "pandas",    # these three come from the optional eval extra
+    "datasets",
+    "ragas.*",
+]
 ignore_missing_imports = true
 
 # Coverage gate (NFR-8, S1-5). 80% is the SRS figure, deliberately not higher: a
