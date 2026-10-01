@@ -52,7 +52,8 @@ def write_pdf(path: Path, texts: list[str], page_labels: str | None = None) -> P
     xref_at = len(out)
     out += f"xref\n0 {len(bodies) + 1}\n0000000000 65535 f \n".encode()
     out += "".join(f"{offset:010d} 00000 n \n" for offset in offsets).encode()
-    out += f"trailer\n<< /Size {len(bodies) + 1} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n".encode()
+    out += f"trailer\n<< /Size {len(bodies) + 1} /Root 1 0 R >>\n".encode()
+    out += f"startxref\n{xref_at}\n%%EOF\n".encode()
     path.write_bytes(out)
     return path
 
@@ -64,7 +65,8 @@ def write_docx(path: Path, paragraphs: list[str]) -> Path:
     parts = {
         "[Content_Types].xml": (
             f'{xml}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="rels" ContentType="application/'
+            'vnd.openxmlformats-package.relationships+xml"/>'
             '<Default Extension="xml" ContentType="application/xml"/>'
             '<Override PartName="/word/document.xml" ContentType="application/'
             'vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'
@@ -141,7 +143,9 @@ def make_config(tmp_path: Path) -> MakeConfig:
     writes raw content instead, for cases YAML can't express as a dict.
     """
 
-    def make(edit: Callable[[dict[str, Any]], None] | None = None, *, text: str | None = None) -> Path:
+    def make(
+        edit: Callable[[dict[str, Any]], None] | None = None, *, text: str | None = None
+    ) -> Path:
         path = tmp_path / "config.yaml"
         if text is not None:
             path.write_text(text)

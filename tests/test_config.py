@@ -86,7 +86,9 @@ MALFORMED = [
         id="component without _target_",
     ),
     pytest.param(
-        lambda c: _rename(c["components"]["retrievers"]["vector_search"], "search_kwargs", "serch_kwargs"),
+        lambda c: _rename(
+            c["components"]["retrievers"]["vector_search"], "search_kwargs", "serch_kwargs"
+        ),
         ["unknown key 'serch_kwargs'", "did you mean 'search_kwargs'"],
         id="retriever option typo",
     ),
@@ -107,7 +109,9 @@ MALFORMED = [
         id="uppercase extension key",
     ),
     pytest.param(
-        lambda c: c["pipeline"]["ingestion"]["loaders"].update({".tar.gz": "components.loaders.txt"}),
+        lambda c: c["pipeline"]["ingestion"]["loaders"].update(
+            {".tar.gz": "components.loaders.txt"}
+        ),
         ["'.tar.gz'", "can never match", "one leading dot"],
         id="two-dot extension key (Path.suffix is only .gz)",
     ),
@@ -117,7 +121,9 @@ MALFORMED = [
         id="loader reference typo",
     ),
     pytest.param(
-        lambda c: c["pipeline"]["ingestion"]["loaders"].update({".pdf": "components.llms.mistral_ollama"}),
+        lambda c: c["pipeline"]["ingestion"]["loaders"].update(
+            {".pdf": "components.llms.mistral_ollama"}
+        ),
         ["pipeline.ingestion.loaders['.pdf']", "points into components.llms", "components.loaders"],
         id="loader map pointing at the wrong kind",
     ),

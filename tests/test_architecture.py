@@ -85,6 +85,8 @@ def test_the_legacy_import_scan_reaches_subpackages(tmp_path: Path) -> None:
     (tmp_path / "__init__.py").write_text("")
     (tmp_path / "api" / "routes.py").write_text("from langchain_classic.chains import X\n")
     flagged = {
-        p.relative_to(tmp_path).as_posix() for p in application_files(tmp_path) if _legacy_imports(p)
+        p.relative_to(tmp_path).as_posix()
+        for p in application_files(tmp_path)
+        if _legacy_imports(p)
     }
     assert flagged == {"api/routes.py"}

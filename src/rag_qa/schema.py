@@ -153,7 +153,9 @@ class Components(_Strict):
         time as ``TypeError: unexpected keyword argument 'extensions'`` — far from the
         cause, for anyone upgrading an older config.
         """
-        stale = [name for name, spec in self.loaders.items() if "extensions" in (spec.model_extra or {})]
+        stale = [
+            name for name, spec in self.loaders.items() if "extensions" in (spec.model_extra or {})
+        ]
         if stale:
             raise ValueError(
                 f"loaders {', '.join(map(repr, stale))}: 'extensions' moved out of the loader "
@@ -184,7 +186,9 @@ class Ingestion(_Strict):
         """
 
         def matchable(ext: str) -> bool:
-            return ext.startswith(".") and len(ext) > 1 and ext == ext.lower() and ext.count(".") == 1
+            return (
+                ext.startswith(".") and len(ext) > 1 and ext == ext.lower() and ext.count(".") == 1
+            )
 
         bad = [ext for ext in self.loaders if not matchable(ext)]
         if bad:
