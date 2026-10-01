@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-02) — steps 1–4 passed locally, incl. the mistral run; step 5 (CI) after the push; branch `chore/s1-6-types-and-lint` |
+| **Status** | Done 2026-10-02 — all five steps passed; CI green on the branch (run 36912062240); awaiting PR merge. Branch `chore/s1-6-types-and-lint` |
 | **Closes** | ISS-19, NFR-9, ISS-12 (via `warn_unreachable`) |
 | **Depends on** | S1-5 |
 | **Model** | opus-fast |
@@ -84,7 +84,7 @@ and `evaluate.py`), because S1-1…S1-5 annotated what they wrote.
 | 3b. the private-field test, rewritten (board item) | now asserts behaviour: chunks ≤ 1000 characters, and neighbours overlap. Negative control: the same test against `chunk_size: 5000` fails with `assert 4994 <= 1000` |
 | 4. `rag-ingest` + `rag-query`, real config, mistral | pass, **behaviour unchanged**: ingest 561 pages → 1,708 chunks, 0 failed; the answer is **word-for-word identical** to the S1-1, S1-2 and S1-3 mistral runs, with the same 5 sources (p. 9, 340, 477, 233, 81). The session ends `Exiting...`, exit 0 (S1-4's end-of-input fix, seen in a real run). 646 s on CPU. So the signatures, the `VectorStore` return type and the statement re-wrapping changed nothing a user sees |
 | ruff, whole project (as CI) | All checks passed |
-| 5. CI | after the push |
+| 5. CI | green on the branch: `check` passed in 1m41s with ruff, mypy and pytest all blocking |
 
 ## Review notes for the human
 
