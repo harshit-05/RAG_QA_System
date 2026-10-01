@@ -60,6 +60,29 @@ torch = { index = "pytorch-cpu" }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+# Lint (NFR-9, S1-6). Ruff 0.16's *default* rule set is broad (~790 rules: F, B,
+# UP, SIM, RUF, PL*, PERF, ...), so this extends it rather than replacing it with
+# a narrower explicit list, which would quietly weaken the gate. The one addition
+# is E501, without which line-length would be a number nothing checks.
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["E501"]
+
+# Types (NFR-9, ISS-19). Every function in src/rag_qa carries annotations, and
+# code after a return is an error: warn_unreachable is ISS-12's only guard
+# (ruff 0.16 has no unreachable-code rule, even in preview). Tests are linted by
+# ruff but not type-checked; fixtures are not worth annotating.
+[tool.mypy]
+files = ["src/rag_qa"]
+disallow_untyped_defs = true
+warn_unreachable = true
+warn_unused_ignores = true
+# Packages without type stubs (docx2txt, faiss, pandas/datasets in the eval
+# extra) are treated as Any instead of failing the run.
+ignore_missing_imports = true
+
 # Coverage gate (NFR-8, S1-5). 80% is the SRS figure, deliberately not higher: a
 # higher bar invites tests written for the number rather than the behaviour.
 [tool.coverage.run]
