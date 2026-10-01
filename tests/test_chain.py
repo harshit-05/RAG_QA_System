@@ -47,7 +47,10 @@ def test_build_does_not_touch_the_config(fake_rag: Path) -> None:
 
 def test_format_docs_numbers_chunks_the_way_the_cli_lists_sources() -> None:
     docs = [
-        Document(page_content="Preface.", metadata={"source": "/c/guide.pdf", "page": 0, "page_label": "i"}),
+        Document(
+            page_content="Preface.",
+            metadata={"source": "/c/guide.pdf", "page": 0, "page_label": "i"},
+        ),
         Document(page_content="Notes.", metadata={"source": "/c/notes.txt"}),
     ]
     assert format_docs(docs) == "[1] (guide.pdf, p. i)\nPreface.\n\n[2] (notes.txt)\nNotes."

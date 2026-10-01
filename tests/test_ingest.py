@@ -88,7 +88,9 @@ def test_nothing_to_index_exits_1(run: Any, tmp_path: Path, capsys: Any) -> None
 def test_invalid_config_exits_2_with_the_message_not_a_traceback(
     run: Any, sample_corpus: Path, capsys: Any
 ) -> None:
-    status, _ = run(sample_corpus, lambda c: c["components"].__setitem__("llmS", c["components"].pop("llms")))
+    status, _ = run(
+        sample_corpus, lambda c: c["components"].__setitem__("llmS", c["components"].pop("llms"))
+    )
     err = capsys.readouterr().err
     assert status == EXIT_CANNOT_START
     assert "did you mean 'llms'" in err
@@ -106,7 +108,9 @@ def test_a_loader_that_cannot_be_built_is_a_config_error_not_a_document_failure(
 ) -> None:
     # A kwarg typo breaks every .txt file the same way: stop and name it, rather
     # than report each text file as a "failed document".
-    status, _ = run(sample_corpus, lambda c: c["components"]["loaders"]["txt"].update(encodng="utf-8"))
+    status, _ = run(
+        sample_corpus, lambda c: c["components"]["loaders"]["txt"].update(encodng="utf-8")
+    )
     err = capsys.readouterr().err
     assert status == EXIT_CANNOT_START
     assert "Cannot build the loader 'components.loaders.txt'" in err
@@ -168,7 +172,11 @@ def test_symlinks_are_never_followed_and_are_listed(tmp_path: Path) -> None:
 
     listing = discover_files(corpus)
     assert [p.name for p in listing.files] == ["real.txt"]
-    assert sorted(p.name for p in listing.symlinks) == ["broken-link.txt", "file-link.txt", "folder-link"]
+    assert sorted(p.name for p in listing.symlinks) == [
+        "broken-link.txt",
+        "file-link.txt",
+        "folder-link",
+    ]
 
 
 @pytest.fixture

@@ -157,7 +157,9 @@ def _set_nested_reranker_target(target: str) -> Any:
 @pytest.mark.parametrize(
     ("edit", "location"),
     [
-        pytest.param(_set_llm_target("os.system"), "components.llms.mistral_ollama", id="top level"),
+        pytest.param(
+            _set_llm_target("os.system"), "components.llms.mistral_ollama", id="top level"
+        ),
         pytest.param(
             _set_nested_reranker_target("subprocess.Popen"),
             "base_compressor.model._target_",

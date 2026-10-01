@@ -28,7 +28,9 @@ class FakeChain:
         self.questions.append(inputs["question"])
         behaviour = self.behaviours.pop(0)
         yield {"question": inputs["question"]}
-        yield {"context": [Document(page_content="c", metadata={"source": "/x/guide.pdf", "page": 0})]}
+        yield {
+            "context": [Document(page_content="c", metadata={"source": "/x/guide.pdf", "page": 0})]
+        }
         yield {"answer": "Partial "}
         if isinstance(behaviour, BaseException):
             raise behaviour  # mid-stream, like a dropped Ollama connection
@@ -122,7 +124,9 @@ def test_no_index_yet_says_to_run_rag_ingest(
     assert "Run rag-ingest first" in capsys.readouterr().err
 
 
-def test_invalid_config_exits_2(make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
+def test_invalid_config_exits_2(
+    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
     monkeypatch.setattr(cli, "build_rag_chain", _chain_must_not_be_built)
     path = make_config(lambda c: c["pipeline"]["query"].update(llm="components.llms.nope"))
     assert cli.main(["--config", str(path)]) == EXIT_CANNOT_START
@@ -134,6 +138,8 @@ def test_main_runs_the_session_with_the_built_chain(
 ) -> None:
     monkeypatch.setattr(cli, "store_exists", lambda path: True)
     monkeypatch.setattr(cli, "build_rag_chain", lambda config: FakeChain("an answer"))
-    monkeypatch.setattr("builtins.input", scripted("a question"))  # honoured: looked up at call time
+    monkeypatch.setattr(
+        "builtins.input", scripted("a question")
+    )  # honoured: looked up at call time
     assert cli.main(["--config", str(make_config())]) == EXIT_OK
     assert "an answer" in capsys.readouterr().out

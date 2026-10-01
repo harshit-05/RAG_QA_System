@@ -26,7 +26,13 @@ def test_pdf_loader_yields_one_document_per_page_with_labels(sample_corpus: Path
 
     assert [d.page_content for d in docs] == ["Preface text", "Contents text", "Chapter one text"]
     assert [d.metadata for d in docs] == [
-        {"source": str(path), "page": page, "page_label": label, "total_pages": 3, "loader": "PdfLoader"}
+        {
+            "source": str(path),
+            "page": page,
+            "page_label": label,
+            "total_pages": 3,
+            "loader": "PdfLoader",
+        }
         for page, label in [(0, "i"), (1, "ii"), (2, "1")]
     ]
 
@@ -96,9 +102,14 @@ def test_docx_and_text_loaders_match_the_old_ones(sample_corpus: Path) -> None:
     from langchain_community.document_loaders import TextLoader as OldTextLoader
 
     docx = sample_corpus / "sub" / "report.docx"
-    assert DocxLoader(docx).load()[0].page_content == Docx2txtLoader(str(docx)).load()[0].page_content
+    assert (
+        DocxLoader(docx).load()[0].page_content == Docx2txtLoader(str(docx)).load()[0].page_content
+    )
     for text in (sample_corpus / "notes.txt", sample_corpus / "README.md"):
-        assert TextLoader(text).load()[0].page_content == OldTextLoader(str(text)).load()[0].page_content
+        assert (
+            TextLoader(text).load()[0].page_content
+            == OldTextLoader(str(text)).load()[0].page_content
+        )
 
 
 # --- recursive discovery and the extension map (ISS-13, FR-2) --------------------------
@@ -136,9 +147,9 @@ def test_load_documents_walks_subdirectories_and_uses_the_map(
 
     by_file = {}
     for doc in docs:
-        by_file.setdefault(Path(doc.metadata["source"]).relative_to(sample_corpus).as_posix(), []).append(
-            doc.metadata["loader"]
-        )
+        by_file.setdefault(
+            Path(doc.metadata["source"]).relative_to(sample_corpus).as_posix(), []
+        ).append(doc.metadata["loader"])
     assert by_file == {
         "README.md": ["TextLoader"],                # .md maps to the txt loader
         "guide.pdf": ["PdfLoader"] * 3,
@@ -156,7 +167,9 @@ def test_a_new_extension_is_one_config_line(
     # What FR-1 promises: supporting a file type is config, not code.
     (sample_corpus / "notes.rst").write_text("Restructured text.\n", encoding="utf-8")
     monkeypatch.setenv("RAG_DATA_PATH", str(sample_corpus))
-    path = make_config(lambda c: c["pipeline"]["ingestion"]["loaders"].update({".rst": "components.loaders.txt"}))
+    path = make_config(
+        lambda c: c["pipeline"]["ingestion"]["loaders"].update({".rst": "components.loaders.txt"})
+    )
     report = IngestReport()
     docs = load_documents(load_config(path), report)
     assert any(d.metadata["source"].endswith("notes.rst") for d in docs)

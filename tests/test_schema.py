@@ -14,7 +14,9 @@ MINIMAL: dict[str, Any] = {
     "components": {
         "loaders": {"txt": {"_target_": "rag_qa.stub.Loader"}},
         "splitters": {"split": {"_target_": "rag_qa.stub.Splitter", "chunk_size": 10}},
-        "embedders": {"embed": {"_target_": "rag_qa.stub.Embedder", "model_kwargs": {"device": "cpu"}}},
+        "embedders": {
+            "embed": {"_target_": "rag_qa.stub.Embedder", "model_kwargs": {"device": "cpu"}}
+        },
         "llms": {"llm": {"_target_": "rag_qa.stub.LLM"}},
         "retrievers": {"search": {"search_kwargs": {"k": 5}}},
     },

@@ -134,7 +134,10 @@ def discover_files(data_path: Path) -> CorpusListing:
             elif path.is_file():
                 files.append(path)
     return CorpusListing(
-        files=sorted(files), symlinks=sorted(symlinks), ignored=ignored, unreadable=sorted(unreadable)
+        files=sorted(files),
+        symlinks=sorted(symlinks),
+        ignored=ignored,
+        unreadable=sorted(unreadable),
     )
 
 
@@ -254,7 +257,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             if report.documents
             else "Nothing was indexed."
         )
-        print(f"Error: {len(report.failed)} file(s) could not be read (listed above). {saved}", file=sys.stderr)
+        print(
+            f"Error: {len(report.failed)} file(s) could not be read (listed above). {saved}",
+            file=sys.stderr,
+        )
         return EXIT_RUN_FAILED
     if not report.documents:
         print("Error: No documents were loaded.", file=sys.stderr)
