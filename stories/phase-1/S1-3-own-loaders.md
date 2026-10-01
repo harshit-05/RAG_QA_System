@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-09-30) — `e92332b` on branch `s1-3-own-loaders`; review follow-up (corpus walk ignores hidden/lock files) pending commit; CI + PR pending |
+| **Status** | Done (2026-09-30) — PR #1, rebase-merged into `main` as `3b0e77f` + review follow-up `ddcd98f`; CI green on the branch, the PR and `main` |
 | **Closes** | ISS-13, FR-2 (recursive discovery), DEC-5 step 1 of 3 |
 | **Depends on** | S1-1 (ARCHITECTURE.md §1.1 DEC-8, §1.3) |
 | **Model** | fable |
@@ -73,7 +73,9 @@ from rag_qa.chain import citation; print([citation(d) for d in r['context']])"
 
 # 3. recursion works and the loader map is honoured
 mkdir -p <scratch>/corpus/sub && cp corpus/*.pdf <scratch>/corpus/sub/
-RAG_DATA_PATH=<scratch>/corpus uv run rag-ingest 2>&1 | tail -5   # finds the subdir
+#    Set BOTH paths: with RAG_DATA_PATH alone, rag-ingest saves the scratch build
+#    over the real vectorstore/db_faiss (found while verifying, 2026-09-30).
+RAG_DATA_PATH=<scratch>/corpus RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-ingest 2>&1 | tail -5   # finds the subdir
 
 # 4. unit tests, no network
 uv run pytest tests/test_loaders.py tests/test_components.py -q

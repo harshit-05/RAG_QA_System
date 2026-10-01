@@ -5,15 +5,13 @@
 
 ## Now
 
-**Next action: land [S1-3](phase-1/S1-3-own-loaders.md) through its branch.**
-It is in review with local verification passed (2026-09-30), and it is the first
-story on a **feature branch**: `s1-3-own-loaders` → push (CI runs on the branch)
-→ PR into `main` → merge on review + green CI. Why a branch: it replaces every
-loader and changes the config shape, which can degrade answers silently. The
-before/after over all 1,708 chunks came back 0 citation and 0 text differences.
-Then S1-4 (S1-7 is also unblocked). Done so far: S1-1 `b22a37a`, S1-2 `1f1d6ff`
-plus review follow-up `f68eee3` (CI green). **CI exists**: every story closes on
-a green run. Run the rest in the **Depends** order of the Phase 1 table below.
+**Next action: implement [S1-4](phase-1/S1-4-error-handling-cli.md)** —
+error handling and a real CLI (opus-fast, not plan-first), on a feature branch
+because it changes the ingestion exit-code contract. S1-7 is also unblocked.
+Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` plus review follow-up `f68eee3`;
+S1-3 `3b0e77f` plus review follow-up `ddcd98f` (PR #1, the first story through a
+branch; 0 of 1,708 chunks changed). **CI exists**: every story closes on a green
+run. Run the rest in the **Depends** order of the Phase 1 table below.
 
 **Branch rule (maintainer, 2026-09-30):** risky stories go on a feature branch
 and a PR, not straight to `main`. The call is made and stated at the start of each
@@ -193,7 +191,7 @@ Design: ARCHITECTURE.md §1.1–§1.7.
 | --- | --- | --- | --- | --- |
 | [S1-1](phase-1/S1-1-config-schema.md) | Validate the config with a frozen Pydantic model | FR-8, ISS-01, ISS-11, NFR-11 | — | Done 2026-09-26 |
 | [S1-2](phase-1/S1-2-target-allowlist.md) | Allowlist `_target_` imports; stand up CI | ISS-04 | S1-1 | Done 2026-09-29; review follow-up 2026-09-30 pending commit |
-| [S1-3](phase-1/S1-3-own-loaders.md) | Own loaders, extension map, recursive walk | ISS-13, FR-2, DEC-5 step 1 | S1-1 | In review 2026-09-30 (branch `s1-3-own-loaders`) |
+| [S1-3](phase-1/S1-3-own-loaders.md) | Own loaders, extension map, recursive walk | ISS-13, FR-2, DEC-5 step 1 | S1-1 | Done 2026-09-30 (PR #1) |
 | [S1-4](phase-1/S1-4-error-handling-cli.md) | Explicit error handling and a real CLI surface | ISS-05, ISS-06, ISS-18, NFR-7 | S1-3 | Todo |
 | [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | Todo |
 | [S1-6](phase-1/S1-6-types-and-lint.md) | Type annotations, ruff and mypy configuration | ISS-19, NFR-9 | S1-5 | Todo |
@@ -319,6 +317,36 @@ reason**. Reconciled in the Phase 1 architecture pass, 2026-09-25.
   **Proposed owners:** the doc lines → S1-8 doc hygiene; the constraint that the
   Phase 2 API must never let a request supply or override components → Phase 2
   architecture pass. Full finding in the S1-2 story, "Second review".
+
+### Found in S1-3 (2026-09-30)
+
+- **For S1-4 — ignored files leave no trace.** Since `ddcd98f`, hidden paths and
+  `~$` lock files are neither listed nor counted. SRS §7.1 asks for skip-and-report,
+  and a top-level dotfile that v0.1's `os.listdir` *did* ingest is now silently
+  dropped. A one-line count in `IngestReport.summary()` keeps it honest without
+  listing all of `.git`.
+- **For S1-4 — symlinks are inconsistent.** Symlinked files are followed, even
+  outside the corpus; symlinked directories are not (3.12 `rglob`). Pick one rule
+  and state it in `discover_files`. Detail in the S1-3 story, "Second review".
+- **For S1-5 — two-dot extension keys pass validation but never match.**
+  `".tar.gz"` is accepted, yet `Path.suffix` is `.gz`. Reject keys with a second
+  dot in `Ingestion.check_extensions`, with a regression case.
+- **For S1-5 — the ADR-009 check should be a runtime test.** The grep
+  `^(from|import) .*chain` false-positives on `langchain_core`; "importing
+  `rag_qa.ingest` leaves `rag_qa.chain` unloaded" is the reliable form.
+- **For S1-6 — one test reads a private field** (`splitter._chunk_size` in
+  `test_components.py`). Test behaviour instead: split a long text, check chunk
+  lengths.
+- **Parity tests depend on `corpus/`** (the real 13-page PDF in
+  `test_loaders.py`). Acceptable: they are removed with `langchain-community` in
+  Phase 3. Removing that PDF before then fails them loudly, which is right.
+- **Backlog — the walk still traverses hidden trees before discarding them.**
+  `rglob` walks all of `.git` and then filters. Performance only; prune with
+  `os.walk` if a corpus ever holds a large hidden tree.
+- **Habit, for every story's verification:** any command that ingests a scratch
+  corpus sets **both** `RAG_DATA_PATH` and `RAG_VECTOR_STORE_PATH`. With the
+  first alone, the scratch build overwrites the real index. S1-3's step 3 is
+  fixed; S1-4's step 2 has the same bug and is fixed in S1-4.
 
 ### Later phases
 
