@@ -11,7 +11,7 @@ ship in the optional ``eval`` extra, which a default ``uv sync`` does not instal
 """
 
 
-def main():
+def main() -> None:
     """Run the RAGAs evaluation over the committed golden dataset."""
     import pandas as pd
     from datasets import Dataset
