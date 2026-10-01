@@ -5,16 +5,17 @@
 
 ## Now
 
-**Next action: merge [S1-7](phase-1/S1-7-cuda-extra.md)** (PR from
-`feat/s1-7-cuda-torch-variant`; CI green on push and PR; second-review fixes for the GPU run
-command and the CI guard need a green run, 2026-10-02), then S1-8,
-the Phase 1 exit (`v0.2`). S1-8 notes from S1-7: audit the installed environment
+**Next action: [S1-8](phase-1/S1-8-phase-1-exit.md)**, the last Phase 1 story and the
+Phase 1 exit (`v0.2`), in a fresh session. It covers the `pip-audit` gate, doc
+hygiene, a literal check of the exit criterion against the issue map in
+`tests/test_config_regressions.py`, version 0.2.0, and the tag. S1-8 notes from S1-7: audit the installed environment
 with `pip-audit`, not the lock (it now records both torch variants); the Phase 3
 Docker image must install with `uv sync` or `uv export` (they honour the torch
 groups), never `pip install .`. Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
 + follow-up `ddcd98f` (PR #1); S1-4 `eff50ea` + follow-up `a6f21b3` + DEC-13
 `20c4a6a` (PR #2); S1-5 `e3927a4` … `4efa53d` (PR #3, 8 commits); S1-6
-`ff61088` … `be545a4` (PR #4, 9 commits). **CI exists**: every story closes on a green run. Run the rest
+`ff61088` … `be545a4` (PR #4, 9 commits); S1-7 `6a50792` … `234f437` (PR #5,
+7 commits). **CI exists**: every story closes on a green run. Run the rest
 in the **Depends** order of the Phase 1 table below.
 
 **Commit and branch convention (maintainer, 2026-10-01):** Conventional Commits +
@@ -86,11 +87,15 @@ The final story of each phase performs the tag + version bump at close-out.
 - [x] `gh auth login` — done 2026-09-24 as `harshit-05` (HTTPS, keyring;
       scopes: repo, read:org, gist). Needed to push and for Phase 1 CI/PR work.
 
-- [x] **`workflow` scope** — done 2026-09-29. Token scopes are now `gist`,
-      `read:org`, `repo`, `workflow`, and git pushes to github.com through
-      `gh auth git-credential` (`gh auth setup-git`), no longer the `cache`
-      helper. Needed because GitHub rejects any push that adds or changes
-      `.github/workflows/*.yml` without that scope.
+- [x] **`workflow` scope** — granted 2026-09-29, lost when `gh` was logged in
+      again (by 2026-10-02 the token had `admin:public_key gist read:org repo`
+      and S1-7's push was refused), and restored on 2026-10-02 with
+      `gh auth refresh -h github.com -s workflow`. Git pushes to github.com
+      through `gh auth git-credential`. Every push that changes
+      `.github/workflows/*.yml` needs this scope, so check with `gh auth status`
+      after any re-login. **Note:** the token now lives in
+      `~/.config/gh/hosts.yml` (plain text), not the system keyring as before.
+      Re-login with keyring storage if that was not intended.
 
 - [x] Resolve DEC-1 / DEC-2 — done in the Phase 0 arch pass, 2026-09-18.
 
@@ -203,7 +208,7 @@ Design: ARCHITECTURE.md §1.1–§1.7.
 | [S1-4](phase-1/S1-4-error-handling-cli.md) | Explicit error handling and a real CLI surface | ISS-05, ISS-06, ISS-18, NFR-7 | S1-3 | Done 2026-10-01 (PR #2) |
 | [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | Done 2026-10-01 (PR #3) |
 | [S1-6](phase-1/S1-6-types-and-lint.md) | Type annotations, ruff and mypy configuration | ISS-19, NFR-9, ISS-12 | S1-5 | Done 2026-10-02 (PR #4) |
-| [S1-7](phase-1/S1-7-cuda-extra.md) | GPU embedder path installable (CPU/CUDA torch variants) | FR-1 (GPU axis) | S1-1 | Done 2026-10-02 (PR pending merge) |
+| [S1-7](phase-1/S1-7-cuda-extra.md) | GPU embedder path installable (CPU/CUDA torch variants) | FR-1 (GPU axis) | S1-1 | Done 2026-10-02 (PR #5) |
 | [S1-8](phase-1/S1-8-phase-1-exit.md) | Phase 1 exit: audit gate, doc hygiene, 0.2.0 | — (exit) | S1-6, S1-7 | Todo |
 
 CI lands in S1-2, not at the end, so every later story closes on green rather
@@ -405,6 +410,22 @@ ends, startup handling and `fetch_dataset.py`:
   package ships its types.
 - The three S1-5 board items (ruff defaults, `warn_unreachable`, the private-field
   test) are done; `E501` is on at 100 columns. CI now gates ruff → mypy → pytest.
+
+### Found in S1-7 (2026-10-02)
+
+- **Backlog — CUDA 12 fallback, if Colab/Kaggle drivers are too old for CUDA 13.**
+  `cu130` is the only CUDA index carrying torch 2.14, and its wheels need a recent
+  NVIDIA driver; this host has no GPU, so that was never checked. If the first
+  real GPU run fails on the driver, add a `cuda12` variant on `cu128`, which caps
+  torch at 2.11.
+- **Backlog — torch parity between the variants.** CUDA resolves `2.14.1+cu130`,
+  CPU stays at `2.14.0+cpu`. Accepted for now; `uv lock --upgrade-package torch`
+  aligns them if it ever matters.
+- **Lesson, already applied:** a guard has to be checked as CI runs it. A plain
+  `uv run` re-syncs the environment first, so the original guard would have
+  repaired the very trap it was meant to catch and then passed. This was shown in
+  a scratch environment: with torch removed, `uv run` printed "Installed 1
+  package" and passed, while `uv run --no-sync` failed.
 
 ### Later phases
 

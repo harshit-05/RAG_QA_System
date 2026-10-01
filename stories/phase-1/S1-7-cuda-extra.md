@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done 2026-10-02 — spike done, option (a) chosen and approved in plan mode; all checks passed; CI green on push and PR; second review found two gaps (`uv run` re-sync, the guard), fixed and re-verified; awaiting CI on the follow-ups, then merge. Branch `feat/s1-7-cuda-torch-variant` |
+| **Status** | Done (2026-10-02) — PR #5, rebase-merged into `main` as `6a50792` … `234f437` (7 commits incl. the review fixes: the CI guard now runs `uv run --no-sync`, and the GPU commands name the pip trap); CI green on the branch, the PR and `main` |
 | **Closes** | FR-1 (the GPU axis, declarable → installable) |
 | **Depends on** | S1-1 (ARCHITECTURE.md §1.1 DEC-12; DEC-1 rule 2) |
 | **Model** | fable |
