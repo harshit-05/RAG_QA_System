@@ -13,12 +13,15 @@ of the legacy chain helpers: the ``RetrievalQA`` this replaces now lives only in
 maintenance-mode "classic" package, which application code never imports.
 """
 
+from collections.abc import Sequence
 from operator import itemgetter
 from pathlib import Path
+from typing import Any
 
+from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrough
 
 from rag_qa.components import build_embedder, build_llm
 from rag_qa.registry import build_object
@@ -26,7 +29,7 @@ from rag_qa.schema import RagConfig
 from rag_qa.vectorstore import open_store
 
 
-def citation(doc):
+def citation(doc: Document) -> str:
     """Human-readable source for one chunk: ``file.pdf, p. 3``.
 
     Uses the loader's ``page_label`` (the printed page number) when present, falls
@@ -41,7 +44,7 @@ def citation(doc):
     return f"{name}, p. {page}" if page is not None else name
 
 
-def format_docs(docs):
+def format_docs(docs: Sequence[Document]) -> str:
     """Render retrieved chunks for the prompt, numbered so the model can cite them.
 
     The CLI prints sources with the same ``[n]`` numbering, so a citation in the
@@ -52,7 +55,7 @@ def format_docs(docs):
     )
 
 
-def build_rag_chain(config: RagConfig):
+def build_rag_chain(config: RagConfig) -> Runnable[dict[str, str], dict[str, Any]]:
     """Build the RAG chain from a loaded config (see :func:`rag_qa.config.load_config`).
 
     Cannot mutate ``config``: it is frozen, and every component dict used here is a
@@ -81,7 +84,7 @@ def build_rag_chain(config: RagConfig):
             ("human", query.prompt.human),
         ]
     )
-    to_prompt_inputs = RunnableLambda(
+    to_prompt_inputs: RunnableLambda[dict[str, Any], dict[str, str]] = RunnableLambda(
         lambda x: {"context": format_docs(x["context"]), "question": x["question"]}
     )
 

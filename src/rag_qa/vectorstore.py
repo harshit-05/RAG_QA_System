@@ -16,9 +16,12 @@ changes the argument here and at two call sites, not a config shape everyone rea
 from pathlib import Path
 
 from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
+from langchain_core.vectorstores import VectorStore
 
 
-def create_store(chunks, embeddings, path: Path) -> FAISS:
+def create_store(chunks: list[Document], embeddings: Embeddings, path: Path) -> VectorStore:
     """Build a fresh index from chunks and persist it to ``path``."""
     db = FAISS.from_documents(chunks, embeddings)
     db.save_local(str(path))
@@ -35,7 +38,7 @@ def store_exists(path: Path) -> bool:
     return (Path(path) / "index.faiss").is_file() and (Path(path) / "index.pkl").is_file()
 
 
-def open_store(embeddings, path: Path) -> FAISS:
+def open_store(embeddings: Embeddings, path: Path) -> VectorStore:
     """Open the persisted index a previous ingestion run wrote to ``path``."""
     return FAISS.load_local(
         str(path),
