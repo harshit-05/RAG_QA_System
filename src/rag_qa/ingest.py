@@ -17,8 +17,11 @@ Phase 2 ``/v1/ingest`` job-status endpoint can report the same numbers the CLI d
   run). The run still fails at the end.
 
 ``rag-ingest`` exit codes: **0** everything indexed; **1** the run completed but a
-document could not be read, or there was nothing to index; **2** the run could not
-start (configuration problem, or a command-line usage error, as ``argparse`` uses).
+document or folder could not be read, or there was nothing to index — and also an
+unexpected error, which exits 1 with a traceback (Python's own status for an
+unhandled exception), so 1 alone does not say whether an index was saved; **2** the
+run could not start (configuration problem, or a command-line usage error, as
+``argparse`` uses).
 """
 
 import argparse
@@ -80,11 +83,13 @@ def _ignored(relative: Path) -> bool:
 
 @dataclass
 class CorpusListing:
-    """What the corpus walk found: files to load, symlinks passed over, ignored count."""
+    """What the corpus walk found: files to load, symlinks passed over, ignored count,
+    and folders it could not list, each with the error."""
 
     files: list[Path]
     symlinks: list[Path]
     ignored: int
+    unreadable: list[tuple[Path, str]] = field(default_factory=list)
 
 
 def discover_files(data_path: Path) -> CorpusListing:
@@ -96,6 +101,10 @@ def discover_files(data_path: Path) -> CorpusListing:
       listed. One rule, where before a linked file was read even from outside the
       corpus while a linked folder was not walked (Python 3.12's ``rglob`` does
       not descend into one). The corpus is the directory's real contents.
+    * A folder that cannot be listed is **unreadable** and returned with its error:
+      everything inside it is missing from the index, so the run must fail (NFR-7).
+      ``rglob`` would pass over it without a word. Inside an ignored path it is
+      ignored like the rest.
     * Everything else that is a file is returned, sorted by full path: for a flat
       corpus that is the old ``sorted(os.listdir())`` order, so chunk order, and
       with it the index, is unchanged for existing corpora.
@@ -106,17 +115,27 @@ def discover_files(data_path: Path) -> CorpusListing:
         raise FileNotFoundError(
             f"Corpus directory not found: {data_path} (set by paths.data or RAG_DATA_PATH)"
         )
-    files, symlinks, ignored = [], [], 0
-    for path in sorted(data_path.rglob("*")):
-        relative = path.relative_to(data_path)
-        if _ignored(relative):
-            if path.is_symlink() or not path.is_dir():
+    files, symlinks, ignored, unreadable = [], [], 0, []
+
+    def could_not_list(error: OSError) -> None:
+        folder = Path(error.filename)
+        if not _ignored(folder.relative_to(data_path)):
+            unreadable.append((folder, f"{type(error).__name__}: {error.strerror}"))
+
+    # follow_symlinks=False: a linked folder arrives in `names`, not `folders`, so it
+    # is listed as a symlink below instead of walked.
+    for folder, _folders, names in data_path.walk(on_error=could_not_list):
+        for name in names:
+            path = folder / name
+            if _ignored(path.relative_to(data_path)):
                 ignored += 1  # count entries, not the folders that hold them
-        elif path.is_symlink():
-            symlinks.append(path)
-        elif path.is_file():
-            files.append(path)
-    return CorpusListing(files=files, symlinks=symlinks, ignored=ignored)
+            elif path.is_symlink():
+                symlinks.append(path)
+            elif path.is_file():
+                files.append(path)
+    return CorpusListing(
+        files=sorted(files), symlinks=sorted(symlinks), ignored=ignored, unreadable=sorted(unreadable)
+    )
 
 
 def load_documents(config: RagConfig, report: IngestReport) -> list:
@@ -137,6 +156,10 @@ def load_documents(config: RagConfig, report: IngestReport) -> list:
         name = str(link.relative_to(data_path))
         print(f"  - Skipped {name} (symlink, not followed)")
         report.symlinks.append(name)
+    for folder, error in listing.unreadable:
+        name = f"{folder.relative_to(data_path)}/"  # the slash: a folder, not a file
+        print(f"  - Cannot list {name}: {error}")
+        report.failed.append((name, error))
 
     for path in listing.files:
         name = str(path.relative_to(data_path))
@@ -199,8 +222,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rag-ingest",
         description="Build the vector index from the corpus: load, chunk, embed, save.",
-        epilog="Exit status: 0 all indexed; 1 a document could not be read or nothing "
-        "was indexed; 2 could not start (configuration or usage error).",
+        epilog="Exit status: 0 all indexed; 1 a document or folder could not be read, "
+        "nothing was indexed, or an unexpected error (shown with a traceback); 2 could "
+        "not start (configuration or usage error).",
     )
     parser.add_argument(
         "--config",

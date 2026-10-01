@@ -6,6 +6,7 @@ Both RAG_DATA_PATH and RAG_VECTOR_STORE_PATH always point at scratch: the real
 index must never be touched by a test.
 """
 
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -128,6 +129,9 @@ def test_help_does_no_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caps
     assert not index.exists()
     out = capsys.readouterr().out
     assert "--config" in out and "Exit status" in out
+    # A crash also exits 1 (Python's default); the contract says so rather than
+    # promising 1 means only "a document could not be read".
+    assert "unexpected error" in " ".join(out.split())
 
 
 def test_config_flag_beats_rag_config(
@@ -172,6 +176,61 @@ def test_symlinks_are_never_followed_and_are_listed(tmp_path: Path) -> None:
     listing = discover_files(corpus)
     assert [p.name for p in listing.files] == ["real.txt"]
     assert sorted(p.name for p in listing.symlinks) == ["broken-link.txt", "file-link.txt", "folder-link"]
+
+
+@pytest.fixture
+def unreadable() -> Any:
+    """Make folders unlistable (chmod 000) for one test, and restore them after."""
+    if os.geteuid() == 0:
+        pytest.skip("root can list any folder, so chmod 000 proves nothing")
+    locked: list[Path] = []
+
+    def lock(folder: Path) -> Path:
+        folder.chmod(0)
+        locked.append(folder)
+        return folder
+
+    yield lock
+    for folder in locked:
+        folder.chmod(0o755)  # or tmp_path cleanup cannot remove it
+
+
+def test_an_unreadable_folder_is_listed_not_silently_skipped(
+    sample_corpus: Path, unreadable: Any
+) -> None:
+    # Python 3.12's rglob passes over a folder it cannot open without a word, which
+    # would drop everything inside it from the index unnoticed (NFR-7).
+    (sample_corpus / "locked").mkdir()
+    (sample_corpus / "locked" / "inside.txt").write_text("never seen\n")
+    unreadable(sample_corpus / "locked")
+
+    listing = discover_files(sample_corpus)
+    assert [(p.name, error.split(":")[0]) for p, error in listing.unreadable] == [
+        ("locked", "PermissionError")
+    ]
+
+
+def test_an_unreadable_folder_fails_the_run_and_the_rest_is_indexed(
+    run: Any, sample_corpus: Path, unreadable: Any, capsys: Any
+) -> None:
+    (sample_corpus / "locked").mkdir()
+    (sample_corpus / "locked" / "inside.txt").write_text("never seen\n")
+    unreadable(sample_corpus / "locked")
+
+    status, index = run(sample_corpus)
+    out = capsys.readouterr().out
+    assert status == EXIT_RUN_FAILED
+    assert store_exists(index)
+    assert "Loaded 7 document pages/sections" in out
+    assert re.search(r"locked/: PermissionError: ", out)
+
+
+def test_an_unreadable_folder_inside_an_ignored_one_does_not_fail(
+    sample_corpus: Path, unreadable: Any
+) -> None:
+    # .git objects or a checkpoint folder are not documents, readable or not.
+    unreadable(sample_corpus / ".ipynb_checkpoints")
+    assert discover_files(sample_corpus).unreadable == []
 
 
 def test_the_summary_accounts_for_everything_not_indexed(
