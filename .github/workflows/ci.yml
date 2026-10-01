@@ -45,6 +45,11 @@ jobs:
       - name: Lint
         run: uv run ruff check
 
+      # Types (NFR-9, S1-6). Settings live in pyproject.toml's [tool.mypy];
+      # warn_unreachable there is ISS-12's only guard (code after a return).
+      - name: Types
+        run: uv run mypy
+
       # Coverage gate (NFR-8, S1-5): the threshold and what is omitted live in
       # pyproject.toml's [tool.coverage], so a local `pytest --cov` enforces the same.
       - name: Test
