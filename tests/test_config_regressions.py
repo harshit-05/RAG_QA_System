@@ -40,6 +40,10 @@ ISS-17  ``test_deprecations.py`` (with a negative control)
 ISS-18  not in CI: a standalone script (S1-4's call); fixed and verified by hand
 ISS-19  mypy → S1-6
 ISS-20  not a CI check: the README (S0-6)
+ISS-21  partly: the duplicated REPL is gone (one ``cli.py`` since S0-3, its
+        loop pinned by ``test_cli.py``). Typos are style, not a CI check. The
+        hand-rolled ANSI escapes remain in ``cli.py`` by choice: it is a
+        Nitpick, and a terminal library is not worth a dependency
 ======  ==================================================================
 """
 
