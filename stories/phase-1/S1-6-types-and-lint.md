@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done 2026-10-02 — all five steps passed; CI green on the branch (run 36912062240); awaiting PR merge. Branch `chore/s1-6-types-and-lint` |
+| **Status** | Done (2026-10-02) — PR #4, rebase-merged into `main` as `ff61088` … `be545a4` (9 commits incl. the review follow-ups); CI green on the branch, the PR and `main` |
 | **Closes** | ISS-19, NFR-9, ISS-12 (via `warn_unreachable`) |
 | **Depends on** | S1-5 |
 | **Model** | opus-fast |

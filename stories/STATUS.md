@@ -5,11 +5,14 @@
 
 ## Now
 
-**Next action: merge [S1-6](phase-1/S1-6-types-and-lint.md)** (PR from
-`chore/s1-6-types-and-lint`; CI green on the branch, 2026-10-02), then S1-7 (GPU
-extra), then S1-8 (Phase 1 exit). Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
+**Next action: [S1-7](phase-1/S1-7-cuda-extra.md)**: make the GPU embedder path
+installable (CPU/CUDA torch variants). **Plan-first**, with Model fable: its step 0
+is a spike in a scratch copy that decides the mechanism (dependency groups vs
+conflicting extras) before `pyproject.toml` is touched. Then S1-8, the Phase 1
+exit (`v0.2`). Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
 + follow-up `ddcd98f` (PR #1); S1-4 `eff50ea` + follow-up `a6f21b3` + DEC-13
-`20c4a6a` (PR #2); S1-5 `e3927a4` … `4efa53d` (PR #3, 8 commits). **CI exists**: every story closes on a green run. Run the rest
+`20c4a6a` (PR #2); S1-5 `e3927a4` … `4efa53d` (PR #3, 8 commits); S1-6
+`ff61088` … `be545a4` (PR #4, 9 commits). **CI exists**: every story closes on a green run. Run the rest
 in the **Depends** order of the Phase 1 table below.
 
 **Commit and branch convention (maintainer, 2026-10-01):** Conventional Commits +
@@ -197,7 +200,7 @@ Design: ARCHITECTURE.md §1.1–§1.7.
 | [S1-3](phase-1/S1-3-own-loaders.md) | Own loaders, extension map, recursive walk | ISS-13, FR-2, DEC-5 step 1 | S1-1 | Done 2026-09-30 (PR #1) |
 | [S1-4](phase-1/S1-4-error-handling-cli.md) | Explicit error handling and a real CLI surface | ISS-05, ISS-06, ISS-18, NFR-7 | S1-3 | Done 2026-10-01 (PR #2) |
 | [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | Done 2026-10-01 (PR #3) |
-| [S1-6](phase-1/S1-6-types-and-lint.md) | Type annotations, ruff and mypy configuration | ISS-19, NFR-9, ISS-12 | S1-5 | Done 2026-10-02 (PR pending merge) |
+| [S1-6](phase-1/S1-6-types-and-lint.md) | Type annotations, ruff and mypy configuration | ISS-19, NFR-9, ISS-12 | S1-5 | Done 2026-10-02 (PR #4) |
 | [S1-7](phase-1/S1-7-cuda-extra.md) | GPU embedder path installable (CPU/CUDA torch variants) | FR-1 (GPU axis) | S1-1 | Todo |
 | [S1-8](phase-1/S1-8-phase-1-exit.md) | Phase 1 exit: audit gate, doc hygiene, 0.2.0 | — (exit) | S1-6, S1-7 | Todo |
 
@@ -392,6 +395,12 @@ ends, startup handling and `fetch_dataset.py`:
 - **Backlog — type the YAML boundary.** `yaml` is one of mypy's
   `ignore_missing_imports` overrides, so `pyyaml` is `Any`. Adding `types-PyYAML` as a dev dependency would check it.
   Small and optional; ride whichever story next touches `config.py`.
+- **Backlog — add a `py.typed` marker to `src/rag_qa/`.** A misspelled first-party
+  import (`from rag_qa.vectorstor import …`) is caught by mypy since the review
+  scoped `ignore_missing_imports`, but reported as "module is installed, but missing
+  library stubs or py.typed marker". An empty `py.typed` file makes it read as a
+  plain "cannot find module". Cosmetic; it also tells downstream users that the
+  package ships its types.
 - The three S1-5 board items (ruff defaults, `warn_unreachable`, the private-field
   test) are done; `E501` is on at 100 columns. CI now gates ruff → mypy → pytest.
 
