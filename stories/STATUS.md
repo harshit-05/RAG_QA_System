@@ -381,6 +381,14 @@ ends, startup handling and `fetch_dataset.py`:
   discarding them. `Path.walk` is top-down, so pruning `folders[:]` in place
   would fix it.
 
+### Found in S1-5's review (2026-10-01)
+
+- **For S1-6 — turn on mypy's `warn_unreachable`.** It is the only guard for
+  ISS-12 (dead code after `return`): ruff 0.16 has no unreachable-code rule, and
+  mypy flags exactly that shape (both checked). The ISS → guard table in
+  `tests/test_config_regressions.py` names S1-6 as the owner; update that row
+  when it lands.
+
 ### Later phases
 
 - Chunk metadata: content hash of the source file + ingestion timestamp

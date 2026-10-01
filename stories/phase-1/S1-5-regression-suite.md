@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-01) — steps 1–3 passed locally; step 4 (CI) after the push; branch `chore/s1-5-regression-suite` |
+| **Status** | In review (2026-10-01) — steps 1–3 passed locally; second review's fixes applied (ISS-09 guard, ISS→guard table, subpackage-aware AST check), pending commit; step 4 (CI) after the push; branch `chore/s1-5-regression-suite` |
 | **Closes** | ISS-07, NFR-8 |
 | **Depends on** | S1-2, S1-4 (S1-2 owns `ci.yml`, the allowlist and `check_imports`; ARCHITECTURE.md §1.5) |
 | **Model** | fable |
@@ -151,6 +151,46 @@ omitted.
   The deprecation gate and the architecture checks therefore run in fresh
   subprocesses. It is the S0-5 lesson again: a check that cannot fail is an
   assumption.
+
+### Second review (2026-10-01)
+
+Verified independently: the coverage gate blocks with CI's exact command
+(`pytest --cov=rag_qa`, threshold from config only, raised to 99.9% in a scratch
+coverage config: `FAIL Required test coverage…`, pytest **exit 1**), and the
+whole suite passes inside `unshare -cn` (169/169, 97.90%).
+
+- **ISS-09 had no guard.** The exit criterion is *every* Phase-0 bug. Nothing in
+  the suite or CI read what git tracks, so a `git add -f vectorstore/…` would have
+  passed. `.gitignore` only keeps *untracked* files out, which is how ISS-09
+  happened. **Fixed in the review follow-up:** `tests/test_repo_hygiene.py` runs
+  `git ls-files` against one pattern (bytecode, the FAISS index, media, `.save`
+  backups, parquet; the corpus PDFs stay allowed on purpose). It is a pytest,
+  not a shell step in `ci.yml`, so it runs locally too and has controls:
+  - a negative control that force-adds an index in a scratch git repo the test
+    creates;
+  - the pattern checked against ISS-09's own files and their lookalikes
+    (`vectorstore.py`, corpus PDFs).
+
+  Replayed read-only over `ee86e1f`, the tree from before S0-1's cleanup, it
+  flags 9 files, including the screencast, `__pycache__` and the parquet.
+- **No issue-by-issue map existed**, so "CI would have caught every Phase-0 bug"
+  was still a claim. **Added:** a table in `test_config_regressions.py`'s
+  docstring, mapping each ISS to the test or CI step that catches it, or saying
+  why CI cannot and who owns it. Building it found one gap: **ISS-12** (dead code
+  after `return`) is caught by nothing yet. Ruff 0.16 has no unreachable-code
+  rule (checked), while mypy's `warn_unreachable` flags exactly that shape
+  (checked) → S1-6, on the board.
+- **The legacy-import AST check read only top-level files** (`glob("*.py")`), so
+  Phase 2's likely `rag_qa/api/` subpackage would never have been scanned.
+  **Fixed:** `rglob`, with a test over a scratch package that failed before the
+  change (`assert set() == {'api/routes.py'}`).
+- **Note, not changed:** the deprecation gate fails on *any* third-party
+  `DeprecationWarning` except DEC-5's notice, as the scope asked. A torch or
+  transformers upgrade can turn CI red for a non-LangChain reason. The fix then
+  is a named, reasoned allowance beside `SUNSET_NOTICE`, not a looser predicate.
+
+After the follow-up: **181 passed** (12 new), coverage 97.90%, `ruff` clean;
+the new tests also pass inside `unshare -cn`.
 
 ## Deviation from plan
 
