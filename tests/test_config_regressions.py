@@ -10,6 +10,37 @@ Every case fails at **load**, before anything is built, except ISS-03's misspell
 class name. That one is caught by ``check_imports``, **by design**: loading never
 imports (DEC-7), and a misspelled class under an allowed prefix passes a string
 check. Do not "fix" that by importing at load.
+
+**Every Appendix A issue, and what catches it** (the exit criterion taken
+literally; S1-8 checks this table, not the file count). Config bugs are pinned
+here; the rest are pinned elsewhere, or say why CI cannot check them:
+
+======  ==================================================================
+ISS-01  here (load)
+ISS-02  here (load)
+ISS-03  here: kind key and meta-package at load, class name by
+        ``check_imports``. Its bare model *string* is not caught before build
+        (leaf kwargs are open, ADR-010) → Phase 2's reranker story builds it
+ISS-04  here (prefix at load); ``test_registry.py`` (all three import checks)
+ISS-05  ``test_ingest.py`` (a bad document fails the run; so does a folder)
+ISS-06  ``test_cli.py`` (the REPL survives a failing chain)
+ISS-07  this suite, gated in CI: ruff, pytest, coverage ≥ 80% (NFR-8)
+ISS-08  CI's ``uv sync --locked`` (lockfile drift); pip-audit → S1-8
+ISS-09  ``test_repo_hygiene.py`` (nothing build-, index- or media-like tracked)
+ISS-10  not a CI check: structural (three copies of the tree), fixed in S0-3
+ISS-11  here (load)
+ISS-12  not caught yet: ruff has no unreachable-code rule; mypy's
+        ``warn_unreachable`` flags code after ``return`` (verified) → S1-6
+ISS-13  ``test_loaders.py`` (recursive walk); ``test_ingest.py`` (unreadable
+        folders)
+ISS-14  a missing feature, not a regression: incremental ingest → Phase 2
+ISS-15  Phase 2: the eval harness and its golden dataset (FR-7)
+ISS-16  not a CI check: a documented invariant (never open an untrusted index)
+ISS-17  ``test_deprecations.py`` (with a negative control)
+ISS-18  not in CI: a standalone script (S1-4's call); fixed and verified by hand
+ISS-19  mypy → S1-6
+ISS-20  not a CI check: the README (S0-6)
+======  ==================================================================
 """
 
 from typing import Any
