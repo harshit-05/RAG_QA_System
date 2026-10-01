@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | In review (2026-10-01) — steps 1–3 passed locally; step 4 (CI) after the push; branch `chore/s1-5-regression-suite` |
 | **Closes** | ISS-07, NFR-8 |
 | **Depends on** | S1-2, S1-4 (S1-2 owns `ci.yml`, the allowlist and `check_imports`; ARCHITECTURE.md §1.5) |
 | **Model** | fable |
@@ -80,13 +80,49 @@ uv run pytest tests/test_config_regressions.py -v
 # 2. the deprecation gate passes AND its negative control still bites
 uv run pytest tests/test_deprecations.py -v
 
-# 3. the whole suite, hermetic: unplug the network and it must still pass
-uv run pytest -q                       # with Ollama stopped: systemctl --user stop ollama
+# 3. the whole suite, hermetic: no network and no Ollama, and it must still pass.
+#    An unprivileged network namespace cuts both without touching the system
+#    service (Ollama runs as a *system* unit, so `systemctl --user` cannot stop it).
+#    -c maps you as yourself; -r (root) would correctly skip the chmod-000 tests.
+unshare -cn sh -c 'HF_HUB_OFFLINE=1 .venv/bin/python -m pytest --cov=rag_qa -q -rs'
 uv run pytest --cov=rag_qa --cov-report=term-missing --cov-fail-under=80
 
 # 4. CI green on the pushed branch
 gh run list --limit 1
 ```
+
+### Results (2026-10-01)
+
+**Risk call: branch** (`chore/s1-5-regression-suite`, the first branch under the
+new convention). This story turns on a *blocking* coverage gate and changes CI's
+Python. A broken gate on `main` would block every later push, so it proves
+itself on a PR first.
+
+**Coverage before writing anything:** already 91% (96% with `evaluate.py`
+omitted), so "fill gaps to clear 80%" was not the work. The real gap was
+`chain.py` at **62%**: `build_rag_chain` had never run in the suite.
+
+**The bugs reproduced are the literal v2 shapes, from git.** The original
+`v2/config.yaml` (`ee86e1f`) was read before writing the cases. It held more than
+Appendix A listed. ISS-03's reranker block was wrong three ways:
+
+- a `reranker:` kind key, where the pipeline expected `rerankers`;
+- a `langchain.` meta-package target;
+- the `CrossEncoderRerank` typo.
+
+ISS-02 and ISS-11 also lived in top-level `data_path` / `vector_store_path` keys
+and in an ingestion `vector_store:` reference. Each shape is its own case.
+
+| Check | Result |
+| --- | --- |
+| 1. `pytest tests/test_config_regressions.py -v` | pass: **12 passed**, names prefixed with the issue ID (`test_iss01_…` … `test_phase0_…`). Each message names the file, the location and the fix, e.g. `components: unknown key 'llmS' (did you mean 'llms'?)`, `paths: 'data' is an absolute path ('/home/harshit/RAG_System/docs') in the config file…`, `components.rerankers.cross_encoder.base_compressor._target_: Could not import '…CrossEncoderRerank'` |
+| 1b. **mutation test of the suite** (scratch copy, one protection disabled at a time) | unknown keys allowed → the 5 key-typo cases fail; allowlist off → the 2 allowlist cases fail; absolute paths accepted → the ISS-02 path case fails; `check_imports` neutered → the ISS-03 class-name case fails. No mutation tripped an unrelated case: each protection is pinned by exactly the tests that depend on it |
+| 2. `pytest tests/test_deprecations.py -v` | pass: **2 passed**. In a fresh interpreter, ingest + build + invoke + stream records exactly one warning, the DEC-5 sunset notice (no third-party noise, checked first with a prototype). **Negative control:** legacy `Ollama(model="x")` → `LangChainDeprecationWarning`, flagged |
+| 3. whole suite with **no network and no Ollama** | pass: inside `unshare -cn` (Ollama and internet both unreachable), **169 passed, 0 skipped**, coverage 97.90%. Under `unshare -rn` (mapped to root), the 3 chmod-000 tests correctly *skip*: root can list any folder |
+| 3b. coverage gate | `Required test coverage of 80.0% reached. Total coverage: 97.90%`; `chain.py` 62% → **93%** (2 lines left: the reranker branch, disabled until Phase 2) |
+| architecture tests (board item) | **17 passed**; negative controls in a scratch copy: `ingest` importing `chain`, `langchain_core` in `config.py`, and a `langchain_classic` import in `cli.py` are each caught by exactly their test |
+| ruff (whole project) | All checks passed |
+| 4. CI | after the push |
 
 ## Review notes for the human
 
@@ -99,8 +135,49 @@ omitted.
 
 ## Discovered
 
-(Filled during implementation.)
+- **The v2 reranker's bare model string still isn't caught before build.**
+  ISS-03's block also passed `model: "cross-encoder/…"` (a string) where
+  `CrossEncoderReranker` needs an object. That is a leaf kwarg, and leaves are
+  open (ADR-010), so neither loading nor `check_imports` sees it; it fails when
+  the component is built. Acceptable while the reranker is disabled. Phase 2's
+  reranker story should build it once in a test.
+- **Verification step 3 as written could not run here.** `systemctl --user stop
+  ollama` addresses a user unit; Ollama runs as a system unit (`sudo` needed).
+  An unprivileged network namespace (`unshare -cn`) cuts the internet *and*
+  Ollama without touching any service. Note `-c`, not `-r`: mapped to root,
+  the chmod-000 tests rightly skip themselves.
+- **In-process warning checks are blind inside pytest.** Import-time warnings
+  fire once per process, and earlier tests have already imported LangChain.
+  The deprecation gate and the architecture checks therefore run in fresh
+  subprocesses. It is the S0-5 lesson again: a check that cannot fail is an
+  assumption.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **No "fill coverage gaps to 80%" work was needed** (91% before, 96% with
+  `evaluate.py` omitted). The effort went to `tests/test_chain.py`, which pins the
+  S0-5 chain contract hermetically:
+  - `invoke` returns `question` / `context` / `answer`;
+  - `stream` sends the context before the first answer token, as a separate
+    chunk;
+  - building does not alter the config;
+  - `format_docs` numbers chunks as the CLI does.
+
+  It took `chain.py` from 62% to 93% because the contract is worth pinning,
+  not for the number.
+- **The coverage threshold lives in `pyproject.toml`** (`[tool.coverage]`:
+  `fail_under = 80`, `evaluate.py` omitted), and CI runs `pytest --cov=rag_qa`.
+  A local `pytest --cov` then enforces exactly what CI does, instead of the
+  flag existing only in the workflow.
+- **Three board items rode along**, as the board had queued them for S1-5:
+  - CI pinned to uv-managed Python (`UV_PYTHON_PREFERENCE: only-managed`),
+    with the `cache-python` comment fixed;
+  - two-dot extension keys (`.tar.gz`) rejected, with a regression case;
+  - the ADR-009 check made a runtime test (`tests/test_architecture.py`),
+    plus an AST version of ADR-007's legacy-import grep.
+- **Shared fakes in `conftest.py`:** `use_fake_embedder` / `use_fakes` (the
+  `DeterministicFakeEmbedding` and `FakeListChatModel` component entries) and a
+  `fake_rag` fixture (the real ingest over `sample_corpus` into a scratch
+  index). `test_ingest.py` now uses the shared helper instead of its own copy.
+- The prompt-placeholder validator (an S1-1 board item, "if the maintainer
+  agrees") was **not** included; it is still open.

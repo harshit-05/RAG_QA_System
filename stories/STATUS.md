@@ -5,9 +5,11 @@
 
 ## Now
 
-**Next action: implement [S1-5](phase-1/S1-5-regression-suite.md)** — the Phase-0
-regression suite and the coverage gate (fable). S1-6 follows it; S1-7 is unblocked.
-Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
+**Next action: land [S1-5](phase-1/S1-5-regression-suite.md) through its branch**
+(`chore/s1-5-regression-suite` → push → CI → PR → merge). Local verification passed
+2026-10-01: every Phase-0 bug pinned and mutation-tested; the suite passes with no
+network and no Ollama (169/169); coverage 97.9% against the new 80% gate. Then S1-6
+(S1-7 is also unblocked). Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
 + follow-up `ddcd98f` (PR #1); S1-4 `eff50ea` + follow-up `a6f21b3` + DEC-13
 `20c4a6a` (PR #2). **CI exists**: every story closes on a green run. Run the rest
 in the **Depends** order of the Phase 1 table below.
@@ -196,7 +198,7 @@ Design: ARCHITECTURE.md §1.1–§1.7.
 | [S1-2](phase-1/S1-2-target-allowlist.md) | Allowlist `_target_` imports; stand up CI | ISS-04 | S1-1 | Done 2026-09-29; review follow-up 2026-09-30 pending commit |
 | [S1-3](phase-1/S1-3-own-loaders.md) | Own loaders, extension map, recursive walk | ISS-13, FR-2, DEC-5 step 1 | S1-1 | Done 2026-09-30 (PR #1) |
 | [S1-4](phase-1/S1-4-error-handling-cli.md) | Explicit error handling and a real CLI surface | ISS-05, ISS-06, ISS-18, NFR-7 | S1-3 | Done 2026-10-01 (PR #2) |
-| [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | Todo |
+| [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | In review 2026-10-01 (branch `chore/s1-5-regression-suite`) |
 | [S1-6](phase-1/S1-6-types-and-lint.md) | Type annotations, ruff and mypy configuration | ISS-19, NFR-9 | S1-5 | Todo |
 | [S1-7](phase-1/S1-7-cuda-extra.md) | GPU embedder path installable (CPU/CUDA torch variants) | FR-1 (GPU axis) | S1-1 | Todo |
 | [S1-8](phase-1/S1-8-phase-1-exit.md) | Phase 1 exit: audit gate, doc hygiene, 0.2.0 | — (exit) | S1-6, S1-7 | Todo |
@@ -303,7 +305,7 @@ reason**. Reconciled in the Phase 1 architecture pass, 2026-09-25.
 
 ### Found in S1-2 (2026-09-29)
 
-- **For S1-5 (the next `ci.yml` edit) — pin CI to uv-managed Python.** CI ran
+- **Done in S1-5 — pin CI to uv-managed Python.** CI ran
   on the runner's system Python 3.12.3; this host develops on uv-managed
   3.12.13. `.python-version` says only `3.12`, and uv prefers a matching system
   interpreter. Add `UV_PYTHON_PREFERENCE: only-managed` to the job env and
@@ -332,10 +334,10 @@ reason**. Reconciled in the Phase 1 architecture pass, 2026-09-25.
 - **For S1-4 — symlinks are inconsistent.** Symlinked files are followed, even
   outside the corpus; symlinked directories are not (3.12 `rglob`). Pick one rule
   and state it in `discover_files`. Detail in the S1-3 story, "Second review".
-- **For S1-5 — two-dot extension keys pass validation but never match.**
+- **Done in S1-5 — two-dot extension keys pass validation but never match.**
   `".tar.gz"` is accepted, yet `Path.suffix` is `.gz`. Reject keys with a second
   dot in `Ingestion.check_extensions`, with a regression case.
-- **For S1-5 — the ADR-009 check should be a runtime test.** The grep
+- **Done in S1-5 — the ADR-009 check should be a runtime test.** The grep
   `^(from|import) .*chain` false-positives on `langchain_core`; "importing
   `rag_qa.ingest` leaves `rag_qa.chain` unloaded" is the reliable form.
 - **For S1-6 — one test reads a private field** (`splitter._chunk_size` in
