@@ -39,9 +39,16 @@ prototype to production via a spec-driven story loop.
   - **Trailers:** IDs go here, never in the header, e.g.
     `Refs: S1-5, ISS-07, NFR-8`. A contract change (config shape, exit codes,
     CLI flags, metadata) adds `!` after the type and a
-    `BREAKING CHANGE: <what and how to migrate>` trailer.
+    `BREAKING-CHANGE: <what and how to migrate>` trailer. Use the hyphenated
+    form (Conventional Commits accepts it as a synonym); git cannot parse the
+    spaced one. Indent continuation lines by one space. Check with
+    `git interpret-trailers --parse < msg.txt`.
 - Python tooling is **uv only** (`uv add`, `uv run`, `uv sync`) — never
   bare pip, never conda. Interpreter is pinned via `.python-version`.
+  - Torch comes in two variants, chosen by dependency groups (S1-7). A plain
+    `uv sync` gives CPU torch. **Never run `uv sync --no-default-groups`**: it
+    installs CUDA torch from PyPI. The CUDA variant
+    (`uv sync --no-group cpu --group cuda`) is for GPU hosts only, never this one.
 
 - `corpus/` is the RAG document corpus: everything in it gets embedded, and
   the text loader reads `.md`. Never put project docs there; never ingest

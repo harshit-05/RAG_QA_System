@@ -68,6 +68,27 @@ about five minutes end to end, including loading the 4.4 GB model into memory; t
 answer then streams in as it is generated. `phi3` is much faster, answering in well
 under a minute, at some cost in answer quality.
 
+### GPU embeddings (Colab / Kaggle)
+
+A plain `uv sync` installs CPU-only PyTorch, and nothing here needs a GPU. For bulk
+re-embedding on a CUDA machine, install the CUDA variant instead:
+
+```bash
+uv sync --no-group cpu --group cuda   # CUDA 13 build of torch; needs a recent NVIDIA driver
+```
+
+Then point `pipeline.ingestion.embedder` in `config.yaml` at a `_cuda` entry, for
+example `components.embedders.minilm_cuda`, and re-run `rag-ingest`. A different
+embedder invalidates the existing index.
+
+Two things to avoid:
+
+- **Asking for both variants at once.** `uv sync --group cuda` is refused,
+  because `cpu` is already on by default.
+- **`uv sync --no-default-groups`.** With no variant selected, torch arrives from
+  PyPI as the CUDA build, with several GB of `nvidia-*` wheels, without a
+  word. CI fails if the installed torch is not the CPU build.
+
 ## Configuration
 
 All wiring lives in `config.yaml`, which has two halves. `components` is a library of
