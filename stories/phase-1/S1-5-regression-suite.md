@@ -192,6 +192,28 @@ whole suite passes inside `unshare -cn` (169/169, 97.90%).
 After the follow-up: **181 passed** (12 new), coverage 97.90%, `ruff` clean;
 the new tests also pass inside `unshare -cn`.
 
+- **Review of the second review (2026-10-01).** Agreed with the follow-up and
+  verified it independently:
+  - no test reads history, so CI's shallow checkout is safe;
+  - the negative control never commits, so it needs no git identity on the runner;
+  - only mypy's `--warn-unreachable` flags ISS-12's shape (ruff misses it even in
+    preview mode, and plain mypy misses it too), so S1-6 must enable that
+    option, not just run mypy;
+  - CI now runs on **CPython 3.12.13**, uv-managed (S1-2 had 3.12.3), with
+    181 tests and none skipped.
+
+  Two gaps were closed:
+  - **ISS-21 was missing from the ISS table** (20 of 21 rows). It is added, and
+    honest about it being partly done: one REPL since S0-3, but the ANSI escapes
+    remain by choice.
+  - **The `vectorstore/` hygiene rule matched at any depth,** so a future
+    `src/rag_qa/vectorstore/` package (a plausible shape for Phase 3's store
+    swap) would have been flagged as an artifact. The rule is now anchored at
+    the repo root, where `paths.vector_store` puts the index; an index anywhere
+    else is still caught by its `.faiss` / `.pkl` extension. Lookalike cases
+    were added first and failed. Re-running the history replay over `ee86e1f`
+    still flags the same 9 real ISS-09 files. 184 tests pass.
+
 ## Deviation from plan
 
 - **No "fill coverage gaps to 80%" work was needed** (91% before, 96% with
