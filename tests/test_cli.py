@@ -138,8 +138,7 @@ def test_main_runs_the_session_with_the_built_chain(
 ) -> None:
     monkeypatch.setattr(cli, "store_exists", lambda path: True)
     monkeypatch.setattr(cli, "build_rag_chain", lambda config: FakeChain("an answer"))
-    monkeypatch.setattr(
-        "builtins.input", scripted("a question")
-    )  # honoured: looked up at call time
+    # honoured: looked up at call time
+    monkeypatch.setattr("builtins.input", scripted("a question"))
     assert cli.main(["--config", str(make_config())]) == EXIT_OK
     assert "an answer" in capsys.readouterr().out

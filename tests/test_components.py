@@ -68,7 +68,8 @@ def test_build_splitter_uses_the_configured_splitter(make_config: MakeConfig) ->
     chunks = splitter.split_text(words)
     assert len(chunks) > 1
     assert max(len(chunk) for chunk in chunks) <= 1000
-    # Neighbouring chunks share text (the overlap), and no chunk repeats wholesale.
+    # Each chunk starts with the tail of the previous one: a shared run of text that
+    # exists (overlap is on) and stays within the configured 150 characters.
     for left, right in pairwise(chunks):
-        assert right.split()[0] in left
-        assert left != right
+        shared = max((n for n in range(1, len(right) + 1) if left.endswith(right[:n])), default=0)
+        assert 0 < shared <= 150
