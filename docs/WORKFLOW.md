@@ -10,7 +10,7 @@ The chain of truth:
 SRS.md  (what & why — stable, has FR/NFR/ISS IDs)
    └─▶ ARCHITECTURE.md  (how, per phase — written in plan mode, you confirm once)
           └─▶ stories/phase-N/*.md  (small verifiable units, one session each)
-                 └─▶ code + commit  (one commit per story, story ID in message)
+                 └─▶ code + PR  (one PR per story; Conventional Commits, story ID in a Refs: trailer)
 ```
 
 Session state lives in **files, not chat memory** — `stories/STATUS.md` is the
@@ -109,11 +109,27 @@ every line.
 
 After approval, in the same session:
 
-> Commit with message "S0-3: collapse v1/v2/temp into single package
-> (ISS-10)". Update the story file status to Done with today's date and
-> one line on any deviation from plan. Update stories/STATUS.md. If
-> anything was discovered for later, add it as a stub story or a line in
-> STATUS.md → Backlog.
+> Update the story file status to Done with today's date and one line on
+> any deviation from plan. Update stories/STATUS.md. If anything was
+> discovered for later, add it as a stub story or a line in STATUS.md →
+> Backlog. Then give me the commit recipe.
+
+The commit follows CLAUDE.md's convention (Conventional Commits, since
+2026-10-01): a typed, imperative header of at most 72 characters; a body
+saying what and why; and the IDs in a trailer. For example:
+
+```text
+refactor(core): collapse v1/v2/temp into a single package
+
+Three diverging copies meant every fix had to land three times, and
+nobody could say which tree was live. Keep v2's config-driven design
+under src/rag_qa; git history keeps the rest.
+
+Refs: S0-3, ISS-10
+```
+
+Risky stories go on a branch named `<type>/<story-id>-<slug>` (for example
+`feat/s1-3-own-loaders`) and land through a PR once CI is green.
 
 Then `/clear` or close the session. Next session starts clean at Step 3
 with the next story.
@@ -122,7 +138,8 @@ with the next story.
 
 ## Session hygiene (the part that makes scattered sessions work)
 
-- **One story, one session, one commit.** If a story turns out too big,
+- **One story, one session, one PR.** Review follow-ups add commits to
+  the same PR; nothing else does. If a story turns out too big,
   split it in the story file and do half — don't push through.
 
 - **Never carry design decisions in chat.** If something got decided in

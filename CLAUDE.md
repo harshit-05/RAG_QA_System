@@ -21,7 +21,25 @@ prototype to production via a spec-driven story loop.
 - A story is done only when every command in its Verification section has
   been run and its output shown. Stop before committing; wait for approval.
 
-- One commit per story; message format: `S0-3: <summary> (ISS-10, FR-2)`.
+- **One PR per story** (review follow-ups may add commits to it); the maintainer
+  runs every git command, and Claude hands over the exact recipe. Since
+  2026-10-01, [Conventional Commits 1.0](https://www.conventionalcommits.org/en/v1.0.0/)
+  and [Conventional Branch](https://conventionalbranch.org/) apply; S0-1…S1-4
+  predate them and stay as they are.
+  - **Branch:** `<type>/<story-id>-<slug>`, lowercase with hyphens, e.g.
+    `feat/s1-3-own-loaders` or `chore/s1-5-regression-suite`. The types are
+    `feat`, `fix`, `hotfix` and `chore` (tests, CI, docs, deps). Risky
+    stories go on a branch and a PR.
+  - **Header:** `type(scope): imperative summary`, ≤72 characters, lowercase,
+    no trailing period, ASCII. The types are feat, fix, docs, test, refactor,
+    perf, build, ci, chore and revert. The scope is the area touched (config,
+    ingest, cli…). It must read as "If applied, this commit will …".
+  - **Body:** after a blank line, wrapped at 72; it explains *what and why*,
+    not how.
+  - **Trailers:** IDs go here, never in the header, e.g.
+    `Refs: S1-5, ISS-07, NFR-8`. A contract change (config shape, exit codes,
+    CLI flags, metadata) adds `!` after the type and a
+    `BREAKING CHANGE: <what and how to migrate>` trailer.
 - Python tooling is **uv only** (`uv add`, `uv run`, `uv sync`) — never
   bare pip, never conda. Interpreter is pinned via `.python-version`.
 
