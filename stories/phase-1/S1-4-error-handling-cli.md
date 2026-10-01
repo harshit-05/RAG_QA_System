@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-01) — all six verification steps passed (step 3 live, by the maintainer); branch `s1-4-error-handling-cli`, commit + CI + PR pending |
+| **Status** | In review (2026-10-01) — all six verification steps passed (step 3 live, by the maintainer); second review's fixes applied (unreadable folders fail the run; exit-1 contract documented), one decision open (partial-index policy, see Discovered); branch `s1-4-error-handling-cli`, commit + CI + PR pending |
 | **Closes** | ISS-05, ISS-06, ISS-18, NFR-7 |
 | **Depends on** | S1-3 (ARCHITECTURE.md §1.1 DEC-9) |
 | **Model** | opus-fast |
@@ -171,6 +171,41 @@ CI and stays a script: keep the change minimal.
     Ollama running? `systemctl status ollama`") would make it self-explaining.
   - An empty `Answer:` header prints before the error, because the header goes
     out before the stream starts. Cosmetic.
+
+### Second review (2026-10-01)
+
+- **An unreadable subfolder dropped out of the corpus silently.** Probed with a
+  `chmod 000` folder holding a `.txt`: `discover_files` returned only the other
+  files, with nothing failed, skipped or counted, and `rag-ingest` exited **0**
+  (the new end-to-end test showed `assert 0 == 1` before the fix). Python 3.12's
+  `rglob` skips a folder it cannot open without a word. An unreadable *file* was
+  already handled (`load()` raises `PermissionError`, the run fails). **Fixed in
+  the review follow-up:** discovery walks with `Path.walk(on_error=…)`, and
+  `CorpusListing.unreadable` holds each folder with its error. `load_documents`
+  records it in `report.failed` as `locked/: PermissionError: Permission
+  denied`, so the run exits 1 and the rest is still indexed. An unreadable folder
+  inside an ignored path (`.git`, a checkpoint folder) is ignored like the rest.
+  Same files, same order on the real corpus. Tests first: 3 new, plus the
+  `--help` assertion below; 4 failed before, **132 passed** after, `ruff` clean.
+  The `chmod` tests skip when run as root, where they would prove nothing.
+- **Exit 1 also meant "crashed".** With a scratch config whose embedder cannot
+  load offline, `rag-ingest` printed an `OSError` traceback, exited **1** and
+  wrote no index, while `--help` said 1 meant a document could not be read or
+  nothing was indexed. 1 is Python's own status for an unhandled exception.
+  **Fixed as a documentation change**, the review's recommendation: the module
+  docstring and the `--help` epilog now say 1 also covers an unexpected error
+  (shown with its traceback), so 1 alone does not say whether an index was
+  saved. A test asserts the epilog says so. No distinct code was added; the
+  traceback is the useful output for an unexpected error.
+- **Decision for the maintainer: a partial failure replaces a good index.**
+  `ingest()` saves whenever any document loaded, so one transient read error (a
+  `PermissionError`, a file still being copied) replaces a complete index with
+  one missing that document. It is loud (exit 1, "rebuilt without them"), and
+  deliberate. The alternative is to keep the previous index whenever anything
+  failed: safer for a scheduled re-ingest, but one bad file then blocks every
+  update. Both are defensible. The Phase 2 job endpoint inherits whichever is
+  chosen, so it should be recorded as a decision (a DEC entry or a line in
+  ARCHITECTURE §1), not left implicit in a message. **Not changed in code.**
 
 ## Deviation from plan
 
