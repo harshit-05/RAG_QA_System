@@ -81,7 +81,7 @@ and `evaluate.py`), because S1-1…S1-5 annotated what they wrote.
 | 2. `mypy src/rag_qa` | `Success: no issues found in 12 source files`. **`evaluate.py` is included, not excluded**: it cost one `-> None` |
 | 2b. `warn_unreachable` bites (ISS-12) | In a scratch copy, code after `build_object`'s last `return` → `registry.py:121: error: Statement is unreachable`, from the project config alone |
 | 3. `pytest` | **184 passed**, coverage 97.92% (gate 80%) |
-| 3b. the private-field test, rewritten (board item) | now asserts behaviour: chunks ≤ 1000 characters, and neighbours overlap. Negative control: the same test against `chunk_size: 5000` fails with `assert 4994 <= 1000` |
+| 3b. the private-field test, rewritten (board item) | now asserts behaviour: every chunk but the last is 900–1000 characters, and each overlap is 100–150. Negative controls (review follow-up): the real config passes; `chunk_size` 200 or 5000, and `chunk_overlap` 10 or 100, each fail. The first version only bounded from above, so a smaller size or overlap passed |
 | 4. `rag-ingest` + `rag-query`, real config, mistral | pass, **behaviour unchanged**: ingest 561 pages → 1,708 chunks, 0 failed; the answer is **word-for-word identical** to the S1-1, S1-2 and S1-3 mistral runs, with the same 5 sources (p. 9, 340, 477, 233, 81). The session ends `Exiting...`, exit 0 (S1-4's end-of-input fix, seen in a real run). 646 s on CPU. So the signatures, the `VectorStore` return type and the statement re-wrapping changed nothing a user sees |
 | ruff, whole project (as CI) | All checks passed |
 | 5. CI | green on the branch: `check` passed in 1m41s with ruff, mypy and pytest all blocking |
@@ -112,9 +112,12 @@ be *gone* rather than ignored, since S1-4 replaced the bare
   reason in the comment above it. There are no blanket ignores and no
   per-file ignores in `[tool.ruff]`. The other suppressions in `src` are S1-1's
   and S1-2's `TRY004`s, also explained in place.
-- **`ignore_missing_imports` is global.** `pyyaml` has stubs available
-  (`types-PyYAML`); adding them as a dev dependency would type-check the YAML
-  boundary instead of treating it as `Any`. Small, optional → backlog.
+- **`ignore_missing_imports` was global, which hid first-party typos.** Found in
+  review: `from rag_qa.vectorstor import ...` passed mypy. It is now a per-module
+  override for the five imports that lack stubs (`yaml`, `docx2txt`, `pandas`,
+  `datasets`, `ragas.*`), and the same typo is an error. `pyyaml` has stubs
+  available (`types-PyYAML`); adding them would type-check the YAML boundary
+  instead of treating it as `Any`. Small, optional → backlog.
 
 ## Deviation from plan
 

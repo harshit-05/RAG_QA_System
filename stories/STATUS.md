@@ -389,8 +389,8 @@ ends, startup handling and `fetch_dataset.py`:
 
 ### Found in S1-6 (2026-10-02)
 
-- **Backlog — type the YAML boundary.** `ignore_missing_imports` is global, so
-  `pyyaml` is `Any`. Adding `types-PyYAML` as a dev dependency would check it.
+- **Backlog — type the YAML boundary.** `yaml` is one of mypy's
+  `ignore_missing_imports` overrides, so `pyyaml` is `Any`. Adding `types-PyYAML` as a dev dependency would check it.
   Small and optional; ride whichever story next touches `config.py`.
 - The three S1-5 board items (ruff defaults, `warn_unreachable`, the private-field
   test) are done; `E501` is on at 100 columns. CI now gates ruff → mypy → pytest.
