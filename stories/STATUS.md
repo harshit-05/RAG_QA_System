@@ -5,11 +5,13 @@
 
 ## Now
 
-**Next action: [S1-7](phase-1/S1-7-cuda-extra.md)**: make the GPU embedder path
-installable (CPU/CUDA torch variants). **Plan-first**, with Model fable: its step 0
-is a spike in a scratch copy that decides the mechanism (dependency groups vs
-conflicting extras) before `pyproject.toml` is touched. Then S1-8, the Phase 1
-exit (`v0.2`). Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
+**Next action: merge [S1-7](phase-1/S1-7-cuda-extra.md)** (PR from
+`feat/s1-7-cuda-torch-variant`; CI green on push and PR; second-review fixes for the GPU run
+command and the CI guard need a green run, 2026-10-02), then S1-8,
+the Phase 1 exit (`v0.2`). S1-8 notes from S1-7: audit the installed environment
+with `pip-audit`, not the lock (it now records both torch variants); the Phase 3
+Docker image must install with `uv sync` or `uv export` (they honour the torch
+groups), never `pip install .`. Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
 + follow-up `ddcd98f` (PR #1); S1-4 `eff50ea` + follow-up `a6f21b3` + DEC-13
 `20c4a6a` (PR #2); S1-5 `e3927a4` … `4efa53d` (PR #3, 8 commits); S1-6
 `ff61088` … `be545a4` (PR #4, 9 commits). **CI exists**: every story closes on a green run. Run the rest
@@ -201,7 +203,7 @@ Design: ARCHITECTURE.md §1.1–§1.7.
 | [S1-4](phase-1/S1-4-error-handling-cli.md) | Explicit error handling and a real CLI surface | ISS-05, ISS-06, ISS-18, NFR-7 | S1-3 | Done 2026-10-01 (PR #2) |
 | [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | Done 2026-10-01 (PR #3) |
 | [S1-6](phase-1/S1-6-types-and-lint.md) | Type annotations, ruff and mypy configuration | ISS-19, NFR-9, ISS-12 | S1-5 | Done 2026-10-02 (PR #4) |
-| [S1-7](phase-1/S1-7-cuda-extra.md) | GPU embedder path installable (CPU/CUDA torch variants) | FR-1 (GPU axis) | S1-1 | Todo |
+| [S1-7](phase-1/S1-7-cuda-extra.md) | GPU embedder path installable (CPU/CUDA torch variants) | FR-1 (GPU axis) | S1-1 | Done 2026-10-02 (PR pending merge) |
 | [S1-8](phase-1/S1-8-phase-1-exit.md) | Phase 1 exit: audit gate, doc hygiene, 0.2.0 | — (exit) | S1-6, S1-7 | Todo |
 
 CI lands in S1-2, not at the end, so every later story closes on green rather

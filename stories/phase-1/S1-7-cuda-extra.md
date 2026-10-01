@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-02) — spike done, option (a) chosen and approved in plan mode; local verification passed; CI after the push; branch `feat/s1-7-cuda-torch-variant` |
+| **Status** | Done 2026-10-02 — spike done, option (a) chosen and approved in plan mode; all checks passed; CI green on push and PR; second review found two gaps (`uv run` re-sync, the guard), fixed and re-verified; awaiting CI on the follow-ups, then merge. Branch `feat/s1-7-cuda-torch-variant` |
 | **Closes** | FR-1 (the GPU axis, declarable → installable) |
 | **Depends on** | S1-1 (ARCHITECTURE.md §1.1 DEC-12; DEC-1 rule 2) |
 | **Model** | fable |
@@ -114,9 +114,9 @@ declared, which is the load-bearing DEC-1 rule 2 setup, and adds a CI guard.
 | 3. the variants exclude each other | `uv sync --group cuda` → `error: Groups cpu (enabled by default) and cuda are incompatible …` |
 | the documented trap | `--no-default-groups` plans 15 nvidia-*, as documented |
 | CI's own command | `uv sync --locked --dry-run` → "Would make no changes" |
-| the new CI guard | exit 0 on the real environment. **Negative controls:** exit 1 for `2.14.1+cu130`, and exit 1 for a plain `2.14.0`, the PyPI build the trap installs |
+| the new CI guard | exit 0 on the real environment. **Negative controls:** exit 1 for `2.14.1+cu130`, and exit 1 for a plain `2.14.0`, the PyPI build the trap installs. Those controls test the version check, not an install. **Review fix:** the guard first ran through a plain `uv run`, which re-syncs to the default groups, so after a `--no-default-groups` install it would have reinstalled CPU torch and passed. It now runs `uv run --no-sync` |
 | 4. nothing else moved | ruff and mypy clean; **184 passed**, coverage 97.92%; `rag-ingest` 561 pages → 1,708 chunks, 0 failed; mistral's answer **word-for-word identical** to every earlier run, same 5 sources, exit 0 |
-| CI | after the push |
+| CI | green on the push run and the PR run. The Install log shows `+ torch==2.14.0+cpu` and **0** `nvidia` lines; the new "CPU torch only" step passed on a real runner |
 
 ## Review notes for the human
 
@@ -142,11 +142,42 @@ otherwise.
   defence is a CI guard (fails unless the installed torch is `+cpu`) plus the
   rule in CLAUDE.md, README and `pyproject.toml`.
 
+- **A plain `uv run` undoes the CUDA sync (second review, 2026-10-02).** `uv run`
+  syncs to the default groups before running, so on a GPU host
+  `uv sync --no-group cpu --group cuda` followed by README's
+  `uv run rag-ingest` would reinstall CPU torch, and the `_cuda` embedder fails.
+  Checked on a scratch project with the same group, conflict and default
+  layout, using two `six` pins in place of the two torch builds: the plain
+  `uv run` reverted to the default group's version, while `--no-sync`,
+  `UV_NO_SYNC=1` and repeating the group flags all kept the CUDA one. uv has no
+  `UV_GROUP` environment variable. README, `config.yaml`, `pyproject.toml` and
+  CLAUDE.md now say to run `uv run --no-sync …` after the CUDA sync, and
+  `%env UV_NO_SYNC=1` in a notebook. This is evidence from the scratch project,
+  not from a CUDA run.
+- **Group-blind installs hit the trap too (second review).** `uv pip install .`
+  on `main` planned `torch +cpu`, because the base dependency picked up
+  `[tool.uv.sources]`. On this branch it plans PyPI's `torch==2.14.1` plus the
+  nvidia-* wheels. Nothing in the repo installs that way, and `uv export`
+  honours the default groups. Documented as a third trap in README,
+  `pyproject.toml` and CLAUDE.md. `7cd6215`'s `BREAKING-CHANGE` trailer names
+  only `--no-default-groups`; that pushed commit is left as is, and this note
+  records the gap.
+
 ## Deviation from plan
 
 - **Mechanism (a), dependency groups,** chosen by the spike, as the story
   preferred. The GPU command is `uv sync --no-group cpu --group cuda`.
 - **Additions:** the CI guard step, and one line in CLAUDE.md's uv rule (never
   `--no-default-groups`). The rest of CLAUDE.md's GPU wording stays S1-8's.
+- **A commit-convention change rode along (maintainer accepted at review,
+  2026-10-02):** CLAUDE.md's breaking-change trailer is now `BREAKING-CHANGE:`,
+  hyphenated, with continuation lines indented one space. Git cannot parse the
+  spaced form, and an unparsed trailer block loses its `Refs:` line too. Verified
+  with `git interpret-trailers --parse` on `7cd6215` and `f417d2c`. It applies to
+  every commit from now on.
+- **Review follow-ups for S1-8:** `pip-audit` must audit the installed
+  environment, not `uv.lock`; the CI guard checks for `+cpu`, which a macOS CPU
+  wheel lacks (fine while CI is Ubuntu-only); the Phase 3 Docker image installs
+  with `uv sync` or `uv export`, never `pip install .`.
 - **The `cu130` index specifically:** the story did not name a CUDA version, and
   `cu130` is the only one carrying torch 2.14.
