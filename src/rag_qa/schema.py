@@ -177,13 +177,22 @@ class Ingestion(_Strict):
 
     @model_validator(mode="after")
     def check_extensions(self) -> "Ingestion":
-        """Keys must be what a file's lowercased suffix can equal, or they never match."""
-        bad = [ext for ext in self.loaders if not (ext.startswith(".") and len(ext) > 1 and ext == ext.lower())]
+        """Keys must be what a file's lowercased suffix can equal, or they never match.
+
+        That means one dot, at the start: ``Path.suffix`` is only the last part, so a
+        ``.tar.gz`` key could never match ``a.tar.gz`` (whose suffix is ``.gz``).
+        """
+
+        def matchable(ext: str) -> bool:
+            return ext.startswith(".") and len(ext) > 1 and ext == ext.lower() and ext.count(".") == 1
+
+        bad = [ext for ext in self.loaders if not matchable(ext)]
         if bad:
             raise ValueError(
                 f"loaders: extension keys {', '.join(map(repr, bad))} can never match a file. "
-                f"Use a lowercase suffix with its dot, e.g. '.pdf' (files are matched on "
-                f"their lowercased suffix, so '.pdf' also covers REPORT.PDF)"
+                f"Use a lowercase suffix with one leading dot, e.g. '.pdf' (files are matched "
+                f"on their lowercased last suffix, so '.pdf' also covers REPORT.PDF, and "
+                f"'.gz' is what a.tar.gz matches)"
             )
         return self
 

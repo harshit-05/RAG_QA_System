@@ -107,6 +107,11 @@ MALFORMED = [
         id="uppercase extension key",
     ),
     pytest.param(
+        lambda c: c["pipeline"]["ingestion"]["loaders"].update({".tar.gz": "components.loaders.txt"}),
+        ["'.tar.gz'", "can never match", "one leading dot"],
+        id="two-dot extension key (Path.suffix is only .gz)",
+    ),
+    pytest.param(
         lambda c: c["pipeline"]["ingestion"]["loaders"].update({".pdf": "components.loaders.pfd"}),
         ["pipeline.ingestion.loaders['.pdf']", "no entry 'pfd'", "did you mean 'pdf'"],
         id="loader reference typo",
