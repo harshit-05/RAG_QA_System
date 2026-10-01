@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | In review (2026-10-01) — all six verification steps passed (step 3 live, by the maintainer); branch `s1-4-error-handling-cli`, commit + CI + PR pending |
 | **Closes** | ISS-05, ISS-06, ISS-18, NFR-7 |
 | **Depends on** | S1-3 (ARCHITECTURE.md §1.1 DEC-9) |
 | **Model** | opus-fast |
@@ -61,7 +61,9 @@ stat -c %Y vectorstore/db_faiss/index.faiss            # after → identical
 
 # 2. a corrupt document is reported, does not abort the run, and exits non-zero
 cp corpus/*.pdf <scratch>/corpus/ && head -c 200 /dev/urandom > <scratch>/corpus/broken.pdf
-RAG_DATA_PATH=<scratch>/corpus uv run rag-ingest; echo "exit=$?"   # exit=1, others still ingested
+#    Set BOTH paths (S1-3 habit): with RAG_DATA_PATH alone the scratch build
+#    overwrites the real vectorstore/db_faiss.
+RAG_DATA_PATH=<scratch>/corpus RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-ingest; echo "exit=$?"   # exit=1, others still ingested
 
 # 3. the REPL survives a failing chain. Ollama must be UP at startup:
 #    validate_model_on_init makes build_rag_chain fail before the REPL exists,
@@ -80,6 +82,34 @@ git status --short corpus/    # → empty
 uv run pytest tests/test_ingest.py tests/test_cli.py -q
 ```
 
+### Results (2026-10-01)
+
+**Risk call: branch** (`s1-4-error-handling-cli`). This changes `rag-ingest`'s
+exit-code contract: a partial failure used to exit 0 and now exits 1. CI jobs,
+scripts and Phase 2's job-status endpoint will rely on that contract. The REPL's
+interrupt handling is also the kind of code that gets reworked.
+
+**Decisions taken with the maintainer before coding** (2026-09-30):
+
+- **Catch policy: split, not narrow.** A probe found 9 kinds of bad file raising
+  6 unrelated exception families. Building a loader (a config problem) aborts
+  the run as a `ConfigError`. Reading one document is caught broadly: recorded
+  with its exception type, the run continues, and it fails at the end.
+- **Two S1-3 leftovers are in scope:** ignored files are counted, and symlinks
+  are never followed (they are listed as skipped).
+
+| Check | Result |
+| --- | --- |
+| 1. `--help` does no work | pass: both print usage with `--config` and the exit-status table; `rag-ingest --help` exits 0; index mtime identical before and after |
+| 2. corrupt PDF among the real three | pass: **exit 1**; `broken.pdf: PdfStreamError: Stream has ended unexpectedly` recorded; the other 561 pages / 1,708 chunks still indexed; scratch index saved; **real index untouched** (both paths set). 122 s |
+| 3. REPL survives Ollama stopping mid-session | pass, **run live by the maintainer** (2026-10-01): REPL started, `sudo systemctl stop ollama` in a second terminal, two questions each printed `Error: ConnectError: [Errno 111] Connection refused` and returned to the prompt, `exit` → `Exiting...`, **exit status 0** (re-captured with Ollama back up). The live error is httpx's `ConnectError` from under the Ollama client, not a builtin `ConnectionError`, so the hermetic test now raises that exact error |
+| 4. `--config` beats `$RAG_CONFIG` | pass: `RAG_CONFIG=/nonexistent` plus `--config <scratch>` exits 0, index built beside the scratch config. Without the flag: one line, `Config file not found: /nonexistent/config.yaml`, **exit 2**, no traceback |
+| 5. `fetch_dataset.py` | `--help` exits 0 in the default env (before: crashed importing `datasets`, which is only in the `eval` extra); `--out corpus/sub` is **refused, exit 2**, nothing created; `git status corpus/` empty. Real download to scratch: **6,341,254 bytes** (the exact advertised size), starts and ends with `PAR1`, so a genuine parquet file where `/blob/` gave a 128 KB HTML page. Exit 0, preview skipped with the `eval` extra hint. 10 m on this network (the timeout is per operation, not total) |
+| 6. `pytest tests/test_ingest.py tests/test_cli.py` | pass: **24 passed**. Full suite **129 passed**, `HF_HUB_OFFLINE=1` |
+| piped empty stdin, real chain | `printf '' \| rag-query` → `Exiting...`, **exit 0, no traceback**. Every transcript since S0-6 used to end in an `EOFError` traceback |
+| `grep -rn noqa src scripts` | no S1-4 tags; two `BLE001`s remain at the deliberate broad catches (ingest's per-document read, the REPL boundary), each with its reason in the comment above |
+| ruff (whole project) | All checks passed |
+
 ## Review notes for the human
 
 The exit-code change is the one with teeth: confirm a *partial* failure exits
@@ -91,8 +121,78 @@ CI and stays a script: keep the change minimal.
 
 ## Discovered
 
-(Filled during implementation.)
+- **What bad files actually raise** (probe, 2026-09-30): the same 6 families
+  come up across random bytes, an empty file, a truncated or cut PDF, a non-zip
+  and a zip-without-document `.docx`, broken XML, Latin-1 text and an unreadable
+  file:
+  - pypdf `PdfReadError` / `PdfStreamError` / `EmptyFileError`;
+  - `zipfile.BadZipFile`;
+  - `KeyError`;
+  - `xml.etree.ElementTree.ParseError` (a `SyntaxError`);
+  - `UnicodeDecodeError`;
+  - `PermissionError`.
+
+  This is the evidence behind the split catch policy, and a ready-made case list
+  for S1-5's regression suite.
+- **ISS-18 was worse than logged.**
+  - `/blob/` served a 128 KB HTML page, which the script saved under the
+    parquet name; `/resolve/` redirects to the real 6.3 MB parquet (both checked
+    with HEAD requests).
+  - The script wrote into the *current directory*, not `corpus/` as such; it
+    landed in the corpus only because it was once run from there.
+  - It could not start at all in the default environment: `datasets` is only in
+    the `eval` extra and was imported at the top, so even `--help` crashed.
+- **`requests` is an undeclared dependency.** The script imports it; it arrives
+  only transitively. It's a script, not package code, so this is backlog:
+  declare it in the `eval` extra, or switch to `huggingface_hub.hf_hub_download`,
+  which is already installed and handles `/resolve/`, caching and resume.
+- **A missing index used to surface as FAISS's raw
+  `RuntimeError: … could not open … for reading`.** `rag-query` now checks first
+  and says "Run rag-ingest first". The check lives in
+  `vectorstore.store_exists`, because what counts as an index is FAISS-specific
+  (ADR-013 seam), and the Phase 3 swap rewrites it with the other two functions.
+- **Ollama being down at `rag-query` *startup* is still a traceback.**
+  `validate_model_on_init` fails inside `build_rag_chain`, before the REPL's
+  boundary exists. ISS-06 covers the session, not startup. A startup message is
+  a small follow-up → backlog.
+- **`requests`' `timeout=` is per network operation, not total.** A slow but
+  progressing download can take longer than 60 s, which the real verification
+  download showed on this network; only a connection that stalls for 60 s
+  fails. That is the intended meaning, and the docstring says "stalled".
+- **The corpus still holds two old parquet files** (`corpus/0000.parquet`,
+  `corpus/train.parquet`): gitignored relics of the old script, reported as
+  skipped on every run. Left alone (data on disk); the maintainer can delete them
+  or move them to `downloads/`.
+- **S1-4's own verification step 2 had S1-3's index-overwriting bug** (only
+  `RAG_DATA_PATH` set). Fixed here before running it.
+- **From the live step-3 run, two small usability points** → backlog:
+  - `Error: ConnectError: [Errno 111] Connection refused` doesn't say *what*
+    refused. A one-line hint when the error is a connection failure ("Is
+    Ollama running? `systemctl status ollama`") would make it self-explaining.
+  - An empty `Answer:` header prints before the error, because the header goes
+    out before the stream starts. Cosmetic.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **Split catch, not a narrow tuple** (maintainer's call, 2026-09-30).
+  Constructing a loader is config: a failure aborts as `ConfigError`, exit 2.
+  Reading a document is caught broadly, typed, recorded, and fails the run. The
+  story's "noqa comes back empty of S1-4 tags" is met, but two `BLE001`
+  suppressions remain on purpose, each at a boundary where catching everything
+  is the requirement (NFR-7, ISS-06), with the reason written above it.
+- **Three exit codes, not just "non-zero"**: 0 ok, 1 run failed (a document
+  unreadable, or nothing indexed), 2 cannot start (config, missing corpus or
+  index, usage — the code argparse already uses). Shown in `--help`.
+- **Two S1-3 leftovers taken in** (maintainer-approved): ignored files are
+  counted in the summary, and symlinks are never followed and are listed as
+  skipped. `discover_files` now returns a `CorpusListing`; `IngestReport` gained
+  `symlinks` and `ignored`.
+- **Additions:**
+  - the `rag-query` missing-index check (with `vectorstore.store_exists`);
+  - `repl()` factored out of `main()` so it can be tested with a fake chain. It
+    looks `input` up at call time: bound as a default argument, a patched
+    `input` would be ignored, and a test of `main()` would block on real stdin.
+- **`fetch_dataset.py` changed more than "minimal".** `--help` had to work
+  without downloading or crashing, which meant a `main()` with `argparse` and a
+  lazy `datasets` import. It also gained a `corpus/` guard, and `downloads/`
+  was added to `.gitignore`.

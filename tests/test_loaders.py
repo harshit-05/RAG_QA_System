@@ -105,7 +105,7 @@ def test_docx_and_text_loaders_match_the_old_ones(sample_corpus: Path) -> None:
 
 
 def test_discovery_is_recursive_and_sorted(sample_corpus: Path) -> None:
-    found = [str(p.relative_to(sample_corpus)) for p in discover_files(sample_corpus)]
+    found = [str(p.relative_to(sample_corpus)) for p in discover_files(sample_corpus).files]
     assert found == [
         "README.md", "diagram.png", "guide.pdf", "notes.txt",
         "sub/deeper/LOUD.TXT", "sub/report.docx",
@@ -116,7 +116,7 @@ def test_discovery_ignores_hidden_paths_and_office_lock_files(sample_corpus: Pat
     # Recursion reaches folders the old flat listdir never did: a Jupyter checkpoint
     # copy would be indexed twice and crowd the top-k, and Word's ~$ lock file ends
     # in .docx, so it would count as a failed file while the document is open.
-    found = {p.relative_to(sample_corpus).as_posix() for p in discover_files(sample_corpus)}
+    found = {p.relative_to(sample_corpus).as_posix() for p in discover_files(sample_corpus).files}
     assert not found & {
         ".ipynb_checkpoints/notes-checkpoint.txt", ".draft.md", "sub/~$report.docx"
     }
