@@ -17,7 +17,6 @@ dependencies = [
     "langchain-huggingface>=1,<2",
     "faiss-cpu>=1.15",
     "sentence-transformers>=5",
-    "torch>=2.6",
     "pypdf>=6",
     "docx2txt>=0.9",
     "pyyaml>=6",
@@ -38,6 +37,15 @@ eval = [
 ]
 
 [dependency-groups]
+# Torch comes in two mutually exclusive variants (S1-7, DEC-12). `cpu` is a default
+# group, so a plain `uv sync` / `uv run` installs CPU torch exactly as before. The
+# CUDA variant is for a GPU host (Colab/Kaggle bulk re-embedding), never this one:
+#     uv sync --no-group cpu --group cuda
+# Never `uv sync --no-default-groups`: with no variant selected, torch arrives from
+# PyPI through sentence-transformers, which is the CUDA build plus ~15 nvidia-*
+# wheels (GBs), silently. CI fails the build if the installed torch is not +cpu.
+cpu = ["torch>=2.6"]
+cuda = ["torch>=2.6"]
 dev = [
     "pytest>=8",
     "ruff>=0.16",
@@ -45,17 +53,34 @@ dev = [
     "pytest-cov>=7.1.0",
 ]
 
-# This host is CPU-only (no NVIDIA GPU). `explicit = true` is load-bearing: as a
-# general index, download.pytorch.org also serves stale langchain-community
-# releases and uv silently resolves the whole stack down to LangChain 0.3.x.
-# Scoped to torch, it yields torch+cpu with no nvidia-* wheels. See DEC-1 rule 2.
+# This host is CPU-only (no NVIDIA GPU). `explicit = true` is load-bearing on BOTH
+# torch indexes: as a general index, download.pytorch.org also serves stale
+# langchain-community releases and uv silently resolves the whole stack down to
+# LangChain 0.3.x. Scoped to torch, each yields only its torch variant. See DEC-1
+# rule 2.
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
+# CUDA 13.0: the only CUDA index that carries torch 2.14 (cu128 stops at 2.11).
+# Its wheels need an NVIDIA driver new enough for CUDA 13.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+# Groups, not extras: extras have no default, so a plain `uv sync` would select
+# neither variant and install CUDA torch from PyPI. Checked in S1-7's spike.
+[tool.uv]
+default-groups = ["dev", "cpu"]
+conflicts = [[{ group = "cpu" }, { group = "cuda" }]]
+
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
+torch = [
+    { index = "pytorch-cpu", group = "cpu" },
+    { index = "pytorch-cu130", group = "cuda" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
