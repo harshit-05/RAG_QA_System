@@ -5,13 +5,14 @@
 
 ## Now
 
-**Next action: land [S1-5](phase-1/S1-5-regression-suite.md) through its branch**
-(`chore/s1-5-regression-suite` → push → CI → PR → merge). Local verification passed
-2026-10-01: every Phase-0 bug pinned and mutation-tested; the suite passes with no
-network and no Ollama (169/169); coverage 97.9% against the new 80% gate. Then S1-6
-(S1-7 is also unblocked). Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
+**Next action: implement [S1-6](phase-1/S1-6-types-and-lint.md)** — types, ruff and
+mypy configuration (opus-fast, not plan-first). Its scope was amended at S1-5's
+close-out with the three board items queued for it. Most importantly, **start
+from ruff's default rule set** (the story's old "explicit, at minimum E/F/I/B/UP"
+would have narrowed the gate), and **enable mypy's `warn_unreachable`**, ISS-12's
+only guard. S1-7 is also unblocked. Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
 + follow-up `ddcd98f` (PR #1); S1-4 `eff50ea` + follow-up `a6f21b3` + DEC-13
-`20c4a6a` (PR #2). **CI exists**: every story closes on a green run. Run the rest
+`20c4a6a` (PR #2); S1-5 `e3927a4` … `4efa53d` (PR #3, 8 commits). **CI exists**: every story closes on a green run. Run the rest
 in the **Depends** order of the Phase 1 table below.
 
 **Commit and branch convention (maintainer, 2026-10-01):** Conventional Commits +
@@ -198,7 +199,7 @@ Design: ARCHITECTURE.md §1.1–§1.7.
 | [S1-2](phase-1/S1-2-target-allowlist.md) | Allowlist `_target_` imports; stand up CI | ISS-04 | S1-1 | Done 2026-09-29; review follow-up 2026-09-30 pending commit |
 | [S1-3](phase-1/S1-3-own-loaders.md) | Own loaders, extension map, recursive walk | ISS-13, FR-2, DEC-5 step 1 | S1-1 | Done 2026-09-30 (PR #1) |
 | [S1-4](phase-1/S1-4-error-handling-cli.md) | Explicit error handling and a real CLI surface | ISS-05, ISS-06, ISS-18, NFR-7 | S1-3 | Done 2026-10-01 (PR #2) |
-| [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | In review 2026-10-01 (branch `chore/s1-5-regression-suite`) |
+| [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | Done 2026-10-01 (PR #3) |
 | [S1-6](phase-1/S1-6-types-and-lint.md) | Type annotations, ruff and mypy configuration | ISS-19, NFR-9 | S1-5 | Todo |
 | [S1-7](phase-1/S1-7-cuda-extra.md) | GPU embedder path installable (CPU/CUDA torch variants) | FR-1 (GPU axis) | S1-1 | Todo |
 | [S1-8](phase-1/S1-8-phase-1-exit.md) | Phase 1 exit: audit gate, doc hygiene, 0.2.0 | — (exit) | S1-6, S1-7 | Todo |
@@ -291,7 +292,7 @@ reason**. Reconciled in the Phase 1 architecture pass, 2026-09-25.
 
 ### Found in S1-1 (2026-09-26)
 
-- **For S1-6 — ruff's default is now 788 rules.** Ruff 0.16 widened its
+- **Folded into the S1-6 story (2026-10-01) — ruff's default is now 788 rules.** Ruff 0.16 widened its
   defaults well beyond `E4/E7/E9/F`, so S1-6's "explicit rule set rather than the
   default — at minimum `E`, `F`, `I`, `B`, `UP`" would *narrow* the gate. Start
   from the default and `extend-select`/`ignore` with reasons.
@@ -340,7 +341,7 @@ reason**. Reconciled in the Phase 1 architecture pass, 2026-09-25.
 - **Done in S1-5 — the ADR-009 check should be a runtime test.** The grep
   `^(from|import) .*chain` false-positives on `langchain_core`; "importing
   `rag_qa.ingest` leaves `rag_qa.chain` unloaded" is the reliable form.
-- **For S1-6 — one test reads a private field** (`splitter._chunk_size` in
+- **Folded into the S1-6 story (2026-10-01) — one test reads a private field** (`splitter._chunk_size` in
   `test_components.py`). Test behaviour instead: split a long text, check chunk
   lengths.
 - **Parity tests depend on `corpus/`** (the real 13-page PDF in
@@ -383,7 +384,7 @@ ends, startup handling and `fetch_dataset.py`:
 
 ### Found in S1-5's review (2026-10-01)
 
-- **For S1-6 — turn on mypy's `warn_unreachable`.** It is the only guard for
+- **Folded into the S1-6 story (2026-10-01) — turn on mypy's `warn_unreachable`.** It is the only guard for
   ISS-12 (dead code after `return`): ruff 0.16 has no unreachable-code rule, and
   mypy flags exactly that shape (both checked). The ISS → guard table in
   `tests/test_config_regressions.py` names S1-6 as the owner; update that row

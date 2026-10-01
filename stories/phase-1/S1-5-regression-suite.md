@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-01) — steps 1–3 passed locally; second review's fixes applied (ISS-09 guard, ISS→guard table, subpackage-aware AST check), pending commit; step 4 (CI) after the push; branch `chore/s1-5-regression-suite` |
+| **Status** | Done (2026-10-01) — PR #3, rebase-merged into `main` as `e3927a4` … `4efa53d` (8 commits, the first under Conventional Commits); CI green on the branch, the PR and `main` |
 | **Closes** | ISS-07, NFR-8 |
 | **Depends on** | S1-2, S1-4 (S1-2 owns `ci.yml`, the allowlist and `check_imports`; ARCHITECTURE.md §1.5) |
 | **Model** | fable |
