@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import MakeConfig
+from conftest import MakeConfig, use_fake_embedder
 
 from rag_qa.config import load_config
 from rag_qa.ingest import (
@@ -28,13 +28,6 @@ from rag_qa.loaders import PdfLoader
 from rag_qa.vectorstore import store_exists
 
 
-def _fake_embedder(c: dict[str, Any]) -> None:
-    c["components"]["embedders"]["fake"] = {
-        "_target_": "langchain_core.embeddings.DeterministicFakeEmbedding", "size": 8
-    }
-    c["pipeline"]["ingestion"]["embedder"] = "components.embedders.fake"
-
-
 @pytest.fixture
 def run(make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     """Run ``rag-ingest --config <scratch config>`` over ``corpus``; return (status, index dir)."""
@@ -45,7 +38,7 @@ def run(make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(index))
 
         def edits(c: dict[str, Any]) -> None:
-            _fake_embedder(c)
+            use_fake_embedder(c)
             if edit:
                 edit(c)
 

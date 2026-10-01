@@ -153,3 +153,44 @@ def make_config(tmp_path: Path) -> MakeConfig:
         return path
 
     return make
+
+
+# --- fakes at the model boundary: everything else in the pipeline is real ----------------
+
+#: Allowlisted classes defined in langchain_core (S1-2 checks pass), so a config using
+#: them goes through the same build path as the real components.
+FAKE_EMBEDDER = {"_target_": "langchain_core.embeddings.DeterministicFakeEmbedding", "size": 8}
+FAKE_ANSWER = "Station Kestrel houses forty staff."
+FAKE_LLM = {
+    "_target_": "langchain_core.language_models.fake_chat_models.FakeListChatModel",
+    "responses": [FAKE_ANSWER],
+}
+
+
+def use_fake_embedder(c: dict[str, Any]) -> None:
+    """Config edit: a deterministic 8-dim embedder, so nothing downloads MiniLM."""
+    c["components"]["embedders"]["fake"] = FAKE_EMBEDDER
+    c["pipeline"]["ingestion"]["embedder"] = "components.embedders.fake"
+
+
+def use_fakes(c: dict[str, Any]) -> None:
+    """Config edit: fake embedder and a fake chat model, so nothing needs Ollama."""
+    use_fake_embedder(c)
+    c["components"]["llms"]["fake"] = FAKE_LLM
+    c["pipeline"]["query"]["llm"] = "components.llms.fake"
+
+
+@pytest.fixture
+def fake_rag(
+    make_config: MakeConfig, sample_corpus: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """A hermetic RAG setup: the real ingest built an index of ``sample_corpus`` with
+    the fakes. Returns the config path; both data and index paths point at scratch."""
+    from rag_qa.config import load_config
+    from rag_qa.ingest import ingest
+
+    monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
+    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
+    path = make_config(use_fakes)
+    ingest(load_config(path))
+    return path
