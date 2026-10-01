@@ -36,7 +36,9 @@ components:
     #    A plain `uv sync` installs CPU torch on purpose (DEC-1 rule 2); on a GPU
     #    host (Colab/Kaggle) install the CUDA variant instead:
     #        uv sync --no-group cpu --group cuda
-    #    On this host a `_cuda` entry fails fast and clearly ("Torch not compiled
+    #    then run with `uv run --no-sync rag-ingest` (and rag-query): a plain
+    #    `uv run` re-syncs to the default groups and puts CPU torch back.
+    #    README "GPU embeddings" has the whole recipe. On this host a `_cuda` entry fails fast and clearly ("Torch not compiled
     #    with CUDA enabled"), so it is a documented option, never a silent
     #    degradation.
 
@@ -131,7 +133,7 @@ pipeline:
     splitter: components.splitters.english_recursive
     # Swap this line to change embedding model or device, then re-run
     # `rag-ingest` (a new embedder invalidates the existing index):
-    #   components.embedders.minilm_cuda              GPU: `uv sync --no-group cpu --group cuda`
+    #   components.embedders.minilm_cuda              GPU: the CUDA variant (see note 2 above)
     #   components.embedders.multilingual_mpnet_cpu   non-English corpora
     embedder: components.embedders.minilm_cpu
 

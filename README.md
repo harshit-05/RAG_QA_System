@@ -78,16 +78,31 @@ uv sync --no-group cpu --group cuda   # CUDA 13 build of torch; needs a recent N
 ```
 
 Then point `pipeline.ingestion.embedder` in `config.yaml` at a `_cuda` entry, for
-example `components.embedders.minilm_cuda`, and re-run `rag-ingest`. A different
-embedder invalidates the existing index.
+example `components.embedders.minilm_cuda`, and rebuild the index. A different
+embedder invalidates the existing one. From here on, run every command with
+`--no-sync`:
 
-Two things to avoid:
+```bash
+uv run --no-sync rag-ingest
+uv run --no-sync rag-query
+```
+
+A plain `uv run` first syncs the environment to the default groups, which puts CPU
+torch back, and the `_cuda` embedder then fails with "Torch not compiled with CUDA
+enabled". In a shell session, `export UV_NO_SYNC=1` does the same for every
+command. In a Colab or Kaggle notebook, use `%env UV_NO_SYNC=1`, because each `!`
+line runs in a fresh shell and forgets an `export`.
+
+Three things to avoid:
 
 - **Asking for both variants at once.** `uv sync --group cuda` is refused,
   because `cpu` is already on by default.
 - **`uv sync --no-default-groups`.** With no variant selected, torch arrives from
   PyPI as the CUDA build, with several GB of `nvidia-*` wheels, without a
   word. CI fails if the installed torch is not the CPU build.
+- **`pip install .` or `uv pip install .`.** These ignore dependency groups, so
+  they hit the same trap. Install with `uv sync`, or with `uv export` for a
+  requirements file; both honour the groups.
 
 ## Configuration
 

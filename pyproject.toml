@@ -41,9 +41,12 @@ eval = [
 # group, so a plain `uv sync` / `uv run` installs CPU torch exactly as before. The
 # CUDA variant is for a GPU host (Colab/Kaggle bulk re-embedding), never this one:
 #     uv sync --no-group cpu --group cuda
+# and from then on `uv run --no-sync ...` (or UV_NO_SYNC=1): a plain `uv run`
+# re-syncs to the default groups and swaps CPU torch back in.
 # Never `uv sync --no-default-groups`: with no variant selected, torch arrives from
 # PyPI through sentence-transformers, which is the CUDA build plus ~15 nvidia-*
-# wheels (GBs), silently. CI fails the build if the installed torch is not +cpu.
+# wheels (GBs), silently. `pip install .` / `uv pip install .` ignore groups and
+# hit the same trap. CI fails the build if the installed torch is not +cpu.
 cpu = ["torch>=2.6"]
 cuda = ["torch>=2.6"]
 dev = [
