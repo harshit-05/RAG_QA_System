@@ -45,13 +45,16 @@ and taking minutes. Design: ARCHITECTURE.md §2.1 DEC-15 (tier 1), CI in §2.5.
     | 2 | it cannot start: no index, or a bad dataset or config |
 - **`eval/thresholds.yaml`, `retrieval:` section.**
   - Measure the baseline of the current config: dense search, k=5, no reranker.
-  - Set each floor to the baseline minus a 0.05 tolerance.
+  - Set each floor to the baseline minus a 0.05 tolerance. That is one question on about
+    20, so the first CI run must reproduce the local baseline on the runner's CPU before
+    the floors are trusted.
   - Record both numbers here.
 - **The CI job `eval-retrieval`**, which runs after `check` (`needs: check`):
   1. checkout and setup-uv, with the same pins as `check`;
   2. `uv sync --locked`;
-  3. `actions/cache`, pinned by SHA, on `~/.cache/huggingface`, keyed on
-     `hashFiles('config.yaml')` with a prefix restore key;
+  3. `actions/cache`, pinned by SHA, on `~/.cache/huggingface`, keyed on the model names
+     (the embedder now; S2-4 adds the cross-encoder), not on `config.yaml`, so a prompt
+     edit does not drop 180 MB of weights;
   4. `rag-ingest` into `$RUNNER_TEMP/index` through `RAG_VECTOR_STORE_PATH`. This step
      may use the network, and fills the cache on a miss;
   5. `rag-eval retrieval` under `HF_HUB_OFFLINE=1`.
@@ -97,7 +100,7 @@ gh run list --limit 2
 
 - **The CI job is the first with network access.** Check three things:
   - the action SHAs are pinned;
-  - the cache key and restore key are as described;
+  - the cache key is the model names, with a prefix restore key;
   - `HF_HUB_OFFLINE=1` is set on the eval step, and the `check` job is unchanged.
 - **Hand-compute one item.** Take its retrieved pages from the table, and check the hit,
   the rank and the recall against its golden record.

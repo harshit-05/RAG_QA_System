@@ -567,6 +567,12 @@ and has an enforced quality bar; tag `v0.3`, version 0.3.0._
 _This pass ran on Opus 5.5, although ADR-018 routes architecture passes to Fable. The
 maintainer chose to accept it rather than re-run it (2026-10-02)._
 
+_Reviewed twice before any code (2026-10-02). The second review changed four decisions:
+the fingerprint's parts and where it is computed (DEC-15), a versioned judge Modelfile
+(DEC-15), generation directories with a symlink flip instead of a two-rename swap
+(DEC-17), and cancelling the SSE stream itself instead of a separate producer task
+(DEC-18). STATUS.md, "Design reviews", lists every finding._
+
 Phase 1 made the command-line tool trustworthy. Phase 2 makes the system something other
 programs can call, and gives it a quality bar that a change can fail. Today, four things
 stand in the way:
@@ -586,6 +592,19 @@ Both halves of the exit criterion are made executable, as Phase 1's were:
   Ollama.
 - **"An enforced quality bar"**: two CI gates (DEC-15).
 
+**Where this pass reads the SRS more narrowly or more widely than it is written.** The SRS
+is not edited here (WORKFLOW: only an explicit amend session changes it). These are the
+differences, for that session to fold into a revision note:
+
+- **§12 and §10 say RAGAs is wired into CI as a gate.** DEC-15 runs retrieval in CI and
+  generation offline, then checks the committed result in CI. The maintainer chose this
+  because a CPU judge takes hours.
+- **§7.4 names `question`, `ground_truth` and `expected_sources`.** The golden set adds
+  `id`, `answerable`, `must_not_contain` and `notes`, a superset.
+- **§8.1 says the final SSE event carries the cited chunks.** The stream sends `sources`
+  first, so a client can show citations before the first token (the §0.4 order).
+- **§8.1 lists five endpoints.** `GET /v1/health/live` is added for process liveness.
+
 ### 2.1 Decisions
 
 **DEC-14 — One answer-event stream serves every front end. Stopping an answer means
@@ -603,7 +622,8 @@ the stream.
 
 - **CLI:** the session runs on one `asyncio.Runner`, and the Runner's own SIGINT handling
   does the cancelling.
-- **API:** a disconnect watcher does it (DEC-18).
+- **API:** Starlette cancels the response stream when the client disconnects, and
+  `stream_answer` runs inside that stream (DEC-18).
 
 **Why the REPL blocks today.** `RunnableAssign._transform` (langchain-core 1.6.3,
 `runnables/passthrough.py:565`) runs the answer branch in a `get_executor_for_config`
@@ -640,11 +660,23 @@ Other facts checked in this pass:
     therefore closed.
   - That Ollama then abandons the request is the one link only the real daemon can
     show. S2-1's manual check covers it.
+  - **Ollama may finish a prompt evaluation already in progress before it notices.** A
+    third-party measurement (AbstractCore, 2026-09-23) reports exactly that, while
+    generation stops at once. Not yet reproduced here. The acceptance criterion is
+    therefore split: **our** HTTP connection closes within about 1 s of the cancel, and
+    Ollama's runner goes idle no later than the end of the prefill (at most the 5–15 s
+    of caveat 3). S2-1 records what it measures.
 - **`asyncio.Runner` handles both Ctrl-Cs** (Python 3.12, `runners.py:105–157`).
   - The first SIGINT during `run()` cancels the running task, and `run()` raises
     `KeyboardInterrupt` once that task has unwound.
   - A second SIGINT raises at once. That is also the fix for the v0.2 finding that a
     second Ctrl-C was swallowed.
+  - That second raise happens inside the loop, while the cancelled task may still be
+    unwinding. The task then stays pending, and would resume during the next `run()`.
+    So the CLI treats a `KeyboardInterrupt` from `run()` whose task is not done as
+    "quit", and calls `runner.close()`, which cancels and finalizes it.
+  - `run()` re-raises `CancelledError`, not `KeyboardInterrupt`, when the task's cancel
+    count does not return to zero. The CLI catches both.
   - Between `run()` calls, the default handler is back, so `input()` behaves as before.
   - The loop lives for the whole session, so ChatOllama's async connection pool stays on
     one loop.
@@ -696,6 +728,16 @@ is therefore split by what can be computed where.
 - **Network.** The job needs the embedder and cross-encoder weights, about 180 MB. They
   are cached by `actions/cache` and downloaded on a miss, which makes this the one CI job
   with network access. The unit-test job stays hermetic, exactly as DEC-11 says.
+  - **The weights are fetched before the offline step.** `rag-ingest` loads only the
+    embedder, so a separate warm-up step loads the cross-encoder once S2-4 adds it.
+    Otherwise the offline step would fail on a cache miss. The warm-up builds the reranker
+    from the config, through `components.build_reranker`, rather than downloading a model
+    by name. It therefore caches exactly the files the offline step will open.
+  - **The cache key is the model names, not `config.yaml`.** Any prompt edit would
+    otherwise drop 180 MB of weights.
+  - **The baseline is also confirmed on the runner.** Embeddings can differ in the last
+    bits across CPUs, so the first CI run must reproduce the locally measured numbers
+    within tolerance (0.05 is one question on about 20).
 
 **Tier 2: generation, run offline, committed and checked in CI.**
 
@@ -707,6 +749,23 @@ is therefore split by what can be computed where.
   - **The judge is `gemma2:9b`**, reached through Ollama's OpenAI-compatible endpoint
     (`/v1`). It is a different model family from the generator, so it does not grade
     its own phrasing, and it is already pulled.
+  - **The judge's settings are a committed Modelfile, `eval/judge.Modelfile`**:
+    `FROM gemma2:9b`, plus `num_ctx 8192`, `temperature 0` and a fixed `seed`. Running
+    `ollama create rag-judge -f eval/judge.Modelfile` makes the model the config names.
+    It reuses gemma2's weights, so nothing is downloaded. This is needed because:
+    - the OpenAI endpoint cannot set the context size per request (Ollama docs,
+      "OpenAI compatibility");
+    - Ollama defaults to a 4k context below 24 GiB of VRAM, which covers this CPU host
+      and a Colab T4;
+    - RAGAs' prompts (five contexts plus few-shot JSON) come close to 4k, and Ollama
+      truncates silently. That is caveat 7 again, on the judge side, and it would
+      produce confident, wrong scores.
+
+    The Modelfile's text is part of the `judge` hash. **`score` refuses to run when the
+    served model's `num_ctx` (from `/api/show`) differs from the Modelfile.** It also
+    records the largest `usage.prompt_tokens` it saw, and fails the run if any prompt
+    came within 256 tokens of `num_ctx`. A truncated judgement is then an error, not a
+    number.
   - **Unanswerable questions get a decline rate instead** (FR-5). It is
     deterministic, and an answer counts as a decline only if both hold:
     - it contains the refusal's core phrase, `evaluation.decline_marker` (for example
@@ -718,37 +777,88 @@ is therefore split by what can be computed where.
     paraphrasing that sentence while keeping its core.
   - The output is `eval/runs/generation-latest.json`.
 - **The two steps exchange only the answers file.** Scoring can therefore move to
-  Colab/Kaggle (STATUS.md, GPU offload notes) without the rest of the stack.
-- **`rag-eval check` runs in the main CI job.** It is pure Python and does not need
-  ragas. It fails in two cases:
+  Colab/Kaggle (STATUS.md, GPU offload notes). There it needs a clone at the same commit
+  and `uv sync --extra eval`, because `score` checks the answers file against that
+  checkout. It does not need the index, the embedder or the generator. S2-5b records the
+  recipe.
+- **`rag-eval check` runs in the main CI job.** It needs neither ragas nor Ollama. It
+  fails in two cases:
   - an aggregate is under its floor in `eval/thresholds.yaml`;
   - the committed run is **stale**: its fingerprint no longer matches the repository.
 
   A stale run fails rather than warns (maintainer, 2026-10-02). That is what makes the
   bar enforced.
 
-**The fingerprint** (shape in §2.4) hashes everything that changes answers:
+**The fingerprint** (shape in §2.4) hashes everything that changes answers and that CI
+can recompute from a checkout. It has six parts, so that `check` can name the re-run that
+fixes a stale result:
 
-- the query pipeline: the llm spec, the retriever kwargs, the reranker spec and the
-  prompt;
-- ingestion: the embedder identity (DEC-17), the splitter spec and the loader map;
-- the corpus content;
-- the golden set.
+| Part | What it hashes | When it moves, re-run |
+| --- | --- | --- |
+| `query` | the llm, retriever and reranker specs (content, not ref names), `reranker_candidates`, the prompt template, and a **rendered-prompt probe** | generate and score |
+| `ingestion` | the embedder identity (DEC-17), the splitter spec, the loader map | generate and score |
+| `corpus` | the sha256 of every file the corpus walk would load | generate and score |
+| `questions` | each golden record's `id`, `question`, `answerable` and `must_not_contain` | generate and score |
+| `references` | each golden record's `ground_truth` | score only |
+| `judge` | the judge model name, the metric set, the ragas version and `eval/judge.Modelfile`'s text | score only |
 
-The judge is hashed separately, so that `check` can say which re-run is needed:
-"`query` changed: re-run generate and score", or "`judge` changed: re-run score". Paths and
-the judge's `base_url` are excluded, because they are machine-specific.
+- **The rendered-prompt probe** is the chat prompt rendered over two fixed fake
+  documents with `chain.format_docs`. A change to `format_docs`, to `citation()` or to
+  how the prompt is assembled then moves `query`, not only an edit to the template.
+- **Left out on purpose:**
+  - paths, the judge's `base_url` and device keys, which are machine-specific;
+  - the golden set's `notes` and `expected_sources`, which tier 2 never reads (tier 1
+    recomputes its own numbers on every push).
+- **Where it is computed.** `evaluation/fingerprint.py` computes it, and `generate`,
+  `score` and `check` all import it.
+  - It may import `langchain_core` and `rag_qa.chain`, which the probe needs. Both are
+    installed in CI's `check` job.
+  - It must never import ragas, openai or the embedder's stack. `check` therefore stays
+    a CPU-only, model-free step.
+  - The ingestion identities come from `manifest.py` (S2-6), unchanged.
 
-**Thresholds** are the first measured baseline minus a stated tolerance. The story that
-measures each tier sets them: S2-3 for tier 1, S2-5 for tier 2. They are only ever raised
+**Model digests are recorded, not hashed.** CI has no Ollama, so it cannot know a digest,
+and a hashed digest would make every CI run stale.
+
+- The answers file records the generator's Ollama `digest`, from `/api/tags`, when
+  `generate` runs. The scores file records the judge's digest, and its base model's, when
+  `score` runs.
+- Locally, where Ollama is present, `rag-eval check --with-ollama` also compares the
+  recorded digests with the live ones. A re-pulled `mistral` is then caught, but only on
+  a machine that can see it. That is stated as a limit, not hidden.
+
+**Thresholds** are the first measured baseline minus a tolerance. The story that measures
+each tier sets them: S2-3 for tier 1, S2-5b for tier 2. They are only ever raised
 deliberately.
+
+- **Tier 1 is deterministic.** Its tolerance is 0.05, which is one question in about 20.
+- **Tier 2's tolerance comes from measured noise, not from a guess.** S2-5b scores the
+  same answers file twice. Each floor is then the baseline minus the larger of 0.05 and
+  twice the spread observed between the two scorings. A 9B judge is not deterministic
+  even at temperature 0, and a floor inside its noise would fail at random on a re-run.
+  A metric whose two scorings differ by more than 0.1 is recorded but not gated.
 
 **Honest limit: CI checks the committed tier-2 result. It does not recompute it.** A solo
 maintainer vouches for a run by committing it. The answers file committed beside the scores
 lets a reviewer see what was judged.
 
+The fingerprint covers configuration, data and the rendered prompt. It does **not** cover:
+
+- **code:** a change to a loader, the splitter, the reranker or `answering.py` that alters
+  answers leaves it unchanged. Tier 1 recomputes retrieval on every push, which catches
+  the retrieval half. For the generation half, the maintainer re-runs tier 2 after such a
+  change; the check cannot force it.
+- **model weights behind a tag:** these are recorded and checked locally only (above).
+
+**`rag-eval score` copies the generation parts from the answers file**, and refuses to
+score an answers file whose `query`, `ingestion`, `corpus` or `questions` parts do not
+match the checkout it runs in. That check is cheap, and it stops a Colab run from scoring
+stale answers. `references` and `judge` are computed at score time. An edit to a
+`ground_truth` therefore costs a re-score (about 3–4 h on CPU, less on Colab), not a
+re-generate. A typo fixed in `notes` costs nothing.
+
 **Judge risk.** Judges of 7–9B parameters sometimes misparse RAGAs' structured prompts.
-S2-5 therefore checks three answers by hand against the judge's verdicts before its
+S2-5b therefore checks three answers by hand against the judge's verdicts before its
 numbers become thresholds.
 
 **RAGAs facts (verified 2026-10-02):**
@@ -759,6 +869,9 @@ numbers become thresholds.
   `datasets` 5 and `pandas` 3.
 - Its 0.4 API is `llm_factory(model, client=AsyncOpenAI(...))` plus
   `ragas.metrics.collections`. The LangChain wrapper classes are deprecated.
+- Ollama's OpenAI-compatible endpoint has no way to set `num_ctx` per request, and the
+  default context is 4k below 24 GiB of VRAM (Ollama docs, checked 2026-10-02). Hence
+  the judge Modelfile.
 - S2-5's spike settles the exact judge wiring for Ollama: the instructor mode, and the
   embedder that answer relevancy needs.
 
@@ -787,8 +900,13 @@ step 2). `rag_qa/rerankers.py` defines `CrossEncoderReranker`.
   - `components.build_reranker(config)` returns it, or `None`.
   - `QueryPipeline.retrieve` applies it after the retriever, and the stream order is
     unchanged.
-- **Candidates.** A new `retrievers.rerank_candidates` entry fetches k=20, and the
-  reranker cuts them to `top_n` 5.
+- **Candidates.** `pipeline.query.reranker_candidates` (20) is how many chunks the
+  retriever fetches when a reranker is on; `build_retrieve` overrides the retriever's `k`
+  with it, and the reranker cuts them to `top_n` 5.
+  - It is one switch: with the reranker off, the retriever keeps its own k=5, so 20 chunks
+    can never reach a 4,096-token prompt silently (caveat 7).
+  - Schema rule: `reranker_candidates` is required when `reranker` is set, forbidden when
+    it is not, and at least the reranker's `top_n`.
 - **Entries are named by both axes, like the embedders**: `ms_marco_minilm_cpu` and
   `ms_marco_minilm_cuda`.
 - **`ALLOWED_PREFIXES` loses `langchain_classic.` and `langchain_community.`.** After this
@@ -812,10 +930,11 @@ step 2). `rag_qa/rerankers.py` defines `CrossEncoderReranker`.
 - **ISS-03's other half dissolves.** That was a bare model string where an object was
   expected. The reranker takes `model_name: str` by design.
 
-**DEC-17 — Ingestion is incremental, tracked by a content-hash manifest, and written by a
-staged swap.** `<vector_store>/manifest.json` sits beside the index and records what is in
-it. `rag_qa/manifest.py` owns hashing, the diff and atomic writes. It is pure Python, with
-no LangChain.
+**DEC-17 — Ingestion is incremental, tracked by a content-hash manifest, and published by
+an atomic flip between generations.** `<vector_store>/manifest.json` sits inside each
+generation, beside its index, and records what is in it. `rag_qa/manifest.py` owns
+hashing, the diff and atomic writes: a temp file, `fsync`, then `os.replace`. It is pure
+Python, with no LangChain.
 
 - **What gets re-embedded.** Each document is keyed by its corpus-relative path. Its
   entry carries the sha256 of the file's bytes and its loader's identity. A run compares
@@ -824,9 +943,30 @@ no LangChain.
   | Set | What the run does |
   | --- | --- |
   | added | load and embed |
-  | changed | load and embed; delete the old chunks |
+  | changed: the sha256 **or the loader identity** differs | load and embed; delete the old chunks |
   | removed | delete the chunks (FAISS `delete(ids)`, verified) |
   | unchanged | nothing |
+
+  The loader identity is part of "changed". Without it, an edit to the extension map
+  (say `.md` moving to another loader) or to a loader's spec would leave that loader's
+  old chunks in the index forever.
+- **Index updates are all or nothing, because FAISS's are not** (verified in
+  langchain-community 0.4.2):
+  - `add_embeddings` puts the vectors into the index (`faiss.py:312`) _before_ the
+    docstore rejects a duplicate ID (`in_memory.py:26`), so a failed add leaves vectors
+    with no document;
+  - `delete` raises if any ID is missing (`faiss.py:930`).
+
+  A run therefore works in two phases:
+  1. **Prepare.** Load, split and embed every added and changed document. A document
+     that fails here is recorded and keeps its old chunks; nothing has touched the
+     store yet.
+  2. **Apply.** Load the live generation into memory, apply every delete and add, and
+     save the result as a new generation. Any exception aborts the run with nothing
+     published, because the live generation on disk was never written to.
+
+  If the manifest and the index disagree (a `delete` reports missing IDs, or the index
+  cannot be opened), the run logs why and does a full rebuild instead of failing.
 
 - **When it is a full rebuild.** Any one of these triggers it:
   - there is no manifest, which is true of every v0.2 index;
@@ -839,24 +979,52 @@ no LangChain.
     DEC-12 offload path keeps working.
   - A change to `model_name` or `encode_kwargs` is a different embedder.
   - The dimension is recorded too, as a backstop.
-- **Chunk IDs are `uuid5(namespace, f"{sha256}:{index}")`.**
+- **Chunk IDs are `uuid5(namespace, f"{relative_path}:{sha256}:{index}")`.**
   - They are deterministic, so an unchanged document keeps its IDs.
+  - The path is part of the key because two files with identical bytes (a copy in another
+    folder) would otherwise share IDs. LangChain's FAISS raises on duplicate IDs
+    (`faiss.py:308`), and deleting one document's chunks would delete the other's.
+    A rename therefore re-embeds the document, which is the safe side.
   - UUIDs are what Qdrant accepts as point IDs (DEC-3).
 - **A failed document keeps its previous chunks and its manifest entry.** The run still
   exits 1. This is the way out of DEC-13 that DEC-13 anticipated.
-- **Staged swap.** FAISS writes two files, and not atomically. A run therefore swaps whole
-  directories:
-  1. it builds the new generation (index and manifest) in `<path>.staging/`;
-  2. it renames the live directory to `<path>.previous`;
-  3. it renames the staging directory into place;
-  4. it deletes `.previous`.
+- **Generations and a symlink flip.** FAISS writes two files, and not atomically. So
+  `paths.vector_store` (`vectorstore/db_faiss`) becomes a **symlink** to a generation
+  directory beside it, `db_faiss.gen-<UTC timestamp>-<8 hex>`. A run:
+  1. writes the new generation (index and manifest) into a fresh directory;
+  2. `fsync`s each file in it, then the directory itself;
+  3. creates a temporary symlink to it, and `os.replace`s it over `db_faiss`. That is one
+     atomic `rename(2)`, so a reader sees the old generation or the new one, and never
+     neither;
+  4. `fsync`s the parent directory;
+  5. deletes generations older than the previous one.
 
-  A crash leaves either the old index or the new one, never half of each. `rag-ingest`
-  repairs a leftover `.previous` or `.staging` when it starts, and `rag-query` names the
-  state if it finds one.
-- **One writer at a time.** An advisory `fcntl.flock` on `<path>.lock` is held for the
-  whole run. A second `rag-ingest`, or an API job (DEC-18), exits 2 with "another
-  ingestion is running". The lock is Linux-only, as the deployment target is (SRS §2.4).
+  This is the release-directory pattern deploy tools use. It replaces a two-rename swap,
+  which left a moment with no index at the path, and needed a repair rule for each
+  leftover state. Here recovery has one rule, run under the lock at start:
+  - delete every generation that is neither the symlink's target nor the newest older
+    one;
+  - delete stray temporary symlinks.
+
+  An unreferenced _newer_ generation is a crash before the flip, so it is incomplete by
+  definition and goes too.
+
+  - **Migration from v0.2.** If `db_faiss` is a real directory, the run is a full
+    rebuild anyway (no manifest). It builds a generation, renames the old directory to
+    `db_faiss.v02-<timestamp>`, and puts the symlink in its place. This is the only
+    two-step moment, it happens once, and `rag-query` refuses that old index regardless.
+  - **The generation id is the target's name.** The manifest records it, and the API
+    detects a new index by `os.readlink`, with no mtime involved (DEC-18).
+  - The corpus rule that symlinks are never followed applies to the corpus walk only.
+    This symlink is ours, inside `vectorstore/`, which is gitignored.
+- **One writer at a time.** An advisory `fcntl.flock` (flock(2), not `fcntl.lockf`) on
+  `vectorstore/db_faiss.lock` is held for the whole run, outside the generations.
+  - It is `flock` because its locks belong to the open file. So the API's ingest thread
+    conflicts with the same process's other opens, and closing an unrelated descriptor
+    never drops it, which POSIX `lockf` locks would.
+  - A second `rag-ingest`, or an API job (DEC-18), exits 2 with "another ingestion is
+    running".
+  - The lock is Linux-only, as the deployment target is (SRS §2.4).
 - **The query side refuses a mismatched index.** If there is no manifest, or the embedder
   identity differs, `rag-query` exits 2 with "re-run rag-ingest", instead of silently
   comparing vectors that are not comparable. This is the check the backlog asked for, and
@@ -884,6 +1052,11 @@ Rejected:
   enough until Qdrant holds the metadata in Phase 3.
 - **Keeping absolute `source` paths**: they tie the index to one machine and leak over
   HTTP.
+- **A two-rename directory swap** (`live → .previous`, `.staging → live`), the first
+  draft of this decision. Between the renames the path holds no index, and each crash
+  point needs its own repair rule. The symlink flip has neither problem.
+- **Mutating the store per document, to isolate failures**: FAISS's add is not atomic
+  (above), so one failed add would corrupt the generation that gets saved.
 
 **DEC-18 — The HTTP API is FastAPI with native SSE, shaped by what a CPU host can serve.**
 
@@ -895,7 +1068,8 @@ Rejected:
     `ServerSentEvent`, with keep-alive pings and anti-buffering headers built in.
   - Verified: FastAPI 0.142.2, Starlette 1.7.0 and uvicorn 0.54.0 resolve with the stack.
   - `sse-starlette` is not needed.
-- **Endpoints.** The five from SRS §8.1, under `/v1`. Shapes are in §2.4.
+- **Endpoints.** The five from SRS §8.1, under `/v1`, plus `GET /v1/health/live`. Shapes
+  are in §2.4.
 - **The request never supplies components** (the constraint in §1.8).
   - `QueryRequest` is `{question}` only, 1–2,000 characters, with `extra="forbid"`.
   - Nothing in a request reaches `build_object`. A test posts `llm=` and expects 422.
@@ -904,22 +1078,58 @@ Rejected:
 - **Auth** (maintainer, 2026-10-02):
   - By default the server binds `127.0.0.1` and needs no token.
   - With `RAG_API_TOKEN` set, every endpoint except the health probes needs
-    `Authorization: Bearer <token>`, compared in constant time.
+    `Authorization: Bearer <token>`, compared in constant time. Both sides are compared
+    as UTF-8 bytes, because `secrets.compare_digest` raises `TypeError` on a non-ASCII
+    `str`, which would turn a hostile header into a 500 instead of a 401.
   - `rag-serve` refuses a non-loopback `--host` unless a token is set, and exits 2.
+  - With a token set, the interactive docs and `/openapi.json` are served only with it
+    (or switched off); otherwise they would describe the surface to anyone.
+  - Without a token, requests whose `Host` header is not loopback are refused, which
+    stops DNS rebinding from a web page reaching the local server.
+  - **Requests from a browser page are refused.** A cross-site "simple" POST still
+    arrives with `Host: 127.0.0.1`, so the Host check does not stop it.
+    - Any request with an `Origin` header is refused with 403, whatever the token
+      setting. curl, the CLI and scripts send none, and the API serves no browser UI in
+      Phase 2.
+    - Every POST requires a JSON body with `content-type: application/json`, including
+      `/v1/ingest` (`{"rebuild": false}` is required, not defaulted). A JSON
+      content-type cannot be sent cross-site without a CORS preflight, which the server
+      never answers.
+  - A non-loopback host with a token sends the token in cleartext until Phase 3's TLS.
+    `rag-serve` logs a warning at startup, and the README says so.
   - Rate limiting, TLS and multi-user auth belong to the Phase 3 deployment.
+- **Every refusal happens before the first byte.** With FastAPI's yield-based SSE, the
+  path function's body runs only once streaming has begun, after the 200 headers are
+  sent. So auth, the busy check and the no-index check are **dependencies**, run in that
+  order, and the generator holds only the answer.
 - **Concurrency.** A CPU host generates one answer at a time. `RAG_API_MAX_CONCURRENT`
-  (default 1) is a semaphore, taken before the stream starts. When it is full, the
-  request gets 503 with `Retry-After` rather than waiting silently in a queue.
-- **A disconnect cancels generation** (DEC-14). The route owns the generation task, and a
-  watcher cancels it when the client goes away.
-  - FastAPI's `EventSourceResponse` is a Starlette `StreamingResponse` (checked in
-    FastAPI's source); the SSE encoding lives in FastAPI's routing layer.
-  - Under ASGI spec ≥ 2.4, Starlette appears to notice a disconnect only when a send
-    fails. That would be at the next token or the 15 s keep-alive, and a CPU prefill is
-    5–15 s of silence.
-  - S2-7 confirms which. It keeps the watcher unless Starlette's own handling passes the
-    same test: Ollama abandons the request within about 1 s of the client dropping, during
-    prefill included.
+  (default 1) is a semaphore. When it is full, the request gets 503 with `Retry-After`
+  rather than waiting silently in a queue.
+  - A dependency takes the slot (`locked()` then `acquire()`, with no await between
+    them) and hands the route a `Slot` whose `release()` is idempotent.
+  - The SSE generator releases it in its `finally`. The dependency's teardown releases
+    it too, which covers a client that leaves before the generator ever starts (the
+    generator's `finally` cannot run if its body was never entered).
+  - A leaked slot would answer 503 forever, so a test asserts that the slot is free
+    after each kind of ending: done, error, disconnect, and disconnect before the first
+    event.
+- **A disconnect cancels generation** (DEC-14), through Starlette and the stream itself,
+  **with no separate producer task.**
+  - FastAPI's `EventSourceResponse` is a Starlette `StreamingResponse`; the SSE encoding
+    lives in FastAPI's routing layer.
+  - **uvicorn reports ASGI `spec_version` "2.3"** for HTTP (`httptools_impl.py`;
+    release 0.32.1, "Drop ASGI spec version to 2.3"). On 2.3, `StreamingResponse` runs
+    `listen_for_disconnect` beside the stream, and cancels it as soon as the client
+    drops, during a silent prefill too. The "only on the next send" behaviour belongs to
+    spec ≥ 2.4, which uvicorn does not claim.
+  - So `stream_answer` runs **inside** the SSE generator. Starlette's cancel lands in
+    `stream_answer`'s `finally`, which closes the stream to Ollama, exactly as Ctrl-C
+    does in the CLI. A task spawned by the route would be outside Starlette's cancel
+    scope, and would orphan generation: DEC-14's trap, one layer up.
+  - `rag-serve` runs uvicorn only. If a later server reports spec ≥ 2.4, a disconnect
+    watcher becomes necessary, and the startup log says which spec version is in use.
+  - S2-7 proves it under real uvicorn, not only with the test client, which does not
+    model a mid-stream disconnect.
 - **Ingest jobs.**
   - `POST /v1/ingest` starts one job at a time. It returns 409 while a job runs, and the
     DEC-17 lock also stops a concurrent CLI run.
@@ -928,15 +1138,41 @@ Rejected:
   - On success, the server reopens the store and swaps the **retrieval half** of its
     `QueryPipeline`. In-flight answers keep the old one, and the LLM and its clients are
     not rebuilt.
+  - **An ingest run outside the server** (the CLI) is picked up too.
+    - Each query first compares `os.readlink(vector_store)`, the current generation, with
+      the generation the loaded index came from. It is one syscall. Since the flip is
+      atomic and the previous generation survives one more flip (DEC-17), there is no
+      moment at which the reload can find a half-written index.
+    - A reload runs the same compatibility check as startup. If the new generation was
+      built with a different embedder (a CLI `--rebuild` after a config change), the
+      server goes not-ready and keeps refusing queries until it is restarted with a
+      matching config. Serving incomparable vectors is the bug DEC-17 exists to prevent.
+    - The reopen runs in a worker thread, under an asyncio lock, so concurrent queries
+      reload once.
+    - `/v1/documents` and `/v1/health` read the manifest of the generation being served,
+      so they never disagree with it.
 - **Lifespan.**
   - It loads the config and builds the pipeline once.
   - The server can start without an index. It reports not-ready until a job builds one.
+  - An incompatible index at startup counts as no index: the server starts, reports
+    not-ready, and `/v1/health` says "re-ingest with --rebuild".
   - At shutdown it calls `QueryPipeline.aclose()`.
   - If Ollama is unreachable at startup (`validate_model_on_init`), `rag-serve` exits 2
     with an Ollama hint, not a traceback.
 - **No host paths over HTTP.** Responses carry only corpus-relative paths. Errors say "no
   index yet", not where the index would be. A test asserts that the corpus root never
-  appears in a response body.
+  appears in a response body. Three sources carry paths today and are covered:
+  - `IngestReport.failed` holds `str(error)`, and an `OSError`'s text includes the
+    absolute file path. Errors are stored as `type: message` with the corpus root and the
+    store path made relative.
+  - Ingest log lines name `data_path` and the store path (`ingest.py:155`). They become
+    relative too, and the job keeps them as its `log`.
+  - The SSE `error` event carries the exception type and a fixed message per type
+    ("the language model is unreachable", …). The full exception goes to the server log
+    only, since FAISS and httpx messages carry paths and URLs.
+
+  The test for this ingests a temporary corpus holding a real `chmod 000` file through
+  the real job, then scans the job's body and log.
 - **Server settings come from the environment only**, as `RAG_API_*`, read by
   `rag_qa.settings`. That module stays the only reader of `RAG_*` variables, and
   `config.yaml` stays about the pipeline.
@@ -949,6 +1185,11 @@ Rejected:
 - **Queueing excess requests**: on CPU, a queued answer would wait minutes with no
   feedback.
 - **Building the chain per request**: that is seconds of model loading per question.
+- **A producer task plus a disconnect watcher**, the first draft of this decision. Under
+  uvicorn, Starlette already watches for the disconnect. A task spawned outside its
+  cancel scope is the one thing that could keep generating after the client leaves.
+- **Detecting a CLI ingest by the manifest's `mtime_ns`**: it races a swap in progress,
+  and coarse timestamps can hide one. The generation symlink cannot.
 
 ### 2.2 Layout at Phase 2 exit
 
@@ -961,13 +1202,14 @@ src/rag_qa/
 │                       retrieval.py       tier-1 metrics
 │                       generation.py      rag-eval generate (consumes stream_answer)
 │                       ragas_scoring.py   the only ragas importer; coverage-omitted
-│                       gate.py            fingerprint + floors: rag-eval check (pure)
+│                       fingerprint.py     the six fingerprint parts; langchain_core only
+│                       gate.py            freshness + floors: rag-eval check (no models)
 │                       cli.py             rag-eval {retrieval, generate, score, check}
 ├── api/           NEW  app.py · routes.py · models.py · server.py (rag-serve)
 ├── chain.py            + QueryPipeline, build_retrieve, build_query_pipeline;
 │                         build_rag_chain kept for invoke (§0.4 contract)
 ├── components.py       + build_reranker, aclose_llm
-├── vectorstore.py      + incremental apply, staged swap, manifest-aware open
+├── vectorstore.py      + incremental apply, generations + symlink flip, manifest-aware open
 ├── ingest.py           incremental, --rebuild, logging, lock, pruned walk
 ├── cli.py              one asyncio.Runner per session, over stream_answer
 ├── schema.py           + prompt placeholders, trust_remote_code guard, `evaluation`
@@ -978,6 +1220,7 @@ src/rag_qa/
 eval/                   NEW, at the repo root, beside config.yaml
 ├── eval_dataset.jsonl  the golden set (SRS §7.4)
 ├── thresholds.yaml     tier-1 and tier-2 floors
+├── judge.Modelfile     the judge's settings: gemma2:9b, num_ctx 8192, temperature 0, seed
 └── runs/               answers-latest.json, generation-latest.json (committed, small text)
 ```
 
@@ -992,9 +1235,13 @@ Dependency direction extends ADR-009:
 - `answering → chain`, for `QueryPipeline`, `citation` and `format_docs`.
 - `ingest → {components, manifest, vectorstore, config}`. It still never imports `chain`,
   `cli` or `api`.
-- `manifest`, `evaluation.dataset` and `evaluation.gate` import no LangChain.
-  `tests/test_architecture.py` adds them to its config-layer list, which is what lets
-  `rag-eval check` run in CI's model-free job.
+- `manifest` and `evaluation.dataset` import no LangChain. `tests/test_architecture.py`
+  adds them to its config-layer list.
+- `evaluation.fingerprint` and `evaluation.gate` may import `langchain_core` and
+  `rag_qa.chain` (for the rendered-prompt probe), and nothing heavier.
+  `tests/test_architecture.py` asserts that importing `evaluation.gate` loads none of
+  ragas, openai, torch, sentence-transformers or langchain_huggingface. That is what lets
+  `check` run in CI's model-free job.
 
 ### 2.3 Config shape changes
 
@@ -1002,7 +1249,6 @@ Dependency direction extends ADR-009:
 components:
   retrievers:
     vector_search:     {search_kwargs: {k: 5}}
-    rerank_candidates: {search_kwargs: {k: 20}}        # NEW: the reranker's wide net (S2-4)
   rerankers:                                            # rewritten (DEC-16)
     ms_marco_minilm_cpu:
       _target_: rag_qa.rerankers.CrossEncoderReranker
@@ -1012,12 +1258,14 @@ components:
     ms_marco_minilm_cuda: {...same, device: cuda}
 pipeline:
   query:
-    retriever: components.retrievers.rerank_candidates     # when the reranker is on
+    retriever: components.retrievers.vector_search
     reranker: components.rerankers.ms_marco_minilm_cpu     # on or off by S2-4's numbers
+    reranker_candidates: 20                                # only with a reranker; overrides k
 evaluation:                                                # NEW, optional; only rag-eval reads it (S2-5)
   decline_marker: "could not find the answer"              # core of the system prompt's refusal
   judge:
-    model: "gemma2:9b"
+    model: "rag-judge"                                     # ollama create rag-judge -f eval/judge.Modelfile
+    modelfile: "eval/judge.Modelfile"                      # hashed into `judge`; num_ctx checked at score time
     base_url: "http://localhost:11434/v1"                  # Ollama's OpenAI-compatible endpoint
 ```
 
@@ -1052,21 +1300,28 @@ eval files under `eval/` beside the config file.
 ```python
 @dataclass(frozen=True)
 class QueryPipeline:
-    retrieve: Runnable[str, list[Document]]   # retriever, then reranker; awaited, never streamed
+    retrieve: Runnable[str, list[Document]] | None   # retriever, then reranker; awaited, never streamed.
+                                                     # None only while the API has no index (S2-7)
     answer: Runnable[dict[str, str], str]     # prompt | llm | StrOutputParser(); streamed directly
     llm: BaseChatModel                        # kept so aclose() can close its HTTP clients
     corpus_root: Path                         # SourceRef.source is relative to it
     async def aclose(self) -> None: ...
 
 def build_retrieve(config: RagConfig, embeddings: Embeddings) -> Runnable[str, list[Document]]
-def build_query_pipeline(config: RagConfig) -> QueryPipeline
+def build_query_pipeline(config: RagConfig, *, require_index: bool = True) -> QueryPipeline
+    # require_index=True (CLI, eval): no usable index raises NoIndexError or
+    # IncompatibleIndexError. require_index=False (API): with no usable index, retrieve is
+    # None and the LLM half is still built; with one, both halves are built. The API then
+    # `dataclasses.replace`s the retrieval half in after an ingest
+class NoIndexError(Exception)   # stream_answer raises it when pipeline.retrieve is None
 def build_rag_chain(config: RagConfig) -> Runnable    # §0.4 contract, same parts; invoke only
 
 @dataclass(frozen=True)
 class SourceRef:
     n: int               # the [n] the prompt used
     citation: str        # "2412.14140v2.pdf, p. 7"
-    source: str          # corpus-relative path
+    source: str          # corpus-relative path; the bare file name when the chunk's source is
+                         # not under corpus_root (an index built on another machine)
     page: str | None     # printed page label, as the citation shows it
     score: float | None  # rerank_score when reranked
 
@@ -1102,7 +1357,7 @@ the front end, which renders them.
 | --- | --- | --- |
 | `POST /v1/query` | token, if set | the SSE stream above |
 | `POST /v1/ingest` `{"rebuild": false}` | token, if set | 202 `{job_id, status}`; 409 while a job runs |
-| `GET /v1/ingest/{job_id}` | token, if set | `{job_id, status, started_at, finished_at, exit_code, report}`; 404 if unknown |
+| `GET /v1/ingest/{job_id}` | token, if set | `{job_id, status, started_at, finished_at, exit_code, report, log}`; 404 if unknown. `log` is the job's ingest log lines, with paths made relative |
 | `GET /v1/documents` | token, if set | `{documents: [{source, sha256, chunks, loader, ingested_at}]}`, from the manifest |
 | `GET /v1/health` | none | readiness: 200 or 503, with `{status, index, llm}` |
 | `GET /v1/health/live` | none | 200 while the process runs |
@@ -1119,6 +1374,7 @@ the front end, which renders them.
 ```json
 {
   "version": 1,
+  "generation": "db_faiss.gen-20261002T120000Z-1a2b3c4d",
   "embedder": {"ref": "components.embedders.minilm_cpu", "identity": "<sha256>", "dimension": 384},
   "splitter": {"ref": "components.splitters.english_recursive", "identity": "<sha256>"},
   "documents": {
@@ -1161,18 +1417,22 @@ the front end, which renders them.
 # eval/thresholds.yaml: floors, set from the first baseline minus a tolerance, raised deliberately
 retrieval:  {hit_rate: ..., mrr: ..., recall: ...}                            # tier 1 (S2-3)
 generation: {faithfulness: ..., answer_relevancy: ..., context_precision: ...,
-             context_recall: ..., decline_rate: ...}                          # tier 2 (S2-5)
+             context_recall: ..., decline_rate: ...}                          # tier 2 (S2-5b)
 ```
 
 `generation-latest.json` records:
 
-- the `fingerprint`, as hashes of `query`, `ingestion`, `corpus`, `dataset` and `judge`;
-- the generator and judge models, and the ragas version;
+- the `fingerprint`, as hashes of `query`, `ingestion`, `corpus`, `questions`,
+  `references` and `judge` (DEC-15);
+- the generator and judge models, with their recorded Ollama digests (not hashed), and
+  the ragas version;
+- the judge's `num_ctx` and the largest `prompt_tokens` seen;
+- the parse failures, counted per metric;
 - timestamps;
 - the aggregates, and the scores for each item.
 
-`answers-latest.json` carries the same fingerprint without `judge`, and `check` requires
-the two files to agree.
+`answers-latest.json` carries `query`, `ingestion`, `corpus` and `questions`, plus the
+generator's digest. `check` requires the two files to agree on those four parts.
 
 ### 2.5 Testing and CI
 
@@ -1183,33 +1443,42 @@ The unit suite stays hermetic (DEC-11). Each story adds tests:
   - Asserted: cancelling the consumer closes the stream before the consumer returns,
     both mid-stream and during the simulated prefill.
   - Negative control: the same assertion fails against the `RunnablePassthrough.assign`
-    shape.
-  - Plus the manual check against real Ollama, which only the daemon can show.
+    shape. It is written as `xfail(strict=True)`, so if langchain-core ever fixes the
+    behaviour, the suite goes red and says the trap is gone, not silently green.
+  - Plus the manual check against real Ollama, which only the daemon can show: our
+    connection closes within about 1 s, and the runner idles by the end of the prefill
+    at the latest (DEC-14).
 - **Reranker (S2-4).** A stub scoring model stands in for the download. Ordering,
   `top_n`, `min_score` and `rerank_score` are checked without network.
 - **Manifest and ingest (S2-6).** Pure manifest tests, plus incremental runs with
   `DeterministicFakeEmbedding` covering:
-  - an add, a change and a delete;
+  - an add, a change (by content, and by loader identity) and a delete;
   - a failure that keeps the old chunks;
-  - each rebuild trigger;
-  - a crash between the swap's renames;
+  - each rebuild trigger, including a manifest that disagrees with its index;
+  - a crash before the symlink flip, and recovery at the next start;
+  - the v0.2 migration from a real directory to the symlink;
   - the lock.
 - **API (S2-7).** FastAPI's test client against a fake pipeline covers:
   - SSE framing and event order;
-  - 401, 409, 422 and 503;
+  - 401, 403, 409, 422 and 503, and the slot freed after every kind of ending;
   - components refused in a request;
-  - no host path in any response body.
+  - no host path in any response body, an ingest job over a real unreadable file
+    included.
+
+  One test runs real uvicorn on a free port and drops the client during a fake prefill.
+  The fake model's `finally` must run, and the slot must be free.
 - **Evaluation (S2-2, S2-3, S2-5):**
   - dataset validation;
   - metric arithmetic on hand-built contexts;
-  - fingerprint sensitivity: each input moves its own hash and only that one;
+  - fingerprint sensitivity: each input moves its own part and only that one, and
+    `notes` and `expected_sources` move nothing;
   - floor failures.
 
 CI:
 
-- **The `check` job keeps the DEC-11 gate order.** From S2-5 it gains a final step,
-  `uv run rag-eval check`, which checks tier 2's floors and freshness. It is pure Python,
-  so it needs no models.
+- **The `check` job keeps the DEC-11 gate order.** From S2-5b it gains a final step,
+  `uv run rag-eval check`, which checks tier 2's floors and freshness. It needs no models
+  and no Ollama.
 - **The `eval-retrieval` job (S2-3)** runs after `check`:
   1. `uv sync --locked`;
   2. restore the HF cache;
@@ -1221,8 +1490,9 @@ CI:
   imports the `eval` extra, which CI does not install. mypy's no-stub overrides follow the
   same module.
 - **The architecture test** grows in two ways:
-  - `manifest`, `evaluation.dataset` and `evaluation.gate` join the modules that must
-    load no LangChain;
+  - `manifest` and `evaluation.dataset` join the modules that must load no LangChain;
+  - importing `evaluation.gate` must load none of ragas, openai, torch,
+    sentence-transformers or langchain_huggingface;
   - `api` joins the modules that `ingest` must never load.
 
 ### 2.6 Deliberately not built in Phase 2
@@ -1240,7 +1510,7 @@ CI:
 - **The hosted-LLM fallback**: Phase 3, with the NFR-2 decision.
 - **SSE resume** (`Last-Event-ID`): a dropped stream is a cancelled answer.
 - **The DEC-2 revisit** (mistral vs phi3 vs qwen2). It needs the tier-2 harness, so it
-  comes after S2-5, as a Colab/Kaggle sweep. It stays on the backlog.
+  comes after S2-5b, as a Colab/Kaggle sweep. It stays on the backlog.
 - **Per-loader splitter strategies and `ruff format`**: still on the backlog, unchanged.
 
 ### 2.7 Phase mapping delta
@@ -1250,7 +1520,7 @@ CI:
 | FastAPI + SSE | `rag_qa/api`, native SSE, a disconnect cancels generation | Phase 3: container, rate limiting, TLS |
 | Reranker | own cross-encoder (DEC-16), on or off by tier-1 numbers | — |
 | Own components (DEC-5 exit) | step 2 of 3: the cross-encoder; the allowlist shrinks | Phase 3: FAISS → Qdrant, and `langchain-community` leaves our direct dependencies (ragas still pulls it into the `eval` extra) |
-| Incremental ingestion | manifest, staged swap, lock, §7.3 metadata | Phase 3: Qdrant upsert, snapshots and backup (SRS §11) |
+| Incremental ingestion | manifest, generations with a symlink flip, lock, §7.3 metadata | Phase 3: Qdrant upsert, snapshots and backup (SRS §11) |
 | RAGAs gate | two tiers: retrieval in CI; generation committed and checked | Phase 3: the DEC-2 revisit feeds the serving decision |
 | `ChatOllama` + hosted fallback | `ChatOllama`, with its clients closed | Phase 3 |
 | NFR-2 (<2 s to first token) | measured: `ttft_ms` on every answer and in every tier-2 run | Phase 3 decision (ADR-016) |

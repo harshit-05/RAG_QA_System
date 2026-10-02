@@ -32,24 +32,37 @@ Design: ARCHITECTURE.md §2.1 DEC-16, config in §2.3.
     `ContextualCompressionRetriever` path.
   - `SourceRef.score` carries `rerank_score`.
 - **`config.yaml`.**
-  - Add `retrievers.rerank_candidates`, with k=20.
+  - Add `pipeline.query.reranker_candidates: 20`. `build_retrieve` overrides the
+    retriever's `k` with it when a reranker is on, so one switch flips both and 20 chunks
+    can never reach the prompt without a reranker (caveat 7). No second retriever entry.
+  - `schema.py`: `reranker_candidates` is required when `reranker` is set, forbidden when
+    it is not, and at least the reranker's `top_n`.
   - Replace `cross_encoder` with `rerankers.ms_marco_minilm_cpu` and
     `ms_marco_minilm_cuda`, named by both axes like the embedders.
-  - Set `pipeline.query.reranker` and `retriever` according to the decision below, and
-    put the numbers in the comment.
+  - Set `pipeline.query.reranker` according to the decision below, and put the numbers
+    in the comment.
 - **The allowlist.**
   - `registry.py`: `ALLOWED_PREFIXES` loses `langchain_classic.` and
     `langchain_community.`, and the docstring says why (an allowlist allows only what is
     used, ADR-020).
   - Update CLAUDE.md's environment-facts line that says the reranker entry and the
     allowlist keep `langchain_classic` named until Phase 2.
+- **CI (`ci.yml`).**
+  - Add a warm-up step to `eval-retrieval`, before the offline step, that builds the
+    reranker from the config through `components.build_reranker` (not a download by
+    name), so it caches exactly the files the offline step opens. Add the model's name to
+    the cache key. `rag-ingest` loads only the embedder, so without this the offline step
+    fails on a cache miss.
 - **Tests.**
   - The reranker, with a stub in place of the model (no download): ordering, `top_n`,
     `min_score`, metadata copied rather than mutated, empty input.
-  - `build_retrieve` with the reranker on and off.
+  - `build_retrieve` with the reranker on and off: on fetches `reranker_candidates`,
+    off fetches the retriever's own k. The schema rule for `reranker_candidates`.
   - **ISS-03 regression, rewritten.**
-    - `tests/test_config_regressions.py:143` uses a `langchain_classic.` path, which now
-      fails the prefix check before `check_imports` is reached.
+    - Every test that names `components.rerankers.cross_encoder` has to move:
+      `tests/test_registry.py:151` and `tests/test_config_regressions.py:124-152` (two
+      cases). The one at :143 uses a `langchain_classic.` path, which now fails the
+      prefix check before `check_imports` is reached.
     - Move the case to a misspelled class under an allowed prefix,
       `rag_qa.rerankers.CrossEncoderRerank`, so it still tests what ISS-03 was.
     - Update the docstring at :211.
@@ -64,8 +77,12 @@ Design: ARCHITECTURE.md §2.1 DEC-16, config in §2.3.
   | (b) | k=20 candidates → reranker → top 5 |
 
   Also time the rerank step on CPU: the median over the golden questions.
-  - **Turn it on** if (b) improves hit rate or MRR without lowering recall, and its
-    latency is small next to generation (seconds against minutes).
+  - **Compare question by question, not only the means.** On about 20 questions, one
+    question moves a mean by 0.05. List which questions (b) wins (a better first-hit
+    rank) and which it loses.
+  - **Turn it on** if (b) wins more questions than it loses, loses no hit that (a) had,
+    does not lower recall, and its latency is small next to generation (seconds against
+    minutes). A tie stays off: the simpler pipeline wins a tie.
   - **Record** the table here and in the config comment.
   - **Re-baseline** the `retrieval:` floors for the chosen config.
 
@@ -96,7 +113,8 @@ RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-eval retrieval --config <scratc
 uv run rag-query       # one question: the answer, then the sources in reranked order
 
 # 5. CI
-gh run list --limit 2  # check and eval-retrieval green; eval-retrieval caches the cross-encoder too
+gh run list --limit 2  # check and eval-retrieval green; the warm-up step fetched the cross-encoder
+#    Re-run once: the log should show a cache hit for both models.
 ```
 
 ## Review notes for the human

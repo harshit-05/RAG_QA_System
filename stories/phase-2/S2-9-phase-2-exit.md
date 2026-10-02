@@ -4,7 +4,7 @@
 | --- | --- |
 | **Status** | Todo |
 | **Closes** | — (phase exit; SRS §12 Phase 2) |
-| **Depends on** | S2-1 … S2-8 |
+| **Depends on** | S2-1 … S2-8, S2-5b |
 | **Model** | opus-fast |
 | **Plan-first** | no |
 | **Branch** | `chore/s2-9-phase-2-exit`. A release: it lands through a PR, and `main` is tagged after the merge. |
@@ -26,18 +26,21 @@ Exit ⇒ version 0.3.0, tag `v0.3`.
 - **The end-to-end run**, on a fresh clone and real Ollama. Free memory first
   (caveat 8). The steps:
   1. `uv sync`;
-  2. `rag-ingest`, a full run;
+  2. `rag-ingest`, a full run (`vectorstore/db_faiss` becomes a symlink to a
+     generation);
   3. a second `rag-ingest`: nothing to embed;
   4. `rag-serve`;
   5. a query streamed over SSE with `curl -N`;
   6. an ingest job, then the documents list;
-  7. a disconnect during the prefill and one mid-stream, each stopping Ollama (caveat 21);
+  7. a disconnect during the prefill and one mid-stream. Each closes the server's
+     connection to Ollama within about 1 s, the runner idles by the end of the prefill
+     at the latest (caveat 21), and the next query gets a slot;
   8. `rag-query`, including a Ctrl-C mid-answer.
 
   Record a table of the checks, as S1-8's manual test did.
 - **Quality bar.**
   - `rag-eval check` is green on the release commit, and `eval-retrieval` is green in CI.
-  - Re-run tier 2 only if its fingerprint moved after S2-5. Surface the estimate first
+  - Re-run tier 2 only if its fingerprint moved after S2-5b. Surface the estimate first
     (caveat 16).
 - **Docs.**
   - `README.md`: the HTTP API (`rag-serve`, the token, the endpoints, curl); evaluation
@@ -49,7 +52,11 @@ Exit ⇒ version 0.3.0, tag `v0.3`.
   - `docs/ADR.md`: entries for the decisions that generalize. They are indexed and not
     renumbered. Candidates:
     - cancelling an async stream means owning the task, not going async;
-    - a two-tier quality gate, where the expensive tier is committed with a fingerprint;
+    - a two-tier quality gate, where the expensive tier is committed with a fingerprint
+      whose parts name the re-run that fixes them;
+    - publishing an index by an atomic symlink flip between generations;
+    - versioning a local judge's settings as a Modelfile, because its API cannot set
+      them per request;
     - an embedder identity that leaves out the keys that do not change the vectors.
   - `CLAUDE.md`: environment facts (the new commands; `gemma2:9b` as the judge); check
     the `langchain_classic` line S2-4 rewrote; anything a fresh session would get wrong.
@@ -82,13 +89,16 @@ gh run list --limit 3                                     # check and eval-retri
 git clone . <scratch>/fresh && cd <scratch>/fresh && uv sync
 uv pip list | grep -icE 'nvidia'                          # → 0
 uv run rag-ingest && uv run rag-ingest                    # full, then nothing to embed
-uv run rag-serve & sleep 10
+#    rag-serve runs in a second terminal, in the foreground, with its log tee'd:
+#      cd <scratch>/fresh && uv run rag-serve 2>&1 | tee <scratch>/serve.log
 curl -s localhost:8000/v1/health
 curl -sN -X POST localhost:8000/v1/query -H 'content-type: application/json' -d '{"question": "What is GLIDER?"}'
 #    plus the remaining checks in the Scope table, recorded below
 
 # 3. docs tell the truth
-grep -rno "\](\([^)]*\.md\)[^)]*)" docs/ stories/ CLAUDE.md README.md   # no dangling links
+for f in docs/*.md stories/*.md stories/phase-*/*.md CLAUDE.md README.md; do
+  grep -o '](\([^)#]*\.md\)' "$f" | sed 's/^](//' | while read -r l; do
+    test -e "$(dirname "$f")/$l" || echo "DANGLING in $f: $l"; done; done    # → prints nothing
 
 # 4. release
 grep '^version' pyproject.toml; grep __version__ src/rag_qa/__init__.py   # → 0.3.0

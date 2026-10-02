@@ -27,6 +27,54 @@ recorded with it:
 the maintainer chose to accept this pass rather than re-run it. Every backlog line now
 names its owning Phase 2 story, or its re-deferral.
 
+**Design reviews (2026-10-02, before any code).** Two reviews; the maintainer left the
+second review's decisions to the reviewer, "useful before unusual".
+
+- **First review**, already folded into the docs:
+  - the SRS differences listed;
+  - S2-5 split into S2-5/S2-5b, and S2-6 moved before S2-5;
+  - `reranker_candidates` as one pipeline key;
+  - the file's path in the chunk ID;
+  - the tier-1 warm-up and cache key;
+  - auth hardening (docs gated, Host check);
+  - the API's start without an index;
+  - the strict negative control.
+- **Second review** (risky areas: auth, migration, concurrency). It found two problems
+  in the first review's additions and changed four decisions:
+  - **H1, fingerprint:** CI cannot recompute Ollama digests, and the prompt probe
+    needs LangChain. Now: six parts computed in `evaluation/fingerprint.py`, which may
+    import langchain_core; digests are recorded, not hashed, and checked by
+    `check --with-ollama`; `notes` and `expected_sources` are left out; a
+    `ground_truth` edit costs a re-score only.
+  - **H2, judge context:** the OpenAI endpoint cannot set `num_ctx`, and Ollama's 4k
+    default would silently truncate RAGAs' prompts. Now: `eval/judge.Modelfile`
+    (`rag-judge`, 8k), hashed and checked at score time (caveat 22).
+  - **H3, API disconnects:** uvicorn reports ASGI 2.3, so Starlette already cancels the
+    stream on disconnect, and the planned producer task was the shape that would
+    orphan generation. Now: `stream_answer` runs inside the SSE generator; refusals are
+    dependencies; the slot has two release paths.
+  - **H4, the prefill criterion:** Ollama reportedly finishes a prompt evaluation in
+    progress. The criterion is now "our connection closes within about 1 s, and the
+    runner idles by the end of the prefill" (caveat 21).
+  - **Migration and concurrency:**
+    - generations with an atomic symlink flip and `fsync`, replacing the two-rename
+      swap;
+    - an all-or-nothing apply phase, because FAISS's add is not atomic (verified);
+    - a changed loader identity re-embeds the document;
+    - the API reloads on the generation, not on mtime, and re-checks the embedder;
+    - `flock`, not `lockf`.
+  - **Auth and privacy:**
+    - requests carrying `Origin` get 403, and every POST needs a JSON body (CSRF to
+      localhost);
+    - the token is compared as bytes;
+    - ingest errors and logs are path-free.
+  - **Smaller items:**
+    - a second Ctrl-C closes the Runner;
+    - tier-2 tolerance comes from two scorings;
+    - the reranker is decided question by question;
+    - S2-5 smoke runs get `--out`;
+    - servers run in a foreground terminal.
+
 **Phase 1 is complete and released as `v0.2`** (2026-10-02): tag on `db75439`, CI green
 on the PR, `main` and the tag.
 
@@ -66,7 +114,7 @@ through `rag-query`.
 **Known quality gap carried into Phase 1+:** retrieval is reliable, but the
 7B model sometimes misstates retrieved facts (S0-6 fact-check: misattributed
 scores, an invented acronym expansion). Faithfulness stays unmeasured until the
-Phase 2 tier-2 harness (S2-5). The S0-6 story records the failing question and
+Phase 2 tier-2 harness (S2-5, baseline in S2-5b). The S0-6 story records the failing question and
 its verified ground truth, which becomes the first golden record (S2-2).
 
 **Commit history so far** (S0-1 → S0-4; ISS-09 verified fully closed, `git
@@ -125,15 +173,18 @@ The final story of each phase performs the tag + version bump at close-out.
 
 - [x] Resolve DEC-1 / DEC-2 — done in the Phase 0 arch pass, 2026-09-18.
 
-- [ ] **Phase 2 (S2-5): somewhere to run tier-2 scoring.**
-  - **Locally:** about 3–4 h of CPU with `gemma2:9b`, which is already pulled.
+- [ ] **Phase 2 (S2-5b): somewhere to run tier-2 scoring.** It scores twice, to measure
+  the judge's noise.
+  - **Locally:** about 3–4 h of CPU per scoring with `gemma2:9b`, which is already
+    pulled, so 6–8 h in all. The `rag-judge` variant (8k context) holds about 8 GB, an
+    estimate S2-5 measures.
   - **On Colab/Kaggle:** needs an account, plus Ollama with the same `gemma2:9b` tag on
-    the GPU runtime.
+    the GPU runtime, and `ollama create rag-judge -f eval/judge.Modelfile`.
 
-  S2-5 surfaces the estimate first, and the maintainer picks.
+  S2-5b surfaces the estimate first, and the maintainer picks.
 
 - [ ] Nothing else: uv ✓, Python 3.12 (uv-managed) ✓, Ollama daemon ✓,
-      Docker 29.6.2 ✓ (Phase 3), disk 311 GB free ✓. **No MCP servers are
+      Docker 29.8.1 ✓ (Phase 3), disk 311 GB free ✓. **No MCP servers are
       required for any phase** — built-in tools cover the whole workflow.
 
 ## Pre-flight caveats (read before a story session)
@@ -146,6 +197,7 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
 
 - Item 15 is a fact the pass verified.
 - Items 16–21 are known costs of Phase 2 work.
+- Item 22 comes from the second design review.
 
 1. **Resolved (2026-09-18), historical.** The three pending commits (baseline,
    S0-1, S0-2) landed as `ee86e1f`, `f702dc8` + `e781b17` and `0987c60`. The
@@ -223,6 +275,18 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
 21. **Cancellation is proved only against real Ollama.** The hermetic tests show that our
     stream closes. Only the daemon shows that the model stopped: its log, or `top`
     falling to idle. S2-1 and S2-7 carry that manual step.
+    - **Read the result in two parts.** Our connection must close within about 1 s.
+    - Ollama reportedly finishes a prompt evaluation already in progress before it
+      notices (third-party measurement, 2026-09-23; not yet seen here). So during the
+      prefill, the runner may stay busy up to the end of the prefill (5–15 s on CPU).
+      That is expected, not a bug in our code; generating tokens after the cancel would
+      be one.
+22. **Ollama's OpenAI endpoint cannot set the context size, and defaults to 4k below
+    24 GiB of VRAM** (this host, and a Colab T4). Prompts over it are truncated silently.
+    The judge is therefore `rag-judge`, built from `eval/judge.Modelfile` with
+    `num_ctx 8192`, and `score` refuses a judge served with any other context. After a
+    re-pull of `gemma2:9b`, run `ollama create` again. Caveat 7 is the same trap on the
+    generator side.
 
 ## GPU offload notes (nothing *requires* GPU; Colab/Kaggle available)
 
@@ -232,7 +296,7 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
   - `rag-eval generate` runs here.
   - `rag-eval score` runs on Colab/Kaggle, with Ollama and `gemma2:9b` on their GPU.
   - The two exchange only `eval/runs/answers-latest.json`.
-  - S2-5 records the recipe.
+  - S2-5b records the recipe.
 - **Bulk re-embedding** only if the corpus grows to thousands of docs.
 - **Serving SLO (NFR-2)** — Colab/Kaggle are batch sandboxes with session
   limits, not hosting; if the <2 s SLO must hold at v1.0, that's a real
@@ -300,20 +364,23 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Todo |
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Todo |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Todo |
-| [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate | FR-7, ISS-15 | S2-2, S2-4 | Todo |
+| [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Todo |
+| [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Todo |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Todo |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Todo |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
-| [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8 | Todo |
+| [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Todo |
 
-**Order.** Stories run in number order, which also satisfies the Depends column. The
-evaluation chain (S2-2 → S2-5) comes before the manifest and the API for two reasons:
+**Order.** S2-1, S2-2, S2-3, S2-4, **S2-6**, S2-5, S2-5b, S2-7, S2-8, S2-9. It differs
+from the numbering in one place, and the Depends column is satisfied throughout:
 
+- S2-6 runs before S2-5, because S2-5's fingerprint reuses `manifest.py`'s identity
+  functions, and those belong to S2-6 (risky, and reviewed there). Written once, they
+  cannot drift and force an hours-scale re-run.
 - The reranker (S2-4) is switched on or off by tier-1 numbers.
-- Tier 2's hours-scale baseline (S2-5) should be taken once, on the final retrieval
-  config.
-
-S2-6 depends only on S2-1, and may move earlier if that is convenient.
+- Tier 2's hours-scale baseline (S2-5b) is taken once, on the final retrieval config.
+- S2-5 was split: the harness and gate are code (one session), the baseline and the CI
+  step are a long run (S2-5b).
 
 **Story setup.**
 
@@ -342,10 +409,10 @@ S2-6 depends only on S2-1, and may move earlier if that is convenient.
 | DEC-12 | Making the declared GPU embedder entries actually installable | **Resolved 2026-09-25: uv-conflicting CPU/CUDA torch variants; plain `uv sync` stays CPU** | Each variant routed to its own index, `explicit = true` on both. **Mechanism chosen by S1-7's spike**: extras have no default, so torch-only-in-extras would make a plain sync pull PyPI CUDA torch via `sentence-transformers`. Preferred: dependency groups + `default-groups = ["dev", "cpu"]`; fallback: extras with `--extra cpu` on every install path. S1-7 re-runs the S0-2 smoke test on the **installed env** (the lock legitimately holds both variants): core 1.x, `torch 2.14.0+cpu`, zero `nvidia-*`. CUDA is verifiable here as a **resolve only** — this host is CPU-only. |
 | DEC-13 | Partial ingestion failure: replace the index with what loaded, or keep the previous one | **Resolved 2026-10-01: replace, exit 1** | Maintainer's call, raised by S1-4's third review. Some documents or folders unreadable → index the rest, save over the old index, exit 1 ("rebuilt without them"). Keeping the old index is safer when unattended, but one persistently bad file would block every update. Phase 1 ingests are hand-run and watched. Phase 2's hash manifest dissolves it: a failed document keeps its previously indexed chunks. Exit codes: 0 all indexed · 1 document/folder unreadable, nothing indexed, or unexpected error (traceback) · 2 cannot start. ARCHITECTURE.md §1.1. |
 | DEC-14 | Cancelling an answer: how the CLI's Ctrl-C and the API's client disconnect stop generation | **Resolved 2026-10-02: one answer-event stream (`answering.stream_answer`); stopping it means cancelling the task that consumes it** | **Verified trap:** async alone does not fix it. Under `RunnablePassthrough.assign`, `RunnableParallel` waits on its step tasks with `asyncio.wait` and never cancels them. In the trial, a cancel at 0.5 s during a simulated prefill left the stream open until 2.0 s; streaming `prompt \| llm \| parser` directly closed it at 0.5 s. **Design:** the CLI uses one `asyncio.Runner` per session. `QueryPipeline` holds the parts, and `build_rag_chain` stays for `invoke`. `aclose_llm` closes ChatOllama's clients, and `ttft_ms` is measured for NFR-2. S2-1. ARCHITECTURE.md §2.1. |
-| DEC-15 | Phase 2 quality gate: what runs in CI when RAGAs on CPU takes hours | **Resolved 2026-10-02: two tiers** (maintainer) | **Tier 1:** retrieval hit rate, MRR and recall against `expected_sources`, recomputed every push by a CI job that caches the HF models. That job is CI's only network use. **Tier 2:** RAGAs with a `gemma2:9b` judge through Ollama's OpenAI endpoint, run offline (scoring can go to Colab/Kaggle) and committed with a fingerprint. `rag-eval check` fails CI on a floor breach **or a stale run** (maintainer: fail, not warn). Rejected: a hosted judge in CI; offline-only. S2-2, S2-3, S2-5. |
+| DEC-15 | Phase 2 quality gate: what runs in CI when RAGAs on CPU takes hours | **Resolved 2026-10-02: two tiers** (maintainer) | **Tier 1:** retrieval hit rate, MRR and recall against `expected_sources`, recomputed every push by a CI job that caches the HF models. That job is CI's only network use. **Tier 2:** RAGAs with a `gemma2:9b` judge through Ollama's OpenAI endpoint, run offline (scoring can go to Colab/Kaggle) and committed with a fingerprint. `rag-eval check` fails CI on a floor breach **or a stale run** (maintainer: fail, not warn). Rejected: a hosted judge in CI; offline-only. **Second review:** the fingerprint has six parts (`query` with a rendered-prompt probe, `ingestion`, `corpus`, `questions`, `references`, `judge`) in `evaluation/fingerprint.py`; Ollama digests are recorded, not hashed; the judge is `rag-judge` from `eval/judge.Modelfile` (8k context, caveat 22); the tier-2 tolerance comes from two scorings. S2-2, S2-3, S2-5, S2-5b. |
 | DEC-16 | Reranker: `langchain_classic`'s `ContextualCompressionRetriever`, or our own | **Resolved 2026-10-02: our own `CrossEncoderReranker` on `sentence-transformers`** (DEC-5 step 2) | A `langchain_core` `BaseDocumentCompressor` that writes `rerank_score` into metadata. k=20 candidates are cut to `top_n` 5, and tier-1 numbers decide whether it is on. `langchain_classic.` and `langchain_community.` leave `ALLOWED_PREFIXES`. The `min_score` knob is for the Sources-relevance backlog line. S2-4. |
-| DEC-17 | Incremental ingestion: change detection, failure handling, write safety | **Resolved 2026-10-02: a sha256 manifest beside the index, a staged swap, one writer** | **Updates:** only added and changed documents are re-embedded. A failed document keeps its chunks, which dissolves DEC-13. **Full rebuild** when the embedder identity or the splitter changes. Device keys are left out of the identity, so Colab's `_cuda` equals local `_cpu`. **IDs and metadata:** uuid5 chunk IDs, ready for Qdrant (DEC-3). `source` becomes corpus-relative, plus `source_sha256` and `ingested_at` (SRS §7.3). **Query side:** `rag-query` refuses a mismatched index. **Breaking:** re-ingest once. S2-6. |
-| DEC-18 | HTTP API shape: SSE library, auth, concurrency, ingest jobs | **Resolved 2026-10-02: FastAPI ≥ 0.135 native SSE; a token is required off localhost (maintainer); one generation at a time** | **Surface:** `rag-serve`. `QueryRequest` is `{question}` with `extra="forbid"`, so the API never supplies components, and a `trust_remote_code` load guard comes with it. **Load:** 503 with `Retry-After` when busy. A disconnect cancels generation. **Ingest:** single-flight jobs in memory, which swap only the retrieval half. **Privacy:** no host paths over HTTP. S2-7. |
+| DEC-17 | Incremental ingestion: change detection, failure handling, write safety | **Resolved 2026-10-02: a sha256 manifest beside the index, generation directories published by an atomic symlink flip, one writer** (the flip replaced a two-rename swap in the second review) | **Updates:** only added and changed documents are re-embedded. A failed document keeps its chunks, which dissolves DEC-13. **Full rebuild** when the embedder identity or the splitter changes. Device keys are left out of the identity, so Colab's `_cuda` equals local `_cpu`. **IDs and metadata:** uuid5 chunk IDs, ready for Qdrant (DEC-3). `source` becomes corpus-relative, plus `source_sha256` and `ingested_at` (SRS §7.3). **Query side:** `rag-query` refuses a mismatched index. **Breaking:** re-ingest once. S2-6. |
+| DEC-18 | HTTP API shape: SSE library, auth, concurrency, ingest jobs | **Resolved 2026-10-02: FastAPI ≥ 0.135 native SSE; a token is required off localhost (maintainer); one generation at a time** | **Surface:** `rag-serve`. `QueryRequest` is `{question}` with `extra="forbid"`, so the API never supplies components, and a `trust_remote_code` load guard comes with it. **Load:** 503 with `Retry-After` when busy. A disconnect cancels generation: under uvicorn (ASGI 2.3) Starlette cancels the stream, and `stream_answer` runs inside it, with no producer task (second review). Requests with an `Origin` header are refused. **Ingest:** single-flight jobs in memory, which swap only the retrieval half. **Privacy:** no host paths over HTTP. S2-7. |
 
 ## Backlog
 

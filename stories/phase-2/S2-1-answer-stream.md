@@ -28,8 +28,13 @@ first packaging change.
 
 - **`chain.py`.**
   - `QueryPipeline`: a frozen dataclass with `retrieve`, `answer`, `llm`, `corpus_root`
-    and `async aclose()`.
-  - `build_retrieve(config, embeddings)` and `build_query_pipeline(config)`.
+    and `async aclose()`. `retrieve` may be `None`, for the API's start before the first
+    ingest (S2-7).
+  - `build_retrieve(config, embeddings)` and
+    `build_query_pipeline(config, *, require_index=True)`. With `require_index=False` and
+    no usable index, `retrieve` is `None` and the LLM half is still built. With an index,
+    both halves are built either way (§2.4).
+  - `NoIndexError`, raised by `stream_answer` when `retrieve` is `None`.
   - `retrieve` is the retriever. The existing, disabled reranker path moves inside it
     unchanged, and S2-4 replaces it.
   - `answer` is `prompt | llm | StrOutputParser()`.
@@ -43,7 +48,9 @@ first packaging change.
       a `finally`;
     - yields `Done(ttft_ms, total_ms)`.
   - `SourceRef.source` is made relative to `corpus_root`, so no absolute host path
-    leaves the stream, even before S2-6 stores `source` relative.
+    leaves the stream, even before S2-6 stores `source` relative. When a chunk's source is
+    not under `corpus_root` (an index built on another machine), it falls back to the
+    bare file name rather than raising.
 - **`components.aclose_llm(llm)`.** Closes ChatOllama's async and sync clients, through
   the private `_async_client` / `_client`, via `getattr` (there is no public close). It
   is a no-op for models without them.
@@ -52,7 +59,11 @@ first packaging change.
     `runner.run(render(stream_answer(...)))`, with tokens as they arrive and the numbered
     sources after, as today.
   - Ctrl-C during an answer: the Runner cancels the task, the stream closes,
-    "(answer interrupted…)" is printed, and the prompt returns.
+    "(answer interrupted…)" is printed, and the prompt returns. Catch both
+    `KeyboardInterrupt` and `CancelledError` from `runner.run()` (DEC-14).
+  - A second Ctrl-C while that answer is still unwinding quits the session. The task is
+    then not done, so call `runner.close()`, which cancels and finalizes it, rather than
+    leaving it pending for the next `run()`.
   - Ctrl-C at the prompt, end of input, `exit` and `quit` behave as today.
   - On exit, `runner.run(pipeline.aclose())`.
   - Exit codes (0/2) and staying alive after a failed answer (ISS-06) are unchanged.
@@ -69,20 +80,28 @@ first packaging change.
     Cancelling the consumer must find the stream already closed when the consumer
     returns. Test it both mid-stream and during the prefill.
   - **Negative control:** the same assertion against the `RunnablePassthrough.assign`
-    shape must fail. That shape is the bug.
+    shape must fail. That shape is the bug. Write it as `xfail(strict=True)`, so that a
+    langchain-core fix turns the suite red instead of leaving a silent pass.
+  - A chunk whose source is outside `corpus_root` yields a file-name `SourceRef.source`.
   - `tests/test_cli.py`: the REPL over a fake pipeline. A SIGINT raised inside the answer
     (`signal.raise_signal` from the fake model, under the real `Runner`) returns to the
-    prompt, and the next question is answered.
+    prompt, and the next question is answered. The test first asserts
+    `signal.getsignal(signal.SIGINT) is signal.default_int_handler`, since the Runner
+    installs its handler only then. A plugin's handler then fails the test with a clear
+    message instead of aborting the pytest session.
+  - Two SIGINTs inside one answer end the session with exit 0, and no task is left
+    pending on the loop.
   - `aclose_llm` closes a real `ChatOllama`'s httpx clients. No server is needed, since
     the clients are created at construction.
   - The existing `build_rag_chain` tests pass unchanged.
 
 ## Out of scope
 
-- The reranker itself (S2-4), the HTTP API and its disconnect watcher (S2-7), `readline`
+- The reranker itself (S2-4), the HTTP API and its disconnect handling (S2-7), `readline`
   and the other CLI polish (S2-8), and storing `source` relative in the index (S2-6).
 - Any change to the prompt or to `format_docs`' output. The same retrieval must give the
-  same prompt text, because the tier-2 fingerprint will hash the prompt.
+  same prompt text: the tier-2 fingerprint will hash the template and a rendered probe
+  of it (DEC-15), and the committed baseline is measured on that text.
 
 ## Verification
 
@@ -100,9 +119,15 @@ uv run pytest tests/test_answering.py -v -k cancel
 journalctl -u ollama -f        # or watch the ollama runner's CPU in `top`
 uv run rag-query
 #    ask a long question; Ctrl-C after a few tokens
-#      → the prompt is back within ~1 s, and Ollama's request ends at that moment
-#    ask again; Ctrl-C during "Searching…", i.e. during the prefill → same
+#      → the prompt is back within ~1 s, the log shows the request ending at that
+#        moment, and the runner's CPU drops to idle at once
+#    ask again; Ctrl-C during "Searching…", i.e. during the prefill
+#      → the prompt is back within ~1 s and the request ends in the log. The runner may
+#        finish the prompt evaluation in progress before idling (DEC-14, reported for
+#        Ollama, not yet seen here): record how long it stays busy. Not a failure,
+#        provided it idles by the end of the prefill and no tokens are generated
 #    ask a third question: it starts answering without waiting for an earlier one
+#    Ctrl-C twice, quickly, mid-answer → the session exits 0, no traceback
 #    Ctrl-C at the prompt → exit 0, with no traceback and no "Exception ignored"
 
 # 4. packaging
