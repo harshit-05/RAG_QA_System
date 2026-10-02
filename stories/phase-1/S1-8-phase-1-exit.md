@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Reviewed 2026-10-02, follow-up applied; CI was green before it; awaiting the follow-up's CI run, merge and tag |
+| **Status** | Reviewed twice 2026-10-02, both follow-ups applied; CI was green before them; awaiting the follow-ups' CI run, merge and tag |
 | **Closes** | — (phase exit; SRS §12 Phase 1) |
 | **Depends on** | S1-6, S1-7 |
 | **Model** | opus-fast |
@@ -96,9 +96,11 @@ reasoning: a rule you have to remember is a rule that gets forgotten).
 - **A plain `pip-audit` never audits torch.** It looks `2.14.0+cpu` up on PyPI,
   finds no such release, and only lists it under "skipped", with exit 0. The
   verification's literal `uv run pip-audit` therefore passes while saying nothing
-  about the package with the most CVEs in the tree. CI's Audit step pipes
-  `uv pip freeze --exclude-editable`, with the local label stripped, into
-  `pip-audit --no-deps --disable-pip -r /dev/stdin`. The CPU wheel is the same
+  about the package with the most CVEs in the tree. CI's Audit step writes
+  `uv pip freeze --exclude-editable`, with torch's `+cpu` label stripped, to a
+  file, checks that the file is non-empty, and runs
+  `pip-audit --no-deps --disable-pip -r` on it (the pipe into `/dev/stdin` was
+  replaced at the first review; see Deviation). The CPU wheel is the same
   source release as PyPI's 2.14.0, so the same advisories apply. Negative
   controls: `requests==2.19.0` fails it (3 PYSEC advisories), and so does
   `torch==2.5.1` (4). No advisory is open against the real environment.
@@ -148,6 +150,12 @@ reasoning: a rule you have to remember is a rule that gets forgotten).
   rewrite is narrowed to `torch==…+cpu`, so another local label (`requests==2.19.0+local`)
   stays visible. README's command matches, and CLAUDE.md's `langchain_classic`
   line now says the reranker entry and allowlist still name it until Phase 2.
+  Second review (2026-10-02): README's local audit line now carries CI's guards
+  (`pipefail` and a non-empty check, in a subshell), plus `--python .venv`, because
+  without a `.venv` a bare `uv pip freeze` froze uv's managed 3.12 and passed. The
+  tag instruction now says to tag `main` after the rebase-merge. The Phase 3 Docker
+  rule moved from "Now" into the backlog. ADR-021 says about 60 lines (58 in
+  `loaders.py`).
   Not adopted: a scheduled audit or `--ignore-vuln` policy for advisories with no
   fix (a live lookup can redden unrelated PRs) → backlog.
 - **The Audit step is not a plain `pip-audit`** (see Discovered). The story's
