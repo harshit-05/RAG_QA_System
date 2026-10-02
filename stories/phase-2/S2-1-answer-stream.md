@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Committed `1b923bf` 2026-10-02; reviewed twice (follow-ups below); closes when CI is green on the pushed branch |
+| **Status** | Done 2026-10-03 (PR #7). CI green on the branch at `330c54d`, push and PR runs (Verification 5). Reviewed twice; follow-ups below |
 | **Closes** | FR-5 (structured citation output); backlog: Ctrl-C does not cancel generation, ChatOllama client left open (CLI half), `py.typed` + `types-PyYAML` |
 | **Depends on** | — |
 | **Model** | fable |
