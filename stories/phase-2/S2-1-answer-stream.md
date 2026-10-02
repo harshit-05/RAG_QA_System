@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | Implemented 2026-10-02; awaiting review (uncommitted) |
 | **Closes** | FR-5 (structured citation output); backlog: Ctrl-C does not cancel generation, ChatOllama client left open (CLI half), `py.typed` + `types-PyYAML` |
 | **Depends on** | — |
 | **Model** | fable |
@@ -152,8 +152,62 @@ gh run list --limit 1                    # → green on the branch
 
 ## Discovered
 
-(Filled during implementation.)
+- **Measured against real Ollama** (mistral, 2026-10-02; caveats 3 and 21). Driven through a
+  pseudo-terminal with real Ctrl-C bytes, under `uv run rag-query` as written above.
+  - **First token after 254 s** for a k=5 prompt. Ollama ran mistral on 2 threads of this
+    i7-1255U (200% CPU), with about 6 GB free. Caveat 3's 5–15 s does not hold here today.
+  - **Ctrl-C mid-answer.** The prompt is back at once, and the `/api/chat` line ends in the
+    same second as the Ctrl-C. The runner idles 0.5–1.5 s later, once the token in flight
+    is done.
+  - **Ctrl-C in the prefill.** The prompt is back at once. The request ends at the Ctrl-C
+    (logged as a 500 after 2.98 s). The runner then **finishes the abandoned prompt
+    evaluation and generates nothing**: caveat 21, now seen here.
+    - One abandoned prefill went idle about 4 min after it began.
+    - The same question asked next answered in 0.3 s, from the prompt cache that prefill
+      left.
+    - A question asked during those minutes queues in Ollama behind it (more than 5 min in
+      the first pass). Our side is finished at the Ctrl-C; the wait is Ollama's.
+  - **One Ctrl-C under `uv run` returns to the prompt.** `uv` does not deliver an extra
+    SIGINT.
+  - **Two Ctrl-Cs at 100, 20, 5 and 1 ms apart** all went "back to the prompt, then quit",
+    with exit 0 and no traceback. Against real Ollama the unwind ends in under 1 ms, so only
+    the hermetic test's slow unwind reaches the quit-mid-unwind path.
+- **Closing `stream_answer` at a `yield` does not close the model stream before `aclose()`
+  returns.** This is input for S2-7.
+  - langchain-core 1.6.3's `RunnableSequence._atransform` and `BaseChatModel.astream` iterate
+    their inner generators with `async for` and never close them.
+  - The loop's async-generator finalizer closes them, one level per iteration: about 20,
+    driven by reference counting, so it needs no garbage collection. No token is generated
+    in between.
+  - Cancellation (Ctrl-C, and Starlette's disconnect under DEC-18) unwinds every frame first,
+    so it is unaffected. S2-7 must keep a disconnect a cancel, as DEC-18 already has it.
+  - `test_a_consumer_that_stops_early_closes_the_stream_while_the_loop_runs` pins this.
+- **Telling the second Ctrl-C from the first needs the answer's task**, which `Runner.run()`
+  keeps to itself. `_Answer.run()` records `asyncio.current_task()`, and the session quits
+  when that task is pending, or finished with `KeyboardInterrupt`: the second SIGINT can land
+  in the task's own step, and reading the exception also stops a "Task exception was never
+  retrieved" log.
+- **Empty text chunks are not `Token`s.** ChatOllama's last chunk is empty, so `ttft_ms` times
+  the first visible token.
+- **`SourceRef.source` also falls back to the file name for a relative source that climbs out
+  with `..`**, so nothing outside the corpus can be named.
+- **`citation()`'s page logic is now `chain.page_label()`**, shared with `SourceRef.page`. Its
+  output is unchanged, as the existing tests show.
+- **The deprecation gate also runs `stream_answer`** (maintainer, 2026-10-02), since every
+  front end answers through it now.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **Plan-first was skipped at the start.** Code was written before a plan. The maintainer had
+  the plan written over the work already in the tree (approved 2026-10-02), and nothing was
+  rewritten.
+- **The second-Ctrl-C quit also closes the model's clients.** The scope says to call
+  `runner.close()`. That closes the loop, and ChatOllama's async client can only be closed on
+  its own loop.
+  - `cli.close_session()` cancels the leftover answer before the loop runs again, waits for
+    it, runs `pipeline.aclose()`, then calls `runner.close()`.
+  - Without the cancel, an `aclose` that takes a few loop iterations (httpx's does) lets the
+    half-unwound answer resume with the `KeyboardInterrupt` and raise it out of the REPL.
+    A mutant showed it, and the two-Ctrl-C test now fails that mutant.
+- **Model:** this session ran on Opus 5.5; the story names Fable.
+- **Verification 5 (CI)** can go green only after the maintainer pushes the branch.

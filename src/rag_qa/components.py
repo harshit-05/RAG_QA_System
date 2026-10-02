@@ -13,6 +13,7 @@ modules happened to contain the same line; now it holds because there is one
 function, and it always reads ``pipeline.ingestion.embedder``.
 """
 
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,25 @@ def build_splitter(config: RagConfig) -> Any:
 def build_llm(config: RagConfig) -> BaseChatModel:
     """The query-time chat model."""
     return build_object(config.component(config.pipeline.query.llm).spec())
+
+
+async def aclose_llm(llm: BaseChatModel) -> None:
+    """Close the chat model's HTTP clients; a no-op for a model without them.
+
+    ``ChatOllama`` builds an async and a sync ``ollama`` client at construction (the
+    sync one already holds a connection when ``validate_model_on_init`` is set) and has
+    no public close, so this reaches the private ``_async_client`` / ``_client``
+    (ARCHITECTURE.md §2.1, DEC-14). Kept narrow: only those two names, and only their
+    ``close``, awaited when it is a coroutine (``AsyncClient.close``) and called plainly
+    otherwise (``Client.close``). Run it on the loop that used the async client.
+    """
+    for name in ("_async_client", "_client"):
+        close = getattr(getattr(llm, name, None), "close", None)
+        if close is None:
+            continue
+        result = close()
+        if inspect.isawaitable(result):
+            await result
 
 
 def build_loader(config: RagConfig, path: Path) -> Any | None:
