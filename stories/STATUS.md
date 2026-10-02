@@ -7,7 +7,9 @@
 
 **Now: [S1-8](phase-1/S1-8-phase-1-exit.md) is verified and awaiting the
 maintainer** (2026-10-02): review, PR on `chore/s1-8-phase-1-exit`, green CI,
-merge, then tag `v0.2` on the merge commit. Everything else in its Verification
+rebase-merge, then pull `main` and tag its tip `v0.2`. PRs here are rebase-merged,
+so there is no merge commit, and the branch's own release commit predates its
+review follow-ups. Everything else in its Verification
 section ran and passed; see the story. **After the tag: the Phase 2 architecture
 pass** (WORKFLOW Step 1, fable, plan mode), then shard Phase 2. Inputs it must
 take: the re-deferred Phase 2 backlog lines below, the "API never supplies
@@ -269,6 +271,12 @@ detail behind each closed line is in its story file.
 
 ### Re-deferred at the Phase 1 exit
 
+- **Phase 3 — the Docker image installs with `uv sync` or `uv export`, never
+  `pip install .` (found in S1-7's review).** `pip install .` and
+  `uv pip install .` ignore dependency groups, so they skip the `cpu` group and
+  pull torch from PyPI as the CUDA build, with GBs of `nvidia-*` wheels. `uv sync`
+  and `uv export` honour the default groups. A constraint for the Phase 3
+  container story.
 - **Backlog — audit-gate policy (S1-8 review).** CI's Audit step does a live
   advisory lookup and blocks, so a new advisory with no fixed release turns every
   PR red, docs-only ones included. Decide an `--ignore-vuln` policy (ID + reason in
