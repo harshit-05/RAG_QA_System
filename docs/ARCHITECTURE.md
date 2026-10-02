@@ -556,3 +556,704 @@ code differs from the text above, each with the story that records why.
   100 columns, rather than an explicit narrower list.
 - **Torch variants are dependency groups** (S1-7, DEC-12 option (a)), on the `cu130`
   index, the only CUDA index that carries torch 2.14.
+
+---
+
+## Phase 2 — Make it a service
+
+_Confirmed 2026-10-02. Scope: SRS §12 Phase 2. Exit: the system is callable over HTTP
+and has an enforced quality bar; tag `v0.3`, version 0.3.0._
+
+_This pass ran on Opus 5.5, although ADR-018 routes architecture passes to Fable. The
+maintainer chose to accept it rather than re-run it (2026-10-02)._
+
+Phase 1 made the command-line tool trustworthy. Phase 2 makes the system something other
+programs can call, and gives it a quality bar that a change can fail. Today, four things
+stand in the way:
+
+- **The only front end is a blocking REPL, and Ctrl-C does not stop generation.** The
+  v0.2 manual test measured 43 s of Ollama work after an interrupt (S1-8).
+- **The reranker is still a disabled config entry** (FR-4, ISS-03), written against the
+  maintenance-mode `langchain_classic`.
+- **Every ingest re-embeds the whole corpus** (ISS-14): 1,708 chunks, about two minutes
+  here. A document that fails to load drops out of the index (DEC-13).
+- **Answer quality is unmeasured.** S0-6 found the 7B model misstating retrieved facts,
+  and nothing would notice if a prompt or config change made that worse (FR-7, ISS-15).
+
+Both halves of the exit criterion are made executable, as Phase 1's were:
+
+- **"Callable over HTTP"**: the API's tests, plus a manual end-to-end run against real
+  Ollama.
+- **"An enforced quality bar"**: two CI gates (DEC-15).
+
+### 2.1 Decisions
+
+**DEC-14 — One answer-event stream serves every front end. Stopping an answer means
+cancelling the task that consumes it.** `rag_qa/answering.py` turns a question into typed
+events. The CLI renders them, the API encodes them as SSE, and the evaluation harness
+records them:
+
+```python
+async def stream_answer(pipeline: QueryPipeline, question: str) -> AsyncIterator[AnswerEvent]
+# yields Sources(sources), then Token(text) for each chunk, then Done(ttft_ms, total_ms)
+```
+
+There is one cancellation mechanism: the front end cancels the asyncio task that consumes
+the stream.
+
+- **CLI:** the session runs on one `asyncio.Runner`, and the Runner's own SIGINT handling
+  does the cancelling.
+- **API:** a disconnect watcher does it (DEC-18).
+
+**Why the REPL blocks today.** `RunnableAssign._transform` (langchain-core 1.6.3,
+`runnables/passthrough.py:565`) runs the answer branch in a `get_executor_for_config`
+thread. Closing the generator waits for that executor to exit, which happens only when
+Ollama finishes.
+
+> **Verified trap (2026-10-02): going async is not enough on its own.**
+> `RunnableParallel._atransform` (`runnables/base.py`, from line 4319) waits on its
+> per-step tasks with `asyncio.wait` and never cancels them. Under
+> `RunnablePassthrough.assign`, which is today's chain shape, a cancelled consumer
+> therefore returns while the generation task runs on, unowned, until its next chunk
+> arrives.
+>
+> The trial used a slow fake stream, cancelled at 0.5 s with the event loop kept running:
+>
+> | Shape | Consumer returned | Stream closed |
+> | --- | --- | --- |
+> | under `assign`, cancelled during a 2 s simulated prefill | 0.5 s | 2.0 s |
+> | streamed directly | 0.5 s | 0.5 s, before the consumer returned |
+>
+> On CPU, that gap is 5–15 s of Ollama work. In a CLI, the loop is paused between
+> questions, so the orphaned task would not stop at all. **`stream_answer` therefore never
+> streams the `assign` chain.** It awaits retrieval, yields `Sources`, then streams
+> `prompt | llm | StrOutputParser()` directly and calls `aclose()` on it in a `finally`.
+
+Other facts checked in this pass:
+
+- **The cancel reaches the HTTP request.**
+  - `BaseChatModel.astream` spawns no task; only `stream_events` does.
+  - Each chunk task created by `_atransform_stream_with_config` is awaited directly, so
+    a cancel reaches `ChatOllama._astream`.
+  - That method streams through `ollama.AsyncClient`, which wraps the request in
+    `async with httpx…stream(...)` (`ollama/_client.py:777`). The HTTP response is
+    therefore closed.
+  - That Ollama then abandons the request is the one link only the real daemon can
+    show. S2-1's manual check covers it.
+- **`asyncio.Runner` handles both Ctrl-Cs** (Python 3.12, `runners.py:105–157`).
+  - The first SIGINT during `run()` cancels the running task, and `run()` raises
+    `KeyboardInterrupt` once that task has unwound.
+  - A second SIGINT raises at once. That is also the fix for the v0.2 finding that a
+    second Ctrl-C was swallowed.
+  - Between `run()` calls, the default handler is back, so `input()` behaves as before.
+  - The loop lives for the whole session, so ChatOllama's async connection pool stays on
+    one loop.
+
+Consequences:
+
+- **`chain.py` gains `QueryPipeline`, which holds the parts** (§2.4):
+  - `retrieve`: the retriever, then the reranker when one is configured;
+  - `answer`: `prompt | llm | StrOutputParser()`;
+  - the `llm` itself, so that its clients can be closed.
+- **`build_rag_chain` stays, composed from the same parts.** The §0.4 `invoke` contract
+  and ADR-008 therefore stand. Its docstring says it is not for cancellable streaming.
+- **`components.aclose_llm(llm)` closes ChatOllama's HTTP clients.**
+  - ChatOllama has no public close. `ollama.AsyncClient.close()` exists, but is reachable
+    only through the private `_async_client`.
+  - So the helper is narrow, uses `getattr`, and is tested.
+  - This closes the backlog's `ResourceWarning: unclosed socket`.
+- **`Done.ttft_ms` is measured on every answer**: in the CLI, the API and evaluation
+  alike. It is the data the Phase 3 NFR-2 decision needs (ADR-016).
+- **Retrieval cannot be cancelled while it runs.** The FAISS search, the query embedding
+  and the cross-encoder run in executor threads. Each takes milliseconds to a few hundred
+  milliseconds, so this is not worth more machinery.
+
+Rejected:
+
+- **Keeping `chain.astream` and closing the HTTP client from outside on cancel.** It
+  reaches into private state on every answer, and it still leaves the orphaned task.
+- **A thread per answer with a stop flag.** Python threads cannot be cancelled, which is
+  the shape of the current bug.
+
+**DEC-15 — The quality bar is two gates. Retrieval is recomputed in CI; generation is run
+offline and checked in CI.** With a local judge, RAGAs takes hours on this host. A sweep
+of about 25 questions × 4 metrics with `gemma2:9b` is estimated at 3–4 h, plus about
+40 min to generate the answers. That cannot run on every push. A hosted judge would put a
+paid, networked dependency into CI, and the maintainer rejected it (2026-10-02). The bar
+is therefore split by what can be computed where.
+
+**Tier 1: retrieval, recomputed on every push.**
+
+- **What it measures.** `rag-eval retrieval` runs every answerable golden question
+  through `pipeline.retrieve`, which is exactly what the prompt would receive. It scores
+  the result against the question's `expected_sources`: a file and its printed pages.
+  - **Hit rate**: an expected page appears anywhere in the context.
+  - **MRR**: the reciprocal rank of the first expected page.
+  - **Recall**: the share of expected pages the context covers.
+- **Deterministic, with no LLM.**
+- **The CI job, `eval-retrieval`**, ingests the real corpus into a temporary index
+  (`RAG_VECTOR_STORE_PATH`). It then computes the metrics under `HF_HUB_OFFLINE=1`.
+- **Network.** The job needs the embedder and cross-encoder weights, about 180 MB. They
+  are cached by `actions/cache` and downloaded on a miss, which makes this the one CI job
+  with network access. The unit-test job stays hermetic, exactly as DEC-11 says.
+
+**Tier 2: generation, run offline, committed and checked in CI.**
+
+- **`rag-eval generate`** consumes `stream_answer` (DEC-14) for every golden question. It
+  writes `eval/runs/answers-latest.json`: the answer, contexts, sources and ttft for each.
+  The generator is `pipeline.query.llm`, which is mistral.
+- **`rag-eval score`** runs RAGAs over that file: faithfulness, answer relevancy, context
+  precision and context recall.
+  - **The judge is `gemma2:9b`**, reached through Ollama's OpenAI-compatible endpoint
+    (`/v1`). It is a different model family from the generator, so it does not grade
+    its own phrasing, and it is already pulled.
+  - **Unanswerable questions get a decline rate instead** (FR-5). It is
+    deterministic, and an answer counts as a decline only if both hold:
+    - it contains the refusal's core phrase, `evaluation.decline_marker` (for example
+      "could not find the answer"), compared case-insensitively;
+    - it contains none of the record's `must_not_contain` strings: the prior-knowledge
+      leak that S0-6 checked for ("Canberra").
+
+    It is not an exact match on the full refusal sentence, because S0-6 showed mistral
+    paraphrasing that sentence while keeping its core.
+  - The output is `eval/runs/generation-latest.json`.
+- **The two steps exchange only the answers file.** Scoring can therefore move to
+  Colab/Kaggle (STATUS.md, GPU offload notes) without the rest of the stack.
+- **`rag-eval check` runs in the main CI job.** It is pure Python and does not need
+  ragas. It fails in two cases:
+  - an aggregate is under its floor in `eval/thresholds.yaml`;
+  - the committed run is **stale**: its fingerprint no longer matches the repository.
+
+  A stale run fails rather than warns (maintainer, 2026-10-02). That is what makes the
+  bar enforced.
+
+**The fingerprint** (shape in §2.4) hashes everything that changes answers:
+
+- the query pipeline: the llm spec, the retriever kwargs, the reranker spec and the
+  prompt;
+- ingestion: the embedder identity (DEC-17), the splitter spec and the loader map;
+- the corpus content;
+- the golden set.
+
+The judge is hashed separately, so that `check` can say which re-run is needed:
+"`query` changed: re-run generate and score", or "`judge` changed: re-run score". Paths and
+the judge's `base_url` are excluded, because they are machine-specific.
+
+**Thresholds** are the first measured baseline minus a stated tolerance. The story that
+measures each tier sets them: S2-3 for tier 1, S2-5 for tier 2. They are only ever raised
+deliberately.
+
+**Honest limit: CI checks the committed tier-2 result. It does not recompute it.** A solo
+maintainer vouches for a run by committing it. The answers file committed beside the scores
+lets a reviewer see what was judged.
+
+**Judge risk.** Judges of 7–9B parameters sometimes misparse RAGAs' structured prompts.
+S2-5 therefore checks three answers by hand against the judge's verdicts before its
+numbers become thresholds.
+
+**RAGAs facts (verified 2026-10-02):**
+
+- ragas 0.4.3 is the current release, and it resolves with core 1.6.3, in the `eval`
+  extra only.
+- It brings in `langchain`, `langchain-openai`, `langgraph`, `instructor`, `openai`,
+  `datasets` 5 and `pandas` 3.
+- Its 0.4 API is `llm_factory(model, client=AsyncOpenAI(...))` plus
+  `ragas.metrics.collections`. The LangChain wrapper classes are deprecated.
+- S2-5's spike settles the exact judge wiring for Ollama: the instructor mode, and the
+  embedder that answer relevancy needs.
+
+Rejected:
+
+- **RAGAs in CI with a hosted judge**: cost, a secret, network access and a non-local
+  dependency (maintainer).
+- **Offline only**: nothing would be recomputed per push. Retrieval regressions are the
+  cheapest kind to catch, and they would wait for a manual run.
+- **A warn-only freshness check**: a bar that does not fail is not enforced.
+
+**DEC-16 — The reranker is our own cross-encoder, on `sentence-transformers`** (DEC-5
+step 2). `rag_qa/rerankers.py` defines `CrossEncoderReranker`.
+
+- **What it is.** A `langchain_core` `BaseDocumentCompressor` around
+  `sentence_transformers.CrossEncoder` (6.1.0: `predict`, `rank`).
+  - Settings: `model_name`, `top_n`, `device`, and an optional `min_score`.
+  - It writes `rerank_score` into the metadata of each chunk it keeps, and
+    `SourceRef.score` surfaces it.
+  - It is about 40 lines. The alternative is three classes from two maintenance-mode
+    packages, all for one model call: `langchain_classic`'s
+    `ContextualCompressionRetriever` and `CrossEncoderReranker`, and
+    `langchain_community`'s `HuggingFaceCrossEncoder`.
+- **It is built through `build_object` like every component**
+  (`_target_: rag_qa.rerankers.CrossEncoderReranker`), so the allowlist covers it.
+  - `components.build_reranker(config)` returns it, or `None`.
+  - `QueryPipeline.retrieve` applies it after the retriever, and the stream order is
+    unchanged.
+- **Candidates.** A new `retrievers.rerank_candidates` entry fetches k=20, and the
+  reranker cuts them to `top_n` 5.
+- **Entries are named by both axes, like the embedders**: `ms_marco_minilm_cpu` and
+  `ms_marco_minilm_cuda`.
+- **`ALLOWED_PREFIXES` loses `langchain_classic.` and `langchain_community.`.** After this
+  story no `_target_` names either, and an allowlist should allow only what is used
+  (ADR-020). Three follow-ons:
+  - CLAUDE.md's line about the reranker entry keeping `langchain_classic` named is
+    rewritten.
+  - The backlog line about declaring `langchain-classic` explicitly closes, as not
+    needed.
+  - The ISS-03 regression case keeps its meaning (a misspelled class under an allowed
+    prefix, caught by `check_imports`), but moves to a `rag_qa.` path. The old path now
+    fails the prefix check first.
+- **Whether it is on by default is decided by numbers.** S2-4 records three:
+  - the tier-1 metrics without the reranker;
+  - the same metrics with it;
+  - the measured CPU latency of reranking 20 candidates.
+
+  The result also goes into the config comment.
+- **`min_score` is the knob for a backlog line**: "Sources lists what was retrieved, not
+  what was used". It defaults to off, and is tuned with the eval harness later.
+- **ISS-03's other half dissolves.** That was a bare model string where an object was
+  expected. The reranker takes `model_name: str` by design.
+
+**DEC-17 — Ingestion is incremental, tracked by a content-hash manifest, and written by a
+staged swap.** `<vector_store>/manifest.json` sits beside the index and records what is in
+it. `rag_qa/manifest.py` owns hashing, the diff and atomic writes. It is pure Python, with
+no LangChain.
+
+- **What gets re-embedded.** Each document is keyed by its corpus-relative path. Its
+  entry carries the sha256 of the file's bytes and its loader's identity. A run compares
+  the corpus walk against the manifest and sorts documents into four sets:
+
+  | Set | What the run does |
+  | --- | --- |
+  | added | load and embed |
+  | changed | load and embed; delete the old chunks |
+  | removed | delete the chunks (FAISS `delete(ids)`, verified) |
+  | unchanged | nothing |
+
+- **When it is a full rebuild.** Any one of these triggers it:
+  - there is no manifest, which is true of every v0.2 index;
+  - the manifest version is unknown;
+  - the embedder identity or the splitter spec changed;
+  - `rag-ingest --rebuild` asks for it.
+- **The embedder identity is its spec minus the keys that do not change the vectors**:
+  `device`, `model_kwargs.device`, `show_progress`, `cache_folder` and `multi_process`.
+  - So `minilm_cuda` on Colab and `minilm_cpu` here count as the same embedder, and the
+    DEC-12 offload path keeps working.
+  - A change to `model_name` or `encode_kwargs` is a different embedder.
+  - The dimension is recorded too, as a backstop.
+- **Chunk IDs are `uuid5(namespace, f"{sha256}:{index}")`.**
+  - They are deterministic, so an unchanged document keeps its IDs.
+  - UUIDs are what Qdrant accepts as point IDs (DEC-3).
+- **A failed document keeps its previous chunks and its manifest entry.** The run still
+  exits 1. This is the way out of DEC-13 that DEC-13 anticipated.
+- **Staged swap.** FAISS writes two files, and not atomically. A run therefore swaps whole
+  directories:
+  1. it builds the new generation (index and manifest) in `<path>.staging/`;
+  2. it renames the live directory to `<path>.previous`;
+  3. it renames the staging directory into place;
+  4. it deletes `.previous`.
+
+  A crash leaves either the old index or the new one, never half of each. `rag-ingest`
+  repairs a leftover `.previous` or `.staging` when it starts, and `rag-query` names the
+  state if it finds one.
+- **One writer at a time.** An advisory `fcntl.flock` on `<path>.lock` is held for the
+  whole run. A second `rag-ingest`, or an API job (DEC-18), exits 2 with "another
+  ingestion is running". The lock is Linux-only, as the deployment target is (SRS §2.4).
+- **The query side refuses a mismatched index.** If there is no manifest, or the embedder
+  identity differs, `rag-query` exits 2 with "re-run rag-ingest", instead of silently
+  comparing vectors that are not comparable. This is the check the backlog asked for, and
+  the first time the query path reads the manifest.
+- **Chunk metadata reaches SRS §7.3.**
+  - `source` becomes corpus-relative. It used to be the absolute host path, which the API
+    must not leak, and which tied the index to one machine.
+  - New: `source_sha256` and `ingested_at`, beside the existing `page`, `page_label`,
+    `total_pages` and `loader`.
+  - The loaders keep their contract; `ingest` rewrites `source` after loading.
+  - `citation()` reads only the file name, so prompts and citations do not change.
+- **Progress goes to a logger.** Ingest progress moves from `print` to the
+  `rag_qa.ingest` logger. `rag-ingest` attaches a plain handler, so its output reads the
+  same, while the API job and Phase 3's structlog consume the same messages.
+- **The corpus walk prunes ignored folders** instead of descending into `.git` (a backlog
+  item from S1-3 and S1-4).
+- **Breaking:** every existing index must be rebuilt once. The commit carries `!` and a
+  `BREAKING-CHANGE:` trailer.
+
+Rejected:
+
+- **Change detection by mtime**: copies and checkouts reset mtimes, and hashing the
+  26 MB corpus costs well under a second.
+- **A database for the manifest**: one JSON file, read whole and written atomically, is
+  enough until Qdrant holds the metadata in Phase 3.
+- **Keeping absolute `source` paths**: they tie the index to one machine and leak over
+  HTTP.
+
+**DEC-18 — The HTTP API is FastAPI with native SSE, shaped by what a CPU host can serve.**
+
+- **Package.** `rag_qa/api/` holds an `app.py` factory with the lifespan, `routes.py`,
+  `models.py` and `server.py`. The entry point is `rag-serve`.
+- **Dependencies.** `fastapi>=0.135` and `uvicorn` are main dependencies, so a plain
+  `uv sync` can serve.
+  - Version 0.135 is where native SSE arrived: `fastapi.sse.EventSourceResponse` and
+    `ServerSentEvent`, with keep-alive pings and anti-buffering headers built in.
+  - Verified: FastAPI 0.142.2, Starlette 1.7.0 and uvicorn 0.54.0 resolve with the stack.
+  - `sse-starlette` is not needed.
+- **Endpoints.** The five from SRS §8.1, under `/v1`. Shapes are in §2.4.
+- **The request never supplies components** (the constraint in §1.8).
+  - `QueryRequest` is `{question}` only, 1–2,000 characters, with `extra="forbid"`.
+  - Nothing in a request reaches `build_object`. A test posts `llm=` and expects 422.
+  - The companion check lands with it: config load rejects a truthy `trust_remote_code`
+    anywhere in `components`, nested `model_kwargs` included.
+- **Auth** (maintainer, 2026-10-02):
+  - By default the server binds `127.0.0.1` and needs no token.
+  - With `RAG_API_TOKEN` set, every endpoint except the health probes needs
+    `Authorization: Bearer <token>`, compared in constant time.
+  - `rag-serve` refuses a non-loopback `--host` unless a token is set, and exits 2.
+  - Rate limiting, TLS and multi-user auth belong to the Phase 3 deployment.
+- **Concurrency.** A CPU host generates one answer at a time. `RAG_API_MAX_CONCURRENT`
+  (default 1) is a semaphore, taken before the stream starts. When it is full, the
+  request gets 503 with `Retry-After` rather than waiting silently in a queue.
+- **A disconnect cancels generation** (DEC-14). The route owns the generation task, and a
+  watcher cancels it when the client goes away.
+  - FastAPI's `EventSourceResponse` is a Starlette `StreamingResponse` (checked in
+    FastAPI's source); the SSE encoding lives in FastAPI's routing layer.
+  - Under ASGI spec ≥ 2.4, Starlette appears to notice a disconnect only when a send
+    fails. That would be at the next token or the 15 s keep-alive, and a CPU prefill is
+    5–15 s of silence.
+  - S2-7 confirms which. It keeps the watcher unless Starlette's own handling passes the
+    same test: Ollama abandons the request within about 1 s of the client dropping, during
+    prefill included.
+- **Ingest jobs.**
+  - `POST /v1/ingest` starts one job at a time. It returns 409 while a job runs, and the
+    DEC-17 lock also stops a concurrent CLI run.
+  - The job runs `ingest()` in a worker thread. Jobs live in an in-memory registry, which
+    keeps the last 20.
+  - On success, the server reopens the store and swaps the **retrieval half** of its
+    `QueryPipeline`. In-flight answers keep the old one, and the LLM and its clients are
+    not rebuilt.
+- **Lifespan.**
+  - It loads the config and builds the pipeline once.
+  - The server can start without an index. It reports not-ready until a job builds one.
+  - At shutdown it calls `QueryPipeline.aclose()`.
+  - If Ollama is unreachable at startup (`validate_model_on_init`), `rag-serve` exits 2
+    with an Ollama hint, not a traceback.
+- **No host paths over HTTP.** Responses carry only corpus-relative paths. Errors say "no
+  index yet", not where the index would be. A test asserts that the corpus root never
+  appears in a response body.
+- **Server settings come from the environment only**, as `RAG_API_*`, read by
+  `rag_qa.settings`. That module stays the only reader of `RAG_*` variables, and
+  `config.yaml` stays about the pipeline.
+
+Rejected:
+
+- **`sse-starlette`**: native SSE does the same since FastAPI 0.135.
+- **WebSockets**: the token stream is one-way, and SSE is what SRS §8.1 names and what
+  `curl` can read.
+- **Queueing excess requests**: on CPU, a queued answer would wait minutes with no
+  feedback.
+- **Building the chain per request**: that is seconds of model loading per question.
+
+### 2.2 Layout at Phase 2 exit
+
+```text
+src/rag_qa/
+├── answering.py   NEW  AnswerEvent, SourceRef, stream_answer (DEC-14)
+├── rerankers.py   NEW  CrossEncoderReranker (DEC-16)
+├── manifest.py    NEW  pure: file hashing, embedder identity, diff, atomic JSON (DEC-17)
+├── evaluation/    NEW  dataset.py         golden-set schema and loading (pure)
+│                       retrieval.py       tier-1 metrics
+│                       generation.py      rag-eval generate (consumes stream_answer)
+│                       ragas_scoring.py   the only ragas importer; coverage-omitted
+│                       gate.py            fingerprint + floors: rag-eval check (pure)
+│                       cli.py             rag-eval {retrieval, generate, score, check}
+├── api/           NEW  app.py · routes.py · models.py · server.py (rag-serve)
+├── chain.py            + QueryPipeline, build_retrieve, build_query_pipeline;
+│                         build_rag_chain kept for invoke (§0.4 contract)
+├── components.py       + build_reranker, aclose_llm
+├── vectorstore.py      + incremental apply, staged swap, manifest-aware open
+├── ingest.py           incremental, --rebuild, logging, lock, pruned walk
+├── cli.py              one asyncio.Runner per session, over stream_answer
+├── schema.py           + prompt placeholders, trust_remote_code guard, `evaluation`
+├── settings.py         + ServerSettings (RAG_API_*)
+├── registry.py         ALLOWED_PREFIXES without langchain_classic. / langchain_community.
+├── py.typed       NEW
+└── evaluate.py         DELETED (replaced by evaluation/)
+eval/                   NEW, at the repo root, beside config.yaml
+├── eval_dataset.jsonl  the golden set (SRS §7.4)
+├── thresholds.yaml     tier-1 and tier-2 floors
+└── runs/               answers-latest.json, generation-latest.json (committed, small text)
+```
+
+Entry points: `rag-ingest` and `rag-query` as before, plus
+`rag-serve = rag_qa.api.server:main` and `rag-eval = rag_qa.evaluation.cli:main`.
+
+Dependency direction extends ADR-009:
+
+- `cli → {answering, chain, config}`.
+- `api → {answering, chain, ingest, manifest, components, config, settings}`.
+- `evaluation → {answering, chain, components, config, manifest}`.
+- `answering → chain`, for `QueryPipeline`, `citation` and `format_docs`.
+- `ingest → {components, manifest, vectorstore, config}`. It still never imports `chain`,
+  `cli` or `api`.
+- `manifest`, `evaluation.dataset` and `evaluation.gate` import no LangChain.
+  `tests/test_architecture.py` adds them to its config-layer list, which is what lets
+  `rag-eval check` run in CI's model-free job.
+
+### 2.3 Config shape changes
+
+```yaml
+components:
+  retrievers:
+    vector_search:     {search_kwargs: {k: 5}}
+    rerank_candidates: {search_kwargs: {k: 20}}        # NEW: the reranker's wide net (S2-4)
+  rerankers:                                            # rewritten (DEC-16)
+    ms_marco_minilm_cpu:
+      _target_: rag_qa.rerankers.CrossEncoderReranker
+      model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+      top_n: 5
+      device: cpu
+    ms_marco_minilm_cuda: {...same, device: cuda}
+pipeline:
+  query:
+    retriever: components.retrievers.rerank_candidates     # when the reranker is on
+    reranker: components.rerankers.ms_marco_minilm_cpu     # on or off by S2-4's numbers
+evaluation:                                                # NEW, optional; only rag-eval reads it (S2-5)
+  decline_marker: "could not find the answer"              # core of the system prompt's refusal
+  judge:
+    model: "gemma2:9b"
+    base_url: "http://localhost:11434/v1"                  # Ollama's OpenAI-compatible endpoint
+```
+
+`evaluation` and its `judge` are closed (`_Strict`) models.
+
+- S2-5 adds whatever its spike shows the judge needs, for example the embedder that
+  answer relevancy uses.
+- `decline_marker` must appear in `pipeline.query.prompt.system`, checked at load. Edit
+  the refusal sentence without updating the marker, and the config fails to load; the
+  alternative is a decline rate that quietly drops to zero.
+
+New validation in `schema.py`:
+
+- **`Prompt`** (S2-5; the FR-8 follow-up found in S1-1):
+  - `human` must contain `{context}` and `{question}`.
+  - `system` must not contain `{context}`: retrieved text in the system turn would undo
+    the OWASP LLM01 separation.
+  - No other `{placeholder}` may appear anywhere, because each would be a required
+    variable that fails on every question.
+  - Parsing uses `string.Formatter`, which treats braces exactly as an f-string
+    `ChatPromptTemplate` does, so `schema.py` stays free of LangChain.
+- **`trust_remote_code`** (S2-7): a truthy `trust_remote_code` key in a component spec, at
+  any depth, is a load error that names its location.
+
+`paths` is unchanged. The manifest and the lock live beside `paths.vector_store`, and the
+eval files under `eval/` beside the config file.
+
+### 2.4 Interfaces
+
+**Query pipeline and answer events** (DEC-14):
+
+```python
+@dataclass(frozen=True)
+class QueryPipeline:
+    retrieve: Runnable[str, list[Document]]   # retriever, then reranker; awaited, never streamed
+    answer: Runnable[dict[str, str], str]     # prompt | llm | StrOutputParser(); streamed directly
+    llm: BaseChatModel                        # kept so aclose() can close its HTTP clients
+    corpus_root: Path                         # SourceRef.source is relative to it
+    async def aclose(self) -> None: ...
+
+def build_retrieve(config: RagConfig, embeddings: Embeddings) -> Runnable[str, list[Document]]
+def build_query_pipeline(config: RagConfig) -> QueryPipeline
+def build_rag_chain(config: RagConfig) -> Runnable    # §0.4 contract, same parts; invoke only
+
+@dataclass(frozen=True)
+class SourceRef:
+    n: int               # the [n] the prompt used
+    citation: str        # "2412.14140v2.pdf, p. 7"
+    source: str          # corpus-relative path
+    page: str | None     # printed page label, as the citation shows it
+    score: float | None  # rerank_score when reranked
+
+# AnswerEvent = Sources(sources: list[SourceRef]) | Token(text: str)
+#             | Done(ttft_ms: float | None, total_ms: float)
+```
+
+`build_retrieve` builds the retrieval half on its own. Tier 1 runs it without an LLM or
+Ollama, and the API swaps it after an ingest. `ttft_ms` is `None` when the answer yields no
+token. A cancelled stream ends with `CancelledError`, not with `Done`. Errors propagate to
+the front end, which renders them.
+
+**SSE protocol** (`POST /v1/query`, `text/event-stream`):
+
+| Event | Data (JSON) | When |
+| --- | --- | --- |
+| `sources` | `{"sources": [SourceRef, ...]}` | once, before the first token |
+| `token` | `{"text": "..."}` | for each chunk |
+| `done` | `{"ttft_ms": ..., "total_ms": ...}` | last event of a complete answer |
+| `error` | `{"type": "...", "message": "..."}` | instead of `done`, when the answer fails after the stream began |
+
+- **Before the stream begins, failures are HTTP statuses:**
+  - 401: the token is missing or wrong;
+  - 422: the body is invalid;
+  - 503: there is no index yet, or the server is busy (with `Retry-After`).
+- **A stream that ends with neither `done` nor `error` was cut off.**
+- **There is no `Last-Event-ID` resume.** A dropped connection cancels the answer
+  (DEC-14), and the client asks again.
+
+**HTTP endpoints:**
+
+| Method and path | Auth | Returns |
+| --- | --- | --- |
+| `POST /v1/query` | token, if set | the SSE stream above |
+| `POST /v1/ingest` `{"rebuild": false}` | token, if set | 202 `{job_id, status}`; 409 while a job runs |
+| `GET /v1/ingest/{job_id}` | token, if set | `{job_id, status, started_at, finished_at, exit_code, report}`; 404 if unknown |
+| `GET /v1/documents` | token, if set | `{documents: [{source, sha256, chunks, loader, ingested_at}]}`, from the manifest |
+| `GET /v1/health` | none | readiness: 200 or 503, with `{status, index, llm}` |
+| `GET /v1/health/live` | none | 200 while the process runs |
+
+- **Readiness** means the index is present and compatible, and Ollama answers
+  `/api/tags` within 2 s.
+- **Job `status`** is one of `queued`, `running`, `succeeded` or `failed`.
+- **`exit_code`** is what `rag-ingest` would have returned.
+- **`report`** is the `IngestReport` as JSON. DEC-17 adds the added, changed, removed and
+  unchanged counts.
+
+**Manifest** (`<vector_store>/manifest.json`, DEC-17):
+
+```json
+{
+  "version": 1,
+  "embedder": {"ref": "components.embedders.minilm_cpu", "identity": "<sha256>", "dimension": 384},
+  "splitter": {"ref": "components.splitters.english_recursive", "identity": "<sha256>"},
+  "documents": {
+    "2412.14140v2.pdf": {
+      "sha256": "<sha256>", "loader": "components.loaders.pdf", "loader_identity": "<sha256>",
+      "chunk_ids": ["<uuid5>", "..."], "ingested_at": "2026-10-02T12:00:00Z"
+    }
+  }
+}
+```
+
+**Golden set** (`eval/eval_dataset.jsonl`, SRS §7.4, one object per line):
+
+```json
+{"id": "glider-purpose", "question": "...", "ground_truth": "...", "answerable": true,
+ "expected_sources": [{"source": "2412.14140v2.pdf", "pages": ["7", "8"]}], "notes": "S0-6 failure case"}
+```
+
+- **`pages`** are printed page labels: what `citation()` shows and what a chunk's
+  `page_label` holds. They are omitted for formats without pages.
+- **`source`** is corpus-relative. Tier 1 makes a chunk's `source` relative to
+  `paths.data` before matching, so matching works both before and after DEC-17 makes
+  `source` relative in the index.
+- **`answerable: false` records** carry no `expected_sources`. Their `ground_truth` is
+  the refusal sentence, and they count only towards the decline rate.
+- **`must_not_contain`** is optional, and allowed only on unanswerable records. It lists
+  strings whose appearance in the answer would show the model answering from prior
+  knowledge, for example `["Canberra"]`.
+- **`evaluation/dataset.py` validates the file:**
+  - ids are unique;
+  - an answerable record has a non-empty ground truth and sources;
+  - an unanswerable record has no sources.
+
+  A test checks that every `source` exists in the corpus and every page label exists in
+  that file.
+
+**Floors and runs:**
+
+```yaml
+# eval/thresholds.yaml: floors, set from the first baseline minus a tolerance, raised deliberately
+retrieval:  {hit_rate: ..., mrr: ..., recall: ...}                            # tier 1 (S2-3)
+generation: {faithfulness: ..., answer_relevancy: ..., context_precision: ...,
+             context_recall: ..., decline_rate: ...}                          # tier 2 (S2-5)
+```
+
+`generation-latest.json` records:
+
+- the `fingerprint`, as hashes of `query`, `ingestion`, `corpus`, `dataset` and `judge`;
+- the generator and judge models, and the ragas version;
+- timestamps;
+- the aggregates, and the scores for each item.
+
+`answers-latest.json` carries the same fingerprint without `judge`, and `check` requires
+the two files to agree.
+
+### 2.5 Testing and CI
+
+The unit suite stays hermetic (DEC-11). Each story adds tests:
+
+- **Cancellation (S2-1).** A fake chat model whose `_astream` is slow and records, in a
+  `finally`, when it is closed.
+  - Asserted: cancelling the consumer closes the stream before the consumer returns,
+    both mid-stream and during the simulated prefill.
+  - Negative control: the same assertion fails against the `RunnablePassthrough.assign`
+    shape.
+  - Plus the manual check against real Ollama, which only the daemon can show.
+- **Reranker (S2-4).** A stub scoring model stands in for the download. Ordering,
+  `top_n`, `min_score` and `rerank_score` are checked without network.
+- **Manifest and ingest (S2-6).** Pure manifest tests, plus incremental runs with
+  `DeterministicFakeEmbedding` covering:
+  - an add, a change and a delete;
+  - a failure that keeps the old chunks;
+  - each rebuild trigger;
+  - a crash between the swap's renames;
+  - the lock.
+- **API (S2-7).** FastAPI's test client against a fake pipeline covers:
+  - SSE framing and event order;
+  - 401, 409, 422 and 503;
+  - components refused in a request;
+  - no host path in any response body.
+- **Evaluation (S2-2, S2-3, S2-5):**
+  - dataset validation;
+  - metric arithmetic on hand-built contexts;
+  - fingerprint sensitivity: each input moves its own hash and only that one;
+  - floor failures.
+
+CI:
+
+- **The `check` job keeps the DEC-11 gate order.** From S2-5 it gains a final step,
+  `uv run rag-eval check`, which checks tier 2's floors and freshness. It is pure Python,
+  so it needs no models.
+- **The `eval-retrieval` job (S2-3)** runs after `check`:
+  1. `uv sync --locked`;
+  2. restore the HF cache;
+  3. ingest the corpus into `$RUNNER_TEMP`;
+  4. run `rag-eval retrieval` under `HF_HUB_OFFLINE=1` against `eval/thresholds.yaml`.
+
+  Expect a few minutes: the 1,708 chunks take about 2 minutes to embed here.
+- **Coverage** omits `evaluation/ragas_scoring.py` instead of `evaluate.py`, because it
+  imports the `eval` extra, which CI does not install. mypy's no-stub overrides follow the
+  same module.
+- **The architecture test** grows in two ways:
+  - `manifest`, `evaluation.dataset` and `evaluation.gate` join the modules that must
+    load no LangChain;
+  - `api` joins the modules that `ingest` must never load.
+
+### 2.6 Deliberately not built in Phase 2
+
+- **Hybrid retrieval (BM25 + RRF) and metadata filtering**, the SHOULDs of FR-3. They
+  belong to Phase 3, where Qdrant does both natively.
+- **Rate limiting, TLS and multi-user auth.** These belong to the Phase 3 deployment.
+  Phase 2 is localhost-first, with an optional token.
+- **A durable job queue and a stateless query tier** (NFR-5). The ingest job registry
+  lives in memory and the index lives in process. Both move in Phase 3, with Qdrant and
+  the container.
+- **Retry, backoff and circuit breaking** (NFR-6, DEC-9): Phase 3.
+- **OTel and structlog** (NFR-10): Phase 3. Phase 2 only moves ingest progress to stdlib
+  logging and measures ttft.
+- **The hosted-LLM fallback**: Phase 3, with the NFR-2 decision.
+- **SSE resume** (`Last-Event-ID`): a dropped stream is a cancelled answer.
+- **The DEC-2 revisit** (mistral vs phi3 vs qwen2). It needs the tier-2 harness, so it
+  comes after S2-5, as a Colab/Kaggle sweep. It stays on the backlog.
+- **Per-loader splitter strategies and `ruff format`**: still on the backlog, unchanged.
+
+### 2.7 Phase mapping delta
+
+| Target-stack row | Phase 2 | Later |
+| --- | --- | --- |
+| FastAPI + SSE | `rag_qa/api`, native SSE, a disconnect cancels generation | Phase 3: container, rate limiting, TLS |
+| Reranker | own cross-encoder (DEC-16), on or off by tier-1 numbers | — |
+| Own components (DEC-5 exit) | step 2 of 3: the cross-encoder; the allowlist shrinks | Phase 3: FAISS → Qdrant, and `langchain-community` leaves our direct dependencies (ragas still pulls it into the `eval` extra) |
+| Incremental ingestion | manifest, staged swap, lock, §7.3 metadata | Phase 3: Qdrant upsert, snapshots and backup (SRS §11) |
+| RAGAs gate | two tiers: retrieval in CI; generation committed and checked | Phase 3: the DEC-2 revisit feeds the serving decision |
+| `ChatOllama` + hosted fallback | `ChatOllama`, with its clients closed | Phase 3 |
+| NFR-2 (<2 s to first token) | measured: `ttft_ms` on every answer and in every tier-2 run | Phase 3 decision (ADR-016) |
+| OTel / structlog | stdlib logging in ingest | Phase 3 |
+
+§2.8, "As delivered", is written by S2-9.

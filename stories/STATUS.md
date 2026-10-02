@@ -5,18 +5,44 @@
 
 ## Now
 
-**Next action: the Phase 2 architecture pass** (WORKFLOW Step 1, fable, plan
-mode), then shard Phase 2 (Step 2). **Phase 1 is complete and released as
-`v0.2`** (2026-10-02): tag on `db75439`, CI green on the PR, `main` and the
-tag. Inputs the pass must take: the re-deferred Phase 2 backlog lines below,
-the "API never supplies components" constraint (ARCHITECTURE.md §1.8), and
-NFR-2 / DEC-3 ahead of Phase 3. Phase 2's first story bumps the version to
-`0.3.0.dev0`. Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
-+ follow-up `ddcd98f` (PR #1); S1-4 `eff50ea` + follow-up `a6f21b3` + DEC-13
-`20c4a6a` (PR #2); S1-5 `e3927a4` … `4efa53d` (PR #3, 8 commits); S1-6
-`ff61088` … `be545a4` (PR #4, 9 commits); S1-7 `6a50792` … `234f437` (PR #5,
-7 commits); S1-8 `fe7c38e` … `db75439` (PR #6, 6 commits). **CI exists**: every story closes on a green run, and from S1-8 it
-gates ruff → mypy → pytest + coverage → pip-audit.
+**Next action: [S2-1](phase-2/S2-1-answer-stream.md)**: a shared answer stream, and
+Ctrl-C that cancels generation. Model fable, plan-first, on branch
+`feat/s2-1-answer-stream`. The order of the Phase 2 stories, and what each depends on,
+are in the Phase 2 table below.
+
+**The Phase 2 architecture pass is done** (2026-10-02).
+
+- `ARCHITECTURE.md` has a confirmed Phase 2 section (§2.1–§2.7).
+- DEC-14 … DEC-18 are resolved below.
+- The phase is sharded into S2-1 … S2-9.
+
+Implementation sessions follow it and do not re-litigate it. The maintainer's answers are
+recorded with it:
+
+- a two-tier eval gate (DEC-15);
+- a stale tier-2 run fails CI rather than warning;
+- the API requires a token off localhost (DEC-18).
+
+**The pass ran on Opus 5.5, not Fable.** ADR-018 routes architecture passes to Fable;
+the maintainer chose to accept this pass rather than re-run it. Every backlog line now
+names its owning Phase 2 story, or its re-deferral.
+
+**Phase 1 is complete and released as `v0.2`** (2026-10-02): tag on `db75439`, CI green
+on the PR, `main` and the tag.
+
+| Story | Commits | PR |
+| --- | --- | --- |
+| S1-1 | `b22a37a` | — |
+| S1-2 | `1f1d6ff`, follow-up `f68eee3` | — |
+| S1-3 | `3b0e77f`, follow-up `ddcd98f` | #1 |
+| S1-4 | `eff50ea`, follow-up `a6f21b3`, DEC-13 `20c4a6a` | #2 |
+| S1-5 | `e3927a4` … `4efa53d` (8 commits) | #3 |
+| S1-6 | `ff61088` … `be545a4` (9 commits) | #4 |
+| S1-7 | `6a50792` … `234f437` (7 commits) | #5 |
+| S1-8 | `fe7c38e` … `db75439` (6 commits) | #6 |
+
+**CI exists.** Every story closes on a green run. From S1-8 it gates ruff → mypy →
+pytest + coverage → pip-audit.
 
 **Commit and branch convention (maintainer, 2026-10-01):** Conventional Commits +
 Conventional Branch, as set out in CLAUDE.md's hard rules. Story and SRS IDs go in a `Refs:` trailer,
@@ -39,9 +65,9 @@ through `rag-query`.
 
 **Known quality gap carried into Phase 1+:** retrieval is reliable, but the
 7B model sometimes misstates retrieved facts (S0-6 fact-check: misattributed
-scores, an invented acronym expansion). Faithfulness is unmeasured until the
-Phase 2 evaluation harness; the S0-6 story records the failing question and
-its verified ground truth.
+scores, an invented acronym expansion). Faithfulness stays unmeasured until the
+Phase 2 tier-2 harness (S2-5). The S0-6 story records the failing question and
+its verified ground truth, which becomes the first golden record (S2-2).
 
 **Commit history so far** (S0-1 → S0-4; ISS-09 verified fully closed, `git
 ls-files` shows no parquet, FAISS index, cache, media or `.save` file):
@@ -99,6 +125,13 @@ The final story of each phase performs the tag + version bump at close-out.
 
 - [x] Resolve DEC-1 / DEC-2 — done in the Phase 0 arch pass, 2026-09-18.
 
+- [ ] **Phase 2 (S2-5): somewhere to run tier-2 scoring.**
+  - **Locally:** about 3–4 h of CPU with `gemma2:9b`, which is already pulled.
+  - **On Colab/Kaggle:** needs an account, plus Ollama with the same `gemma2:9b` tag on
+    the GPU runtime.
+
+  S2-5 surfaces the estimate first, and the maintainer picks.
+
 - [ ] Nothing else: uv ✓, Python 3.12 (uv-managed) ✓, Ollama daemon ✓,
       Docker 29.6.2 ✓ (Phase 3), disk 311 GB free ✓. **No MCP servers are
       required for any phase** — built-in tools cover the whole workflow.
@@ -108,6 +141,11 @@ The final story of each phase performs the tag + version bump at close-out.
 Numbered because stories cite them by number; resolved ones stay as one line so
 those references still land. Items 9 onward were learned in Phase 1; each one
 cost a session something.
+
+Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
+
+- Item 15 is a fact the pass verified.
+- Items 16–21 are known costs of Phase 2 work.
 
 1. **Resolved (2026-09-18), historical.** The three pending commits (baseline,
    S0-1, S0-2) landed as `ee86e1f`, `f702dc8` + `e781b17` and `0987c60`. The
@@ -161,13 +199,40 @@ cost a session something.
 14. **Attack a security check; don't only confirm it accepts the good input.**
     The prefix-only allowlist passed every positive test and was bypassed twice
     (S1-2, ADR-020).
+15. **Never stream an answer through `RunnablePassthrough.assign` where cancelling must
+    stop it.** `RunnableParallel` waits on its step tasks with `asyncio.wait` and never
+    cancels them. A cancelled consumer therefore returns while the generation runs on
+    (verified; ARCHITECTURE.md §2.1, DEC-14). Stream `prompt | llm | parser` directly, as
+    `stream_answer` does.
+16. **Tier-2 evaluation is hours-scale on CPU.** About 25 questions × 4 RAGAs metrics with
+    `gemma2:9b` take about 3–4 h to score, plus about 40 min to generate. Surface the
+    estimate before starting. Scoring defaults to Colab/Kaggle (GPU offload notes).
+17. **Never run the generator and the judge together.** mistral (~5 GB resident) and
+    `gemma2:9b` do not both fit beside a desktop in 15 GB. Generate, run
+    `ollama stop mistral`, then score. Caveat 8 applies to both.
+18. **A local judge is noisy.** Judges of 7–9B parameters sometimes misparse RAGAs'
+    structured prompts. Check a few scored answers by hand before a number becomes a
+    threshold.
+19. **CI's `eval-retrieval` job uses the network**: about 180 MB of HF models on a cache
+    miss, and a few minutes of embedding. The unit job stays hermetic (DEC-11). If
+    `eval-retrieval` is red while `check` is green, retrieval quality moved; the code did
+    not break.
+20. **After S2-6, every existing index must be rebuilt once.** v0.2 indexes have no
+    manifest, and `rag-query` refuses them with exit 2. Run `rag-ingest`, and use
+    `--rebuild` after an embedder change.
+21. **Cancellation is proved only against real Ollama.** The hermetic tests show that our
+    stream closes. Only the daemon shows that the model stopped: its log, or `top`
+    falling to idle. S2-1 and S2-7 carry that manual step.
 
 ## GPU offload notes (nothing *requires* GPU; Colab/Kaggle available)
 
 - **Phase 0–1: no GPU work at all.**
-- **Phase 2 — RAGAs eval sweeps**: with a local CPU judge, a full metric
-  sweep is an hours-scale run. Best Colab/Kaggle candidate: run the eval
-  notebook (judge model on their GPU) against exported answers/contexts.
+- **Phase 2 — tier-2 RAGAs scoring (DEC-15)**: with a local CPU judge, a full
+  metric sweep is an hours-scale run.
+  - `rag-eval generate` runs here.
+  - `rag-eval score` runs on Colab/Kaggle, with Ollama and `gemma2:9b` on their GPU.
+  - The two exchange only `eval/runs/answers-latest.json`.
+  - S2-5 records the recipe.
 - **Bulk re-embedding** only if the corpus grows to thousands of docs.
 - **Serving SLO (NFR-2)** — Colab/Kaggle are batch sandboxes with session
   limits, not hosting; if the <2 s SLO must hold at v1.0, that's a real
@@ -218,6 +283,47 @@ gate on a tree that already has 4 default-rule errors, so it suppresses them wit
 `noqa` tags naming S1-4, and S1-4 removes them. S1-7 depends only on S1-1 and can
 be run whenever convenient before S1-8.
 
+## Phase 2 — Make it a service
+
+Exit criterion (SRS §12): the system is callable over HTTP and has an enforced quality
+bar. Both halves are executable:
+
+- **Callable over HTTP:** the API's tests, plus a manual end-to-end run against real
+  Ollama (S2-7, S2-9).
+- **An enforced quality bar:** the two eval gates in CI (DEC-15).
+
+Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
+
+| Story | Title | Closes | Depends | Status |
+| --- | --- | --- | --- | --- |
+| [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Todo |
+| [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Todo |
+| [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Todo |
+| [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Todo |
+| [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate | FR-7, ISS-15 | S2-2, S2-4 | Todo |
+| [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Todo |
+| [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Todo |
+| [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
+| [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8 | Todo |
+
+**Order.** Stories run in number order, which also satisfies the Depends column. The
+evaluation chain (S2-2 → S2-5) comes before the manifest and the API for two reasons:
+
+- The reranker (S2-4) is switched on or off by tier-1 numbers.
+- Tier 2's hours-scale baseline (S2-5) should be taken once, on the final retrieval
+  config.
+
+S2-6 depends only on S2-1, and may move earlier if that is convenient.
+
+**Story setup.**
+
+- **Plan-first:** S2-1, S2-5, S2-6 and S2-7. Each is design-heavy or touches an API
+  surface not used here before.
+- **Branches:** every story goes on its own branch with a PR. Each story file states its
+  risk call. S2-2 and S2-8 are the low-risk ones; they use branches only so that CI runs
+  before the merge.
+- **Version:** S2-1 bumps it to `0.3.0.dev0`, and S2-9 releases 0.3.0.
+
 ## Decisions log
 
 | ID | Decision | Status | Notes |
@@ -235,12 +341,24 @@ be run whenever convenient before S1-8.
 | DEC-11 | CI: host, hermeticity and how hard the gates bite | **Resolved 2026-09-25: GitHub Actions, hermetic suite, blocking gates** | No Ollama, no model download, no network in tests: `DeterministicFakeEmbedding` (verified present in core 1.6.3) + a fake chat model. Gate order: `ruff check` → `mypy` (`disallow_untyped_defs` on `src/rag_qa`) → `pytest --cov-fail-under=80` (omitting `evaluate.py`, Phase 2 + `eval` extra) → `pip-audit`. Each gate blocks from the story that adds it. **No `ruff format --check` in Phase 1** — the tree is unformatted and a whole-tree reformat is the diff that gets rubber-stamped → backlog. |
 | DEC-12 | Making the declared GPU embedder entries actually installable | **Resolved 2026-09-25: uv-conflicting CPU/CUDA torch variants; plain `uv sync` stays CPU** | Each variant routed to its own index, `explicit = true` on both. **Mechanism chosen by S1-7's spike**: extras have no default, so torch-only-in-extras would make a plain sync pull PyPI CUDA torch via `sentence-transformers`. Preferred: dependency groups + `default-groups = ["dev", "cpu"]`; fallback: extras with `--extra cpu` on every install path. S1-7 re-runs the S0-2 smoke test on the **installed env** (the lock legitimately holds both variants): core 1.x, `torch 2.14.0+cpu`, zero `nvidia-*`. CUDA is verifiable here as a **resolve only** — this host is CPU-only. |
 | DEC-13 | Partial ingestion failure: replace the index with what loaded, or keep the previous one | **Resolved 2026-10-01: replace, exit 1** | Maintainer's call, raised by S1-4's third review. Some documents or folders unreadable → index the rest, save over the old index, exit 1 ("rebuilt without them"). Keeping the old index is safer when unattended, but one persistently bad file would block every update. Phase 1 ingests are hand-run and watched. Phase 2's hash manifest dissolves it: a failed document keeps its previously indexed chunks. Exit codes: 0 all indexed · 1 document/folder unreadable, nothing indexed, or unexpected error (traceback) · 2 cannot start. ARCHITECTURE.md §1.1. |
+| DEC-14 | Cancelling an answer: how the CLI's Ctrl-C and the API's client disconnect stop generation | **Resolved 2026-10-02: one answer-event stream (`answering.stream_answer`); stopping it means cancelling the task that consumes it** | **Verified trap:** async alone does not fix it. Under `RunnablePassthrough.assign`, `RunnableParallel` waits on its step tasks with `asyncio.wait` and never cancels them. In the trial, a cancel at 0.5 s during a simulated prefill left the stream open until 2.0 s; streaming `prompt \| llm \| parser` directly closed it at 0.5 s. **Design:** the CLI uses one `asyncio.Runner` per session. `QueryPipeline` holds the parts, and `build_rag_chain` stays for `invoke`. `aclose_llm` closes ChatOllama's clients, and `ttft_ms` is measured for NFR-2. S2-1. ARCHITECTURE.md §2.1. |
+| DEC-15 | Phase 2 quality gate: what runs in CI when RAGAs on CPU takes hours | **Resolved 2026-10-02: two tiers** (maintainer) | **Tier 1:** retrieval hit rate, MRR and recall against `expected_sources`, recomputed every push by a CI job that caches the HF models. That job is CI's only network use. **Tier 2:** RAGAs with a `gemma2:9b` judge through Ollama's OpenAI endpoint, run offline (scoring can go to Colab/Kaggle) and committed with a fingerprint. `rag-eval check` fails CI on a floor breach **or a stale run** (maintainer: fail, not warn). Rejected: a hosted judge in CI; offline-only. S2-2, S2-3, S2-5. |
+| DEC-16 | Reranker: `langchain_classic`'s `ContextualCompressionRetriever`, or our own | **Resolved 2026-10-02: our own `CrossEncoderReranker` on `sentence-transformers`** (DEC-5 step 2) | A `langchain_core` `BaseDocumentCompressor` that writes `rerank_score` into metadata. k=20 candidates are cut to `top_n` 5, and tier-1 numbers decide whether it is on. `langchain_classic.` and `langchain_community.` leave `ALLOWED_PREFIXES`. The `min_score` knob is for the Sources-relevance backlog line. S2-4. |
+| DEC-17 | Incremental ingestion: change detection, failure handling, write safety | **Resolved 2026-10-02: a sha256 manifest beside the index, a staged swap, one writer** | **Updates:** only added and changed documents are re-embedded. A failed document keeps its chunks, which dissolves DEC-13. **Full rebuild** when the embedder identity or the splitter changes. Device keys are left out of the identity, so Colab's `_cuda` equals local `_cpu`. **IDs and metadata:** uuid5 chunk IDs, ready for Qdrant (DEC-3). `source` becomes corpus-relative, plus `source_sha256` and `ingested_at` (SRS §7.3). **Query side:** `rag-query` refuses a mismatched index. **Breaking:** re-ingest once. S2-6. |
+| DEC-18 | HTTP API shape: SSE library, auth, concurrency, ingest jobs | **Resolved 2026-10-02: FastAPI ≥ 0.135 native SSE; a token is required off localhost (maintainer); one generation at a time** | **Surface:** `rag-serve`. `QueryRequest` is `{question}` with `extra="forbid"`, so the API never supplies components, and a `trust_remote_code` load guard comes with it. **Load:** 503 with `Retry-After` when busy. A disconnect cancels generation. **Ingest:** single-flight jobs in memory, which swap only the retrieval half. **Privacy:** no host paths over HTTP. S2-7. |
 
 ## Backlog
 
 Reconciled at the Phase 1 exit (S1-8, 2026-10-02). Every Phase 1 line is either
 **closed** by the story named, or **re-deferred** with a phase and a reason. The
 detail behind each closed line is in its story file.
+
+Reconciled again in the Phase 2 architecture pass (2026-10-02). Every open line now
+leads with one of two things:
+
+- **its owning Phase 2 story**, as **S2-n —**, where the detail below is that story's
+  input;
+- **its phase or trigger**, when it stays deferred.
 
 ### Closed in Phase 1
 
@@ -278,19 +396,19 @@ detail behind each closed line is in its story file.
   PR red, docs-only ones included. Decide an `--ignore-vuln` policy (ID + reason in
   `ci.yml`) or a scheduled audit beside a PR gate for new dependencies. Not needed
   until it first happens.
-- **Phase 2 — prompt placeholder check (FR-8 follow-up, found in S1-1).** A
+- **S2-5 — prompt placeholder check (FR-8 follow-up, found in S1-1).** A
   `human` prompt missing `{context}` silently answers without retrieval. One
   validator on `Prompt`. S1-5 left it open, as the board allowed. It belongs with
   the Phase 2 evaluation harness, which is what would catch an ungrounded
-  answer anyway. Ride the first Phase 2 story that touches `schema.py`.
-- **Phase 2 — the API must never let a request supply or override components
+  answer anyway. Its rules are in ARCHITECTURE.md §2.3.
+- **S2-7 — the API must never let a request supply or override components
   (S1-2 second review).** A constraint for the Phase 2 architecture pass, with
   the optional load-time guard that rejects `trust_remote_code` anywhere in the
   config. Re-deferred because it only matters once the config is reachable from
-  outside the host.
-- **Phase 2 — CLI polish (found in S1-4).** No single item is worth a story, so
-  batch them as one story when Phase 2 is sharded, or let them ride the first
-  story that touches `cli.py` / `ingest.py`:
+  outside the host. Designed in DEC-18: `QueryRequest` forbids extra keys, and the
+  `trust_remote_code` guard lands in the same story.
+- **S2-8 — CLI polish (found in S1-4).** No single item is worth a story, so they are
+  batched as S2-8. It runs after S2-6, which rewrites `ingest.py`:
   - `rag-query` startup is unguarded: Ollama being down
     (`validate_model_on_init`) and Ctrl-C while models load both print a
     traceback. One startup try/except with a clean message.
@@ -312,7 +430,7 @@ detail behind each closed line is in its story file.
   - **pypdf's own warnings leak** (v0.2 manual test). A corrupt PDF prints
     `invalid pdf header…` / `EOF marker not found` above the banner, before
     the clean error. Quiet the `pypdf` logger to ERROR in `ingest.py`.
-- **Phase 2 architecture input — Ctrl-C does not cancel generation** (v0.2
+- **S2-1 — Ctrl-C does not cancel generation** (v0.2
   manual test, reproduced in a pty). "(answer interrupted…)" appears in 0.1 s,
   but the REPL then blocks until Ollama finishes the whole response (43 s with
   phi3; minutes with mistral), because the abandoned stream is drained, not
@@ -321,22 +439,24 @@ detail behind each closed line is in its story file.
   plus an httpx traceback), so the session does not quit. The Phase 2 SSE API
   has the same need: a client that disconnects must cancel generation, not let
   it run on. Design it once there (close the stream / the HTTP response), and
-  the CLI uses the same mechanism.
-- **Phase 2 — seed the golden dataset with GLIDER** (S0-6, re-confirmed by the
+  the CLI uses the same mechanism. Designed in DEC-14. Its verified trap: going async
+  alone does not fix this; the answer must be streamed outside
+  `RunnablePassthrough.assign`. The API half of the work is S2-7.
+- **S2-2 — seed the golden dataset with GLIDER** (S0-6, re-confirmed by the
   v0.2 manual test). "What is GLIDER and what does it evaluate?" is still
   answered unfaithfully with phi3: every phrase is from the paper, but the
   benchmark categories (p. 5) are presented as what GLIDER evaluates, and the
   p. 8 description as what it "stands for". Retrieval is correct (all five
   sources from the paper, p. 7 first). Ground truth: S0-6 story, "Fact-check".
-- **Phase 2 — the walk descends into ignored trees** (found in S1-3 and S1-4).
+- **S2-6 — the walk descends into ignored trees** (found in S1-3 and S1-4).
   It walks all of `.git` before discarding it. Performance only. Phase 2's
   incremental ingestion rewrites discovery around the manifest, so prune there
   (`Path.walk` is top-down, and pruning `folders[:]` in place fixes it).
-- **Phase 2 — type the YAML boundary; add `py.typed` (found in S1-6).** Add
+- **S2-1 — type the YAML boundary; add `py.typed` (found in S1-6).** Add
   `types-PyYAML` as a dev dependency so `pyyaml` stops being `Any`. An empty
   `src/rag_qa/py.typed` makes a misspelled first-party import read as "cannot
-  find module". Both are small and optional; ride the first story that touches
-  `config.py` or packaging.
+  find module". Both are small and optional, so they ride S2-1, whose version bump
+  is the first packaging change.
 - **Phase 3 — the parity tests and the corpus PDF they read** (found in S1-3).
   They are accepted until `langchain-community` leaves. Removing that PDF before
   then fails them loudly, which is right.
@@ -369,30 +489,48 @@ detail behind each closed line is in its story file.
 
 ### Later phases
 
-- Chunk metadata: content hash of the source file + ingestion timestamp
-  (SRS §7.3). Phase 2, with the manifest that needs them.
-- `langchain-classic` is referenced by the (disabled) reranker component but is
-  only a transitive dependency via `langchain-community`. If Phase 2 keeps the
-  `ContextualCompressionRetriever` + `CrossEncoderReranker` shape instead of a
-  hand-rolled Runnable, declare it explicitly in `pyproject.toml`. Phase 2.
-- RAGAs judge must be pointed at local Ollama explicitly (default is OpenAI);
-  a full metric sweep on CPU is hours — Colab/Kaggle offload candidate. Phase 2.
-- Ingestion manifest records embedder model name + dimension; refuse to open
-  an index built with a different embedder. Phase 2.
-- NFR-2 (<2 s first token) is unachievable CPU-only — revise the SLO or plan
-  GPU serving in the Phase 3 arch pass.
+- **S2-6 —** chunk metadata: content hash of the source file + ingestion timestamp
+  (SRS §7.3), with the manifest that needs them (DEC-17).
+- **S2-4, closes as not needed —** `langchain-classic` is referenced by the (disabled)
+  reranker component but is only a transitive dependency via `langchain-community`.
+  The question was whether to declare it in `pyproject.toml`. DEC-16 hand-rolls the
+  reranker instead, and `langchain_classic.` leaves the allowlist, so there is
+  nothing to declare.
+- **S2-5 —** the RAGAs judge must be pointed at local Ollama explicitly (its default
+  is OpenAI). DEC-15 settles both halves: the judge is `gemma2:9b` through Ollama's
+  OpenAI endpoint, and a full sweep on CPU takes hours, so scoring offloads to
+  Colab/Kaggle.
+- **S2-6 —** the ingestion manifest records the embedder's identity and dimension;
+  refuse to open an index built with a different embedder (DEC-17).
+- **Phase 3 —** NFR-2 (<2 s first token) is unachievable CPU-only: revise the SLO
+  or plan GPU serving in the Phase 3 arch pass. Phase 2 measures it: `ttft_ms` on
+  every answer (DEC-14) and in every tier-2 run.
+- **S2-4, then a follow-up after S2-5 —** CLI "Sources" lists what was retrieved, not
+  what the answer used, so a refusal still shows a source. S2-4 adds the reranker's
+  `min_score` knob (DEC-16), defaulting to off. Tuning it with the eval harness comes
+  after the tier-2 baseline exists.
+- **S2-1 and S2-7 —** `ChatOllama` leaves its HTTP client open
+  (`ResourceWarning: unclosed socket` at exit).
+  - S2-1 adds `aclose_llm`, and the CLI calls it at exit.
+  - S2-7's API lifespan owns the client and closes it at shutdown.
+- **DEC-5 exit tasks, one per phase:**
+  - own loaders (**Phase 1 → S1-3**);
+  - the cross-encoder via `sentence-transformers` (**Phase 2 → S2-4**);
+  - dropping `langchain-community` and `langchain-classic` from `pyproject.toml`
+    after the Qdrant move (Phase 3).
 
-- CLI "Sources" lists what was retrieved, not what the answer used, so a
-  refusal still shows a source. Fix with a relevance threshold or citation
-  parsing, tuned by the eval harness. Phase 2.
-- `ChatOllama` leaves its HTTP client open (`ResourceWarning: unclosed socket`
-  at exit). Harmless in the CLI; the Phase 2 API must own and close the
-  chain's client across its lifecycle. Phase 2.
-- DEC-5 exit tasks, one per phase: own loaders (**Phase 1 → S1-3**),
-  cross-encoder via `sentence-transformers` (Phase 2), drop
-  `langchain-community` and `langchain-classic` from `pyproject.toml` after the
-  Qdrant move (Phase 3).
-- Phase 2+ stories: shard at each phase exit via WORKFLOW.md Step 2.
+  Note: ragas pulls both into the `eval` extra, so Phase 3 removes them from our
+  direct dependencies only.
+- **Phase 3 — statelessness (NFR-5).** The Phase 2 API keeps ingest jobs in memory
+  and the index in process (DEC-18). A horizontally scalable query tier needs Qdrant
+  and a durable job queue.
+- **Phase 3 — API deployment hardening:** rate limiting, TLS and multi-user auth.
+  DEC-18 is localhost-first, with an optional bearer token.
+- **After S2-5 — the DEC-2 revisit.** Run mistral vs phi3 (and `qwen2:7b`, if pulled)
+  through the tier-2 harness. It is hours-scale, so it is a Colab/Kaggle sweep. Its
+  result feeds the Phase 3 serving decision.
+- Phase 2 was sharded on 2026-10-02 (S2-1 … S2-9). Phase 3 is sharded at the Phase 2
+  exit, via WORKFLOW.md Step 2.
 
 ## Done
 
@@ -409,5 +547,13 @@ regression suite + coverage gate · S1-6 types and lint · S1-7 CPU/CUDA torch
 variants · S1-8 audit gate, doc hygiene, release. As delivered:
 ARCHITECTURE.md §1.8; per-story detail in `stories/phase-1/`.
 
-**Architecture passes.** Phase 0 confirmed 2026-09-18 (DEC-1/2/4, later DEC-5);
-Phase 1 confirmed 2026-09-25 (DEC-6 … DEC-12), sharded into S1-1 … S1-8.
+**Architecture passes.**
+
+| Phase | Confirmed | Decisions | Sharded into |
+| --- | --- | --- | --- |
+| 0 | 2026-09-18 | DEC-1, DEC-2, DEC-4 (later DEC-5) | — |
+| 1 | 2026-09-25 | DEC-6 … DEC-12 | S1-1 … S1-8 |
+| 2 | 2026-10-02 | DEC-14 … DEC-18 | S2-1 … S2-9 |
+
+The Phase 2 pass ran on Opus 5.5 by the maintainer's choice; ADR-018 routes
+architecture passes to Fable.
