@@ -198,13 +198,26 @@ one blocks:
 uv run ruff check                       # lint
 uv run mypy                             # types
 uv run pytest --cov=rag_qa              # tests, with an 80% coverage floor
-uv pip freeze --exclude-editable | sed 's/^\(torch==.*\)+cpu$/\1/' \
-  | uv run --no-sync pip-audit --no-deps --disable-pip -r /dev/stdin   # known vulnerabilities
+(                                       # known vulnerabilities, as CI's Audit step
+  set -o pipefail
+  uv pip freeze --python .venv --exclude-editable \
+    | sed 's/^\(torch==.*\)+cpu$/\1/' > /tmp/audit.txt &&
+  test -s /tmp/audit.txt
+) && uv run --no-sync pip-audit --no-deps --disable-pip -r /tmp/audit.txt
 ```
 
 The audit reads the installed packages rather than running a plain `pip-audit`, which
-would skip torch: the CPU build's `+cpu` version label does not exist on PyPI. CI also
-fails if the installed torch is not the CPU build.
+would skip torch: the CPU build's `+cpu` version label does not exist on PyPI. Each
+guard stops a pass that audited nothing:
+
+- `pipefail` makes a failed freeze fail the whole step;
+- `test -s` rejects an empty list, for which `pip-audit` reports "No known
+  vulnerabilities";
+- `--python .venv` errors when there is no project environment, instead of freezing
+  whatever other Python uv finds.
+
+The parentheses keep `pipefail` out of your shell. CI also fails if the installed torch
+is not the CPU build.
 
 ## Roadmap
 
