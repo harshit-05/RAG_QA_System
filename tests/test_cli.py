@@ -210,6 +210,31 @@ def test_the_session_closes_the_models_clients(monkeypatch: pytest.MonkeyPatch) 
     assert closed == [model]
 
 
+def test_ctrl_c_while_the_clients_close_leaves_quietly(
+    monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    async def interrupted(llm: Any) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("rag_qa.chain.aclose_llm", interrupted)
+    assert repl(fake_pipeline(ScriptedModel()), scripted("exit")) == EXIT_OK
+    assert "(closing interrupted)" in capsys.readouterr().out
+
+
+def test_an_error_while_the_clients_close_still_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    # Found in S2-1's second review: before, this escaped repl() as a traceback.
+    async def broken(llm: Any) -> None:
+        raise RuntimeError("close failed")
+
+    monkeypatch.setattr("rag_qa.chain.aclose_llm", broken)
+    assert repl(fake_pipeline(ScriptedModel()), scripted("exit")) == EXIT_OK
+    assert "could not close the model's connections cleanly: RuntimeError" in (
+        capsys.readouterr().out
+    )
+
+
 # --- main(): startup ----------------------------------------------------------------
 
 
@@ -228,7 +253,7 @@ def test_help_does_no_work(monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None
 def test_no_index_yet_says_to_run_rag_ingest(
     make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    monkeypatch.setattr(cli, "build_query_pipeline", _pipeline_must_not_be_built)
+    # The real build_query_pipeline: it raises NoIndexError before building any model.
     monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(tmp_path / "empty"))
     assert cli.main(["--config", str(make_config())]) == EXIT_CANNOT_START
     assert "Run rag-ingest first" in capsys.readouterr().err
@@ -246,7 +271,6 @@ def test_invalid_config_exits_2(
 def test_main_runs_the_session_with_the_built_pipeline(
     make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    monkeypatch.setattr(cli, "store_exists", lambda path: True)
     model = ScriptedModel(script=["an answer"])
     monkeypatch.setattr(cli, "build_query_pipeline", lambda config: fake_pipeline(model))
     # honoured: looked up at call time
