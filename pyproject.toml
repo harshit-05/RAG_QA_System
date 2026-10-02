@@ -1,6 +1,6 @@
 [project]
 name = "rag-qa-system"
-version = "0.2.0"
+version = "0.3.0.dev0"
 description = "Config-driven local RAG question-answering engine built on LangChain, FAISS and Ollama."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -55,6 +55,7 @@ dev = [
     "mypy>=1.17",
     "pytest-cov>=7.1.0",
     "pip-audit>=2.10.1",   # CI's Audit step (S1-8); see ci.yml for why it reads a freeze
+    "types-pyyaml>=6.0.12.20260906",   # types the YAML boundary in config.py (S2-1)
 ]
 
 # This host is CPU-only (no NVIDIA GPU). `explicit = true` is load-bearing on BOTH
@@ -113,7 +114,6 @@ warn_unused_ignores = true
 # ignore_missing_imports would also hide a misspelled rag_qa import.
 [[tool.mypy.overrides]]
 module = [
-    "yaml",      # types-PyYAML would type it: backlog (STATUS.md, Found in S1-6)
     "docx2txt",
     "pandas",    # these three come from the optional eval extra
     "datasets",

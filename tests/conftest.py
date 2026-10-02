@@ -4,13 +4,18 @@ Binary fixtures (PDF, DOCX) are generated at test time rather than committed —
 CLAUDE.md: never commit binaries — and the generators are small enough to read.
 """
 
+import asyncio
 import zipfile
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from pydantic import Field
 
 from rag_qa.settings import ENV_CONFIG, ENV_DATA_PATH, ENV_VECTOR_STORE_PATH
 
@@ -169,6 +174,55 @@ FAKE_LLM = {
     "_target_": "langchain_core.language_models.fake_chat_models.FakeListChatModel",
     "responses": [FAKE_ANSWER],
 }
+
+
+class StreamingFakeChatModel(BaseChatModel):
+    """A chat model fake that streams slowly and records how its stream ended.
+
+    Waits ``prefill_s`` (a simulated prompt evaluation), then yields ``tokens``
+    ``gap_s`` apart. ``log`` gets ``"start"``, each token as it is yielded, and
+    ``"closed"`` from a ``finally``: the stand-in for ChatOllama's HTTP response being
+    closed, which is what cancelling an answer must achieve (DEC-14). ``prompts`` holds
+    every prompt it was given, rendered as text.
+    """
+
+    tokens: list[str] = Field(default_factory=lambda: ["Station ", "Kestrel ", "staff."])
+    prefill_s: float = 0.0
+    gap_s: float = 0.0
+    prompts: list[str] = Field(default_factory=list)
+    log: list[str] = Field(default_factory=list)
+
+    @property
+    def _llm_type(self) -> str:
+        return "streaming-fake"
+
+    @property
+    def closed(self) -> bool:
+        return "closed" in self.log
+
+    def _record(self, messages: list[BaseMessage]) -> None:
+        self.prompts.append("\n".join(f"{m.type}: {m.content}" for m in messages))
+
+    def _generate(
+        self, messages: list[BaseMessage], stop: Any = None, run_manager: Any = None, **kw: Any
+    ) -> ChatResult:
+        self._record(messages)
+        message = AIMessage(content="".join(self.tokens))
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+    async def _astream(
+        self, messages: list[BaseMessage], stop: Any = None, run_manager: Any = None, **kw: Any
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        self._record(messages)
+        self.log.append("start")
+        try:
+            await asyncio.sleep(self.prefill_s)
+            for token in self.tokens:
+                self.log.append(token)
+                yield ChatGenerationChunk(message=AIMessageChunk(content=token))
+                await asyncio.sleep(self.gap_s)
+        finally:
+            self.log.append("closed")
 
 
 def use_fake_embedder(c: dict[str, Any]) -> None:

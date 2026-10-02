@@ -1,13 +1,16 @@
 """The shared assembly layer (S1-3): one way to build each component."""
 
+import asyncio
 from itertools import pairwise
 from pathlib import Path
 
 import pytest
 from conftest import MakeConfig
 from langchain_core.embeddings import DeterministicFakeEmbedding
+from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_ollama import ChatOllama
 
-from rag_qa.components import build_embedder, build_loader, build_splitter
+from rag_qa.components import aclose_llm, build_embedder, build_loader, build_splitter
 from rag_qa.config import load_config
 from rag_qa.loaders import DocxLoader, PdfLoader, TextLoader
 
@@ -75,3 +78,17 @@ def test_build_splitter_uses_the_configured_splitter(make_config: MakeConfig) ->
     for left, right in pairwise(chunks):
         shared = max((n for n in range(1, len(right) + 1) if left.endswith(right[:n])), default=0)
         assert 100 < shared <= 150
+
+
+def test_aclose_llm_closes_chat_ollamas_http_clients() -> None:
+    # No server needed: ChatOllama creates both clients at construction, and only
+    # validate_model_on_init would contact Ollama. The httpx clients sit under ollama's.
+    llm = ChatOllama(model="unused", validate_model_on_init=False)
+    clients = [llm._client._client, llm._async_client._client]
+    assert not any(client.is_closed for client in clients)
+    asyncio.run(aclose_llm(llm))
+    assert all(client.is_closed for client in clients)
+
+
+def test_aclose_llm_is_a_no_op_for_a_model_without_clients() -> None:
+    asyncio.run(aclose_llm(FakeListChatModel(responses=["x"])))

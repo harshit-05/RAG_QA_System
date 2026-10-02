@@ -10,8 +10,9 @@ Module layout is fixed by ARCHITECTURE.md §0.2 and §1.2:
 - ``components``  builds the embedder, splitter, LLM and loaders from a ``RagConfig``
 - ``vectorstore`` the only FAISS touchpoints; the Phase 3 store-swap seam
 - ``ingest``      corpus walk, chunking, index build
-- ``chain``       ``build_rag_chain(cfg) -> Runnable``
-- ``cli``         interactive REPL over that Runnable
+- ``chain``       ``build_query_pipeline(cfg) -> QueryPipeline``; ``build_rag_chain`` for invoke
+- ``answering``   ``stream_answer``: one answer as typed events, for every front end
+- ``cli``         interactive REPL over that stream
 - ``evaluate``    RAGAs harness (Phase 2)
 
 Version tracks the release tags: ``.dev0`` between tags, bumped at each phase exit
@@ -19,6 +20,6 @@ Version tracks the release tags: ``.dev0`` between tags, bumped at each phase ex
 first story bumps to 0.3.0.dev0).
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0.dev0"
 
 __all__ = ["__version__"]

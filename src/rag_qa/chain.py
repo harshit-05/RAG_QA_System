@@ -1,12 +1,17 @@
-"""Query chain construction: the LCEL composition fixed by ARCHITECTURE.md §0.4.
+"""Query pipeline construction: the parts every front end answers with (ARCHITECTURE.md §2.4).
 
-Contract, relied on by the CLI now and by the Phase 2 API and evaluation harness:
+:func:`build_query_pipeline` returns a :class:`QueryPipeline`, the two halves of an
+answer kept apart:
+
+- ``retrieve``: question in, chunks out. Awaited, never streamed.
+- ``answer``: ``prompt | llm | StrOutputParser()``. Streamed directly by
+  :func:`rag_qa.answering.stream_answer`, which is what lets a cancel close the stream
+  to the model (DEC-14).
+
+:func:`build_rag_chain` composes the same parts into the Phase 0 chain, for the
+``invoke`` contract of §0.4, relied on by the evaluation harness:
 
     chain.invoke({"question": q}) -> {"question": str, "context": list[Document], "answer": str}
-
-Streaming (``chain.stream`` / ``chain.astream``) yields ``question``, then the whole
-``context`` in one chunk, then ``answer`` token by token. That order is what lets a
-streaming client show citations before the first answer token arrives.
 
 Imports come only from ``langchain_core`` plus our own modules (DEC-1 rule 1). None
 of the legacy chain helpers: the ``RetrievalQA`` this replaces now lives only in the
@@ -14,34 +19,65 @@ maintenance-mode "classic" package, which application code never imports.
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from operator import itemgetter
 from pathlib import Path
 from typing import Any
 
 from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
+from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrough
 
-from rag_qa.components import build_embedder, build_llm
+from rag_qa.components import aclose_llm, build_embedder, build_llm
 from rag_qa.registry import build_object
 from rag_qa.schema import RagConfig
-from rag_qa.vectorstore import open_store
+from rag_qa.vectorstore import open_store, store_exists
+
+
+class NoIndexError(Exception):
+    """There is no index to retrieve from: ``rag-ingest`` has not built one yet."""
+
+
+@dataclass(frozen=True)
+class QueryPipeline:
+    """The parts of an answer, built once and shared by every question.
+
+    ``retrieve`` is ``None`` only when the pipeline was built with
+    ``require_index=False`` and there was no index (the API before its first ingest,
+    S2-7); :func:`rag_qa.answering.stream_answer` then raises :class:`NoIndexError`.
+    """
+
+    retrieve: Runnable[str, list[Document]] | None
+    answer: Runnable[dict[str, str], str]
+    llm: BaseChatModel  # kept so aclose() can close its HTTP clients
+    corpus_root: Path  # sources are reported relative to it
+
+    async def aclose(self) -> None:
+        """Close the model's HTTP clients. Call it on the loop that used them."""
+        await aclose_llm(self.llm)
 
 
 def citation(doc: Document) -> str:
     """Human-readable source for one chunk: ``file.pdf, p. 3``.
 
-    Uses the loader's ``page_label`` (the printed page number) when present, falls
-    back to the 0-indexed ``page`` plus one, and omits the page for formats that
-    have none (docx, txt).
+    Omits the page for formats that have none (docx, txt); see :func:`page_label`.
     """
+    name = Path(doc.metadata.get("source", "unknown source")).name
+    page = page_label(doc)
+    return f"{name}, p. {page}" if page is not None else name
+
+
+def page_label(doc: Document) -> str | None:
+    """The page a chunk came from, as printed: the loader's ``page_label`` when present,
+    else the 0-indexed ``page`` plus one, else ``None``."""
     metadata = doc.metadata
-    name = Path(metadata.get("source", "unknown source")).name
     page = metadata.get("page_label")
     if page is None and "page" in metadata:
         page = metadata["page"] + 1
-    return f"{name}, p. {page}" if page is not None else name
+    return None if page is None else str(page)
 
 
 def format_docs(docs: Sequence[Document]) -> str:
@@ -55,40 +91,84 @@ def format_docs(docs: Sequence[Document]) -> str:
     )
 
 
-def build_rag_chain(config: RagConfig) -> Runnable[dict[str, str], dict[str, Any]]:
-    """Build the RAG chain from a loaded config (see :func:`rag_qa.config.load_config`).
+def build_retrieve(config: RagConfig, embeddings: Embeddings) -> Runnable[str, list[Document]]:
+    """The retrieval half: the configured retriever over the index, reranked if configured.
 
-    Cannot mutate ``config``: it is frozen, and every component dict used here is a
-    fresh copy from ``spec()`` / ``kwargs()``. (The old implementation wrote a live
-    retriever object into the config dict on the reranker path, so a reused config
-    stopped being inert.) Deliberately silent (no progress prints) because the Phase 2
-    API calls it too; front ends print their own progress.
+    Needs no LLM, so tier-1 evaluation runs it without Ollama, and the API can swap it
+    after an ingest. ``embeddings`` must be :func:`rag_qa.components.build_embedder`'s,
+    the model the index was built with.
     """
     query = config.pipeline.query
+    retriever: Runnable[str, list[Document]] = open_store(
+        embeddings, config.paths.vector_store
+    ).as_retriever(**config.retriever(query.retriever).kwargs())
+    if query.reranker is not None:  # disabled until S2-4 replaces it (FR-4)
+        reranker_spec = {**config.component(query.reranker).spec(), "base_retriever": retriever}
+        retriever = build_object(reranker_spec)
+    return retriever
 
+
+def _build_answer(config: RagConfig, llm: BaseChatModel) -> Runnable[dict[str, str], str]:
+    """The generation half: ``{"context": str, "question": str}`` in, answer text out.
+
+    Instructions and retrieved content stay in different chat roles (OWASP LLM01).
+    """
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", config.pipeline.query.prompt.system),
+            ("human", config.pipeline.query.prompt.human),
+        ]
+    )
+    return prompt | llm | StrOutputParser()
+
+
+def build_query_pipeline(config: RagConfig, *, require_index: bool = True) -> QueryPipeline:
+    """Build both halves of an answer from a loaded config.
+
+    With ``require_index`` (the CLI and evaluation), a missing index raises
+    :class:`NoIndexError` before any model is built. Without it (the API), a missing
+    index leaves ``retrieve`` as ``None`` and the LLM half is still built; with an
+    index, both halves are built either way.
+
+    Cannot mutate ``config``: it is frozen, and every component dict used here is a
+    fresh copy from ``spec()`` / ``kwargs()``. Deliberately silent (no progress
+    prints); front ends print their own progress.
+    """
+    has_index = store_exists(config.paths.vector_store)
+    if require_index and not has_index:
+        raise NoIndexError(
+            f"no index at '{config.paths.vector_store}'. Run rag-ingest first to build it "
+            f"from the corpus."
+        )
     llm = build_llm(config)
     # The same embedder ingestion used — build_embedder is the one place that choice
     # is made (see rag_qa.components).
-    embeddings = build_embedder(config)
-
-    retriever = open_store(embeddings, config.paths.vector_store).as_retriever(
-        **config.retriever(query.retriever).kwargs()
+    retrieve = build_retrieve(config, build_embedder(config)) if has_index else None
+    return QueryPipeline(
+        retrieve=retrieve,
+        answer=_build_answer(config, llm),
+        llm=llm,
+        corpus_root=config.paths.data,
     )
-    if query.reranker is not None:  # disabled until Phase 2 (FR-4)
-        reranker_spec = {**config.component(query.reranker).spec(), "base_retriever": retriever}
-        retriever = build_object(reranker_spec)
 
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", query.prompt.system),
-            ("human", query.prompt.human),
-        ]
-    )
+
+def build_rag_chain(config: RagConfig) -> Runnable[dict[str, str], dict[str, Any]]:
+    """The §0.4 chain, composed from the same parts as :func:`build_query_pipeline`.
+
+    **For** ``invoke`` **only, never for cancellable streaming** (DEC-14). Its
+    ``RunnablePassthrough.assign`` steps run under ``RunnableParallel``, which never
+    cancels its step tasks: a cancelled consumer returns while the generation runs on.
+    Front ends stream :func:`rag_qa.answering.stream_answer` instead.
+
+    Streaming it still yields ``question``, then the whole ``context`` in one chunk,
+    then ``answer`` token by token.
+    """
+    llm = build_llm(config)
+    retrieve = build_retrieve(config, build_embedder(config))
     to_prompt_inputs: RunnableLambda[dict[str, Any], dict[str, str]] = RunnableLambda(
         lambda x: {"context": format_docs(x["context"]), "question": x["question"]}
     )
-
     return (
-        RunnablePassthrough.assign(context=itemgetter("question") | retriever)
-        | RunnablePassthrough.assign(answer=to_prompt_inputs | prompt | llm | StrOutputParser())
+        RunnablePassthrough.assign(context=itemgetter("question") | retrieve)
+        | RunnablePassthrough.assign(answer=to_prompt_inputs | _build_answer(config, llm))
     )

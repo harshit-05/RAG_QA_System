@@ -1,7 +1,8 @@
 """The S0-5 deprecation gate as a pytest (S1-5, ISS-17's guard).
 
 Records warnings while importing every module **and** running the whole pipeline
-(ingest, build the chain, invoke, stream) with the fakes. It fails on any
+(ingest, build the chain, invoke, stream, and ``stream_answer``, the path every front
+end answers through since S2-1) with the fakes. It fails on any
 ``LangChainDeprecationWarning``, and on any ``DeprecationWarning`` except DEC-5's
 ``langchain-community`` sunset notice.
 
@@ -71,10 +72,11 @@ def violations(records: list[dict]) -> list[dict]:
 def test_no_deprecated_api_across_imports_and_the_whole_pipeline(fake_rag: Path) -> None:
     records = record_warnings(
         """
-        import rag_qa.cli, rag_qa.evaluate
+        import asyncio
+        import rag_qa.answering, rag_qa.cli, rag_qa.evaluate
         from rag_qa.config import load_config, check_imports
         from rag_qa.ingest import ingest
-        from rag_qa.chain import build_rag_chain
+        from rag_qa.chain import build_query_pipeline, build_rag_chain
         config = load_config()
         check_imports(config, config.references().values())
         ingest(config)
@@ -82,6 +84,11 @@ def test_no_deprecated_api_across_imports_and_the_whole_pipeline(fake_rag: Path)
         result = chain.invoke({"question": "How many staff?"})
         assert sorted(result) == ["answer", "context", "question"]
         assert list(chain.stream({"question": "How many staff?"}))
+        pipeline = build_query_pipeline(config)
+        async def answer():
+            return [e async for e in rag_qa.answering.stream_answer(pipeline, "How many staff?")]
+        assert asyncio.run(answer())
+        asyncio.run(pipeline.aclose())
         """,
         env={
             "RAG_CONFIG": str(fake_rag),

@@ -5,10 +5,11 @@
 
 ## Now
 
-**Next action: [S2-1](phase-2/S2-1-answer-stream.md)**: a shared answer stream, and
-Ctrl-C that cancels generation. Model fable, plan-first, on branch
-`feat/s2-1-answer-stream`. The order of the Phase 2 stories, and what each depends on,
-are in the Phase 2 table below.
+**Next action: review and commit [S2-1](phase-2/S2-1-answer-stream.md)** (implemented
+2026-10-02, uncommitted, on `feat/s2-1-answer-stream`). Verification 1–4 passed, including
+the real-Ollama Ctrl-C checks; 5 (CI) follows the push. Its Discovered section has an input
+for S2-7. Then S2-2. The order of the Phase 2 stories, and what each depends on, are in the
+Phase 2 table below.
 
 **The Phase 2 architecture pass is done** (2026-10-02).
 
@@ -212,7 +213,9 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
    and ~1–2 min full answers; the current small corpus ingests in minutes.
    Fine for Phase 0 proof. Consequence: **NFR-2 (<2 s first-token p95) is
    not achievable CPU-only** — by v1.0 either revise the SLO or plan GPU
-   serving. Flagged in GPU offload notes below.
+   serving. Flagged in GPU offload notes below. **Measured in S2-1 (2026-10-02):
+   254 s to first token** for mistral with k=5. Ollama ran it on 2 threads of this
+   i7-1255U, with about 6 GB free. Budget manual runs on that figure.
 4. **First run downloads models.** Ingestion pulls the MiniLM embedder
    (~90 MB) from HuggingFace on first use — needs network once.
 5. **Resolved (S0-1, S0-4), historical.** The parquet files were untracked,
@@ -281,6 +284,9 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
       prefill, the runner may stay busy up to the end of the prefill (5–15 s on CPU).
       That is expected, not a bug in our code; generating tokens after the cancel would
       be one.
+    - **Seen here in S2-1 (2026-10-02):** after a cancel during the prefill, the runner
+      finished the abandoned prompt evaluation, about 4 min on this host, and generated
+      nothing. A question asked during that time queues in Ollama behind it.
 22. **Ollama's OpenAI endpoint cannot set the context size, and defaults to 4k below
     24 GiB of VRAM** (this host, and a Colab T4). Prompts over it are truncated silently.
     The judge is therefore `rag-judge`, built from `eval/judge.Modelfile` with
@@ -360,7 +366,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
-| [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Todo |
+| [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Implemented 2026-10-02, in review |
 | [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Todo |
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Todo |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Todo |
@@ -519,6 +525,11 @@ leads with one of two things:
   It walks all of `.git` before discarding it. Performance only. Phase 2's
   incremental ingestion rewrites discovery around the manifest, so prune there
   (`Path.walk` is top-down, and pruning `folders[:]` in place fixes it).
+- **S2-7 — keep a client disconnect a cancel (found in S2-1).** Closing `stream_answer`
+  at a `yield` does not close the model stream before `aclose()` returns: langchain-core
+  1.6.3 never closes a sequence's inner generators, and the loop's finalizer closes them
+  about 20 iterations later. A cancel, which DEC-18 already relies on, closes them at once.
+  Detail in the S2-1 story, under Discovered.
 - **S2-1 — type the YAML boundary; add `py.typed` (found in S1-6).** Add
   `types-PyYAML` as a dev dependency so `pyyaml` stops being `Any`. An empty
   `src/rag_qa/py.typed` makes a misspelled first-party import read as "cannot
