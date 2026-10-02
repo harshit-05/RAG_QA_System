@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Reviewed twice 2026-10-02, both follow-ups applied; CI was green before them; awaiting the follow-ups' CI run, merge and tag |
+| **Status** | Done 2026-10-02 (PR #6; tag `v0.2` on `db75439`) |
 | **Closes** | — (phase exit; SRS §12 Phase 1) |
 | **Depends on** | S1-6, S1-7 |
 | **Model** | opus-fast |
@@ -163,4 +163,12 @@ reasoning: a rule you have to remember is a rule that gets forgotten).
 - **Additions:** the trust-boundary doc lines owed from S1-2's review
   (`registry.py` docstring, ARCHITECTURE.md §1.8, README); pre-flight caveats
   9–14 (Phase 1 lessons); ADR-015 marked superseded by ADR-020.
-- **Not run here:** `gh run list` and the tag. Both follow your push and merge.
+- **Run after the merge (2026-10-02):** `gh run list` shows success for the
+  PR (#6), the push to `main` and the `v0.2` tag. CI's Audit log prints "No known
+  vulnerabilities found" with no skipped table, so torch was audited.
+  `v0.2` is annotated and pushed, on `db75439` = `origin/main`, with version
+  0.2.0 in both files at the tag. All six commits carry `Refs:` trailers and
+  no AI attribution.
+- **PR #6's title is the branch name** ("chore/s1 8 phase 1 exit"):
+  `gh pr create --fill` falls back to it when a branch has several commits.
+  From S1-8 on, recipes pass `--title` explicitly.

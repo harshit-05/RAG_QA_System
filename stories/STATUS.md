@@ -5,21 +5,17 @@
 
 ## Now
 
-**Now: [S1-8](phase-1/S1-8-phase-1-exit.md) is verified and awaiting the
-maintainer** (2026-10-02): review, PR on `chore/s1-8-phase-1-exit`, green CI,
-rebase-merge, then pull `main` and tag its tip `v0.2`. PRs here are rebase-merged,
-so there is no merge commit, and the branch's own release commit predates its
-review follow-ups. Everything else in its Verification
-section ran and passed; see the story. **After the tag: the Phase 2 architecture
-pass** (WORKFLOW Step 1, fable, plan mode), then shard Phase 2. Inputs it must
-take: the re-deferred Phase 2 backlog lines below, the "API never supplies
-components" constraint, and the Phase 3 Docker rule from S1-7 (install with
-`uv sync` or `uv export`, never `pip install .`). Phase 2's first story bumps
-the version to `0.3.0.dev0`. Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
+**Next action: the Phase 2 architecture pass** (WORKFLOW Step 1, fable, plan
+mode), then shard Phase 2 (Step 2). **Phase 1 is complete and released as
+`v0.2`** (2026-10-02): tag on `db75439`, CI green on the PR, `main` and the
+tag. Inputs the pass must take: the re-deferred Phase 2 backlog lines below,
+the "API never supplies components" constraint (ARCHITECTURE.md §1.8), and
+NFR-2 / DEC-3 ahead of Phase 3. Phase 2's first story bumps the version to
+`0.3.0.dev0`. Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
 + follow-up `ddcd98f` (PR #1); S1-4 `eff50ea` + follow-up `a6f21b3` + DEC-13
 `20c4a6a` (PR #2); S1-5 `e3927a4` … `4efa53d` (PR #3, 8 commits); S1-6
 `ff61088` … `be545a4` (PR #4, 9 commits); S1-7 `6a50792` … `234f437` (PR #5,
-7 commits). **CI exists**: every story closes on a green run, and from S1-8 it
+7 commits); S1-8 `fe7c38e` … `db75439` (PR #6, 6 commits). **CI exists**: every story closes on a green run, and from S1-8 it
 gates ruff → mypy → pytest + coverage → pip-audit.
 
 **Commit and branch convention (maintainer, 2026-10-01):** Conventional Commits +
@@ -80,7 +76,7 @@ DEC-1/DEC-2/DEC-4 are resolved below.
 | Phase exit | Git tag | Package version |
 | --- | --- | --- |
 | Phase 0 | `v0.1` | 0.1.0 — **released 2026-09-25** (`ae15a23`) |
-| Phase 1 | `v0.2` | 0.2.0 |
+| Phase 1 | `v0.2` | 0.2.0 — **released 2026-10-02** (`db75439`) |
 | Phase 2 | `v0.3` | 0.3.0 |
 | Phase 3 (SRS complete) | `v1.0` | 1.0.0 |
 
@@ -212,7 +208,7 @@ Design: ARCHITECTURE.md §1.1–§1.7.
 | [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | Done 2026-10-01 (PR #3) |
 | [S1-6](phase-1/S1-6-types-and-lint.md) | Type annotations, ruff and mypy configuration | ISS-19, NFR-9, ISS-12 | S1-5 | Done 2026-10-02 (PR #4) |
 | [S1-7](phase-1/S1-7-cuda-extra.md) | GPU embedder path installable (CPU/CUDA torch variants) | FR-1 (GPU axis) | S1-1 | Done 2026-10-02 (PR #5) |
-| [S1-8](phase-1/S1-8-phase-1-exit.md) | Phase 1 exit: audit gate, doc hygiene, 0.2.0 | — (exit) | S1-6, S1-7 | Verified 2026-10-02; awaiting PR, CI and tag |
+| [S1-8](phase-1/S1-8-phase-1-exit.md) | Phase 1 exit: audit gate, doc hygiene, 0.2.0 | — (exit) | S1-6, S1-7 | Done 2026-10-02 (PR #6, `v0.2`) |
 
 CI lands in S1-2, not at the end, so every later story closes on green rather
 than the whole phase arriving unverified at once. Each gate is added by the
@@ -383,7 +379,7 @@ S0-5 LangChain 1.x LCEL chain with streaming · S0-7 docs layout · S0-6
 end-to-end proof. Per-story detail in `stories/phase-0/`; the Phase 0 table
 above is the index.
 
-**Phase 1 — version 0.2.0, tag `v0.2` pending the S1-8 merge (2026-10-02).**
+**Phase 1 — shipped as `v0.2` (`db75439`, 2026-10-02).**
 S1-1 frozen Pydantic config · S1-2 `_target_` allowlist + CI · S1-3 own loaders,
 recursive walk · S1-4 error handling, exit codes, real CLI · S1-5 Phase-0
 regression suite + coverage gate · S1-6 types and lint · S1-7 CPU/CUDA torch
