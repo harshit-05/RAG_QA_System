@@ -1811,7 +1811,7 @@ wheels = [
 
 [[package]]
 name = "rag-qa-system"
-version = "0.2.0.dev0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "docx2txt" },
