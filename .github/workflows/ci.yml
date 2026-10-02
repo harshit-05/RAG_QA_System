@@ -69,9 +69,13 @@ jobs:
       # `pip-audit` skips torch: it looks up `2.14.0+cpu` on PyPI, finds no such
       # release, and only warns. The CPU wheel is built from the same source release
       # as PyPI's 2.14.0, so the local label is stripped and torch is audited
-      # under its public version. The project itself is excluded (not on PyPI).
+      # under its public version. Only torch's label is rewritten, so any other local
+      # label stays visible to the audit. The project itself is excluded (not on PyPI).
+      # The freeze goes to a file and must be non-empty: GitHub's default shell has no
+      # pipefail, and pip-audit reports "no vulnerabilities" for an empty input.
       - name: Audit
-        run: >-
-          uv pip freeze --exclude-editable
-          | sed 's/+[a-z0-9.]*$//'
-          | uv run --no-sync pip-audit --no-deps --disable-pip --progress-spinner off -r /dev/stdin
+        run: |
+          set -o pipefail
+          uv pip freeze --exclude-editable | sed 's/^\(torch==.*\)+cpu$/\1/' > "$RUNNER_TEMP/audit.txt"
+          test -s "$RUNNER_TEMP/audit.txt"
+          uv run --no-sync pip-audit --no-deps --disable-pip --progress-spinner off -r "$RUNNER_TEMP/audit.txt"

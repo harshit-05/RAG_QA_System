@@ -79,7 +79,9 @@ prototype to production via a spec-driven story loop.
   what a run will have: check `ollama ps` and `ollama stop <model>` first.
 
 - The stack runs on LangChain 1.x (DEC-1, migrated in S0-5); app code never
-  imports `langchain_classic`, which arrives only transitively.
+  imports `langchain_classic`, which arrives only transitively. The disabled
+  reranker entry in `config.yaml` and the `registry.py` allowlist still name it
+  until Phase 2, so do not drop either.
 
 - Docker 29.8.1 installed. `gh` 2.101.0, authenticated as `harshit-05`; the
   token needs the `workflow` scope to push changes to `.github/workflows/`, so

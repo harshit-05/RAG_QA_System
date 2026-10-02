@@ -198,7 +198,7 @@ one blocks:
 uv run ruff check                       # lint
 uv run mypy                             # types
 uv run pytest --cov=rag_qa              # tests, with an 80% coverage floor
-uv pip freeze --exclude-editable | sed 's/+[a-z0-9.]*$//' \
+uv pip freeze --exclude-editable | sed 's/^\(torch==.*\)+cpu$/\1/' \
   | uv run --no-sync pip-audit --no-deps --disable-pip -r /dev/stdin   # known vulnerabilities
 ```
 

@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Verified 2026-10-02; awaiting review, push, CI and tag |
+| **Status** | Reviewed 2026-10-02, follow-up applied; CI was green before it; awaiting the follow-up's CI run, merge and tag |
 | **Closes** | — (phase exit; SRS §12 Phase 1) |
 | **Depends on** | S1-6, S1-7 |
 | **Model** | opus-fast |
@@ -140,6 +140,16 @@ reasoning: a rule you have to remember is a rule that gets forgotten).
     2:01;
   - the query, with the shipped `mistral` config unmodified (7.6 GB available
     after the maintainer freed RAM): exit 0, 7:06 including model load.
+- **First-review follow-up (2026-10-02):** the Audit step could pass while auditing
+  nothing. GitHub's default shell has no `pipefail`, and `pip-audit` on an empty
+  input prints "No known vulnerabilities found" and exits 0 (reproduced). The step
+  now sets `pipefail`, writes the freeze to a file and asserts it is non-empty.
+  Controls: real environment exit 0; a failing `uv pip freeze` exit 1. The label
+  rewrite is narrowed to `torch==…+cpu`, so another local label (`requests==2.19.0+local`)
+  stays visible. README's command matches, and CLAUDE.md's `langchain_classic`
+  line now says the reranker entry and allowlist still name it until Phase 2.
+  Not adopted: a scheduled audit or `--ignore-vuln` policy for advisories with no
+  fix (a live lookup can redden unrelated PRs) → backlog.
 - **The Audit step is not a plain `pip-audit`** (see Discovered). The story's
   literal command was run as well, and it reports torch as skipped.
 - **Additions:** the trust-boundary doc lines owed from S1-2's review
