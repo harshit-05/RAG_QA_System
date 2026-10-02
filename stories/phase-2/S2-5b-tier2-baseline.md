@@ -17,12 +17,17 @@ half of the Phase 2 exit holds. Design: ARCHITECTURE.md §2.1 DEC-15.
 
 ## Scope
 
-- **Surface the estimate first**, and let the maintainer choose local or Colab/Kaggle
+- **Set `num_thread` first**, unless an earlier story already did (STATUS.md backlog,
+  "S2-5b, first step"). It is part of the hashed llm spec, so it must precede the
+  baseline.
+- **Surface the estimate**, and let the maintainer choose local or Colab/Kaggle
   (CLAUDE.md GPU policy, caveats 16–18).
 - **The baseline run.** Long runs go in the foreground, with a `tee`'d log and the
   `tail -f` command given first.
-  1. Run `rag-eval generate` here with mistral, about 40 min. Check `ollama ps` and
-     `free -h` first (caveat 8).
+  1. Run `rag-eval generate` here with mistral. Check `ollama ps` and `free -h` first
+     (caveat 8). The estimate is about 40 min if answers take 1–2 min. S2-1 measured
+     254 s to first token on 2 threads with swapped weights (about 1.8 h for 25
+     questions), so time one question at the chosen `num_thread` and estimate from that.
   2. Run `ollama stop mistral`.
   3. Run `rag-eval score`, **twice**, into two output files. Locally that is about 3–4 h
      each, which is why Colab/Kaggle is the default here. The second scoring is what

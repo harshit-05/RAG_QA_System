@@ -5,11 +5,12 @@
 
 ## Now
 
-**Next action: review and commit [S2-1](phase-2/S2-1-answer-stream.md)** (implemented
-2026-10-02, uncommitted, on `feat/s2-1-answer-stream`). Verification 1–4 passed, including
-the real-Ollama Ctrl-C checks; 5 (CI) follows the push. Its Discovered section has an input
-for S2-7. Then S2-2. The order of the Phase 2 stories, and what each depends on, are in the
-Phase 2 table below.
+**Next action: push [S2-1](phase-2/S2-1-answer-stream.md) and open its PR** (committed
+as `1b923bf` on `feat/s2-1-answer-stream`; two reviews done, their follow-ups ready to
+commit). Verification 1–4 passed, including the real-Ollama Ctrl-C checks; 5 (CI) follows
+the push, and the story closes on green. Its Discovered section has an input for S2-7.
+Then S2-2. The order of the Phase 2 stories, and what each depends on, are in the Phase 2
+table below.
 
 **The Phase 2 architecture pass is done** (2026-10-02).
 
@@ -209,13 +210,19 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
    was pickled under the old LangChain — after the 1.x migration it will
    likely fail to unpickle. Any chain-construction check must re-ingest
    first; never debug an unpickle error there, just rebuild the index.
-3. **CPU latency expectations.** 7B on CPU: expect ~5–15 s to first token
+3. **CPU latency expectations.** 7B on CPU: Phase 0 measured ~5–15 s to first token
    and ~1–2 min full answers; the current small corpus ingests in minutes.
-   Fine for Phase 0 proof. Consequence: **NFR-2 (<2 s first-token p95) is
-   not achievable CPU-only** — by v1.0 either revise the SLO or plan GPU
-   serving. Flagged in GPU offload notes below. **Measured in S2-1 (2026-10-02):
-   254 s to first token** for mistral with k=5. Ollama ran it on 2 threads of this
-   i7-1255U, with about 6 GB free. Budget manual runs on that figure.
+   Consequence: **NFR-2 (<2 s first-token p95) is not achievable CPU-only** — by v1.0
+   either revise the SLO or plan GPU serving. Flagged in GPU offload notes below.
+   - **S2-1 measured 254 s to first token** for mistral with k=5 (2026-10-02). Budget
+     manual runs on that figure until it is re-measured.
+   - **The cause is a setting, not this CPU** (S2-1 second review). Ollama's journal
+     shows every mistral load with `NumThreads:2`: on this i7-1255U it counts only the
+     2 performance cores, out of 10 cores and 12 threads. The service also recorded a
+     2.3 GB swap peak, so the weights were partly swapped out. `ChatOllama` takes
+     `num_thread`, and the backlog line "num_thread" sets it before S2-5b.
+   - Before timing anything, check `free -h` and `ollama ps` (caveat 8), and read the
+     `NumThreads:` value from `journalctl -u ollama`.
 4. **First run downloads models.** Ingestion pulls the MiniLM embedder
    (~90 MB) from HuggingFace on first use — needs network once.
 5. **Resolved (S0-1, S0-4), historical.** The parquet files were untracked,
@@ -260,8 +267,13 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
     (verified; ARCHITECTURE.md §2.1, DEC-14). Stream `prompt | llm | parser` directly, as
     `stream_answer` does.
 16. **Tier-2 evaluation is hours-scale on CPU.** About 25 questions × 4 RAGAs metrics with
-    `gemma2:9b` take about 3–4 h to score, plus about 40 min to generate. Surface the
-    estimate before starting. Scoring defaults to Colab/Kaggle (GPU offload notes).
+    `gemma2:9b` take about 3–4 h to score.
+    - Generating takes about 40 min **if each answer takes ~1–2 min**. At S2-1's 254 s to
+      first token, generating alone is about 1.8 h (25 × 254 s) before any decoding.
+    - That figure ran on 2 threads with swapped weights (caveat 3). Re-measure after the
+      `num_thread` backlog line, with memory freed, then surface the estimate before
+      starting.
+    - Scoring defaults to Colab/Kaggle (GPU offload notes).
 17. **Never run the generator and the judge together.** mistral (~5 GB resident) and
     `gemma2:9b` do not both fit beside a desktop in 15 GB. Generate, run
     `ollama stop mistral`, then score. Caveat 8 applies to both.
@@ -366,7 +378,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
-| [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Implemented 2026-10-02, in review |
+| [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Committed `1b923bf`; reviewed twice; awaiting push and CI |
 | [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Todo |
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Todo |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Todo |
@@ -578,6 +590,21 @@ leads with one of two things:
   is OpenAI). DEC-15 settles both halves: the judge is `gemma2:9b` through Ollama's
   OpenAI endpoint, and a full sweep on CPU takes hours, so scoring offloads to
   Colab/Kaggle.
+- **S2-5b, first step — set Ollama's `num_thread` (found in S2-1's second review).**
+  Ollama loads mistral with `NumThreads:2` on this i7-1255U, which has 2 performance
+  cores, 10 cores and 12 threads. That is part of why S2-1 measured 254 s to first token
+  (caveat 3).
+  - Free memory first: `ollama stop`, close the desktop apps, `free -h`.
+  - Time one fixed golden question at `num_thread` 2, 6 and 10, and record the
+    time-to-first-token for each.
+  - Set the fastest on the Ollama entries in `config.yaml`, with the numbers in a
+    comment.
+  - It must land **before** the tier-2 baseline. The llm spec is hashed into the
+    fingerprint's `query` part, so adding it afterwards marks the baseline stale and
+    forces another multi-hour run. A different thread count can also change the
+    floating-point sums, and so, rarely, an answer.
+  - A small change on its own: config plus a measured comment. It can also ride S2-2 or
+    S2-3 if one of them is open first.
 - **S2-6 —** the ingestion manifest records the embedder's identity and dimension;
   refuse to open an index built with a different embedder (DEC-17).
 - **Phase 3 —** NFR-2 (<2 s first token) is unachievable CPU-only: revise the SLO

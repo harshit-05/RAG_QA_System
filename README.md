@@ -46,7 +46,7 @@ ollama pull mistral          # or: ollama pull phi3  (see Configuration)
 
 # put your PDF / DOCX / TXT / MD files in corpus/ (subfolders too), then:
 uv run rag-ingest            # builds the index in vectorstore/
-uv run rag-query             # ask questions; type 'exit' to quit
+uv run rag-query             # ask questions; Ctrl-C stops an answer, 'exit' quits
 ```
 
 Both commands take `--config PATH` to use another config file, and `--help`, which
@@ -157,6 +157,11 @@ for Phase 2.
   cited pages.
 - **"Sources" shows what was retrieved, not what was used.** Retrieval always returns five
   chunks, so even a refusal lists sources. A relevance cutoff is planned.
+- **Stopping an answer does not free Ollama at once.** Ctrl-C stops generation and returns
+  you to the prompt. If it lands while the model is still reading the prompt, Ollama
+  finishes that step first, and your next question waits behind it. How long that takes
+  depends on your CPU, the threads Ollama uses and free memory: up to about 4 minutes in
+  one test on a laptop CPU where Ollama ran on 2 threads with little free memory.
 - **Latency.** On CPU, answers take minutes, not seconds. The long-term target of under
   2 seconds to the first word needs GPU serving.
 - **The index is a pickle.** FAISS saves the index with Python's pickle format, which can
