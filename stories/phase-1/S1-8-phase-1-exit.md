@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | Verified 2026-10-02; awaiting review, push, CI and tag |
 | **Closes** | — (phase exit; SRS §12 Phase 1) |
 | **Depends on** | S1-6, S1-7 |
 | **Model** | opus-fast |
@@ -93,8 +93,56 @@ reasoning: a rule you have to remember is a rule that gets forgotten).
 
 ## Discovered
 
-(Filled during implementation.)
+- **A plain `pip-audit` never audits torch.** It looks `2.14.0+cpu` up on PyPI,
+  finds no such release, and only lists it under "skipped", with exit 0. The
+  verification's literal `uv run pip-audit` therefore passes while saying nothing
+  about the package with the most CVEs in the tree. CI's Audit step pipes
+  `uv pip freeze --exclude-editable`, with the local label stripped, into
+  `pip-audit --no-deps --disable-pip -r /dev/stdin`. The CPU wheel is the same
+  source release as PyPI's 2.14.0, so the same advisories apply. Negative
+  controls: `requests==2.19.0` fails it (3 PYSEC advisories), and so does
+  `torch==2.5.1` (4). No advisory is open against the real environment.
+- **Two ADR index anchors were broken since they were written** (ADR-010 and
+  ADR-015): GitHub keeps the underscores of `_target_` in heading slugs. Fixed,
+  and all 18 `.md` links in docs/, stories/, CLAUDE.md and README.md were checked
+  with a GitHub-style slugger.
+- **`src/rag_qa/__init__.py`'s module list** was missing `loaders` and
+  `components` (S1-3). Fixed with the version bump.
+- **Two rows of the issue map** in `tests/test_config_regressions.py` still
+  pointed forward ("pip-audit → S1-8", "mypy → S1-6"). Both now name the CI
+  step that guards them.
+- **The exit criterion, read literally against that map:** of the 21 Appendix A
+  issues, 14 have a CI guard: 01, 02, 03 (partly), 04, 05, 06, 07, 08, 09, 11,
+  12, 13, 17 and 19. ISS-21's REPL half has one too. The rest cannot be CI
+  checks:
+  - ISS-10 is structural;
+  - ISS-14 and ISS-15 are missing features (Phase 2);
+  - ISS-16 is a documented invariant;
+  - ISS-20 is the README.
+
+  Two are real gaps, both stated in the map rather than hidden:
+  - ISS-03's bare model string passes load, because leaf kwargs are open. It is
+    owned by Phase 2's reranker story.
+  - ISS-18 is a standalone script that CI does not run. It was fixed and checked
+    by hand in S1-4.
+
+  "Would have caught every Phase-0 bug" holds for every bug that code or config
+  could reintroduce.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **Fresh-clone step:** `git clone .` would clone the committed `main`, not this
+  story's uncommitted tree. The scratch "clone" was therefore built from
+  `git ls-files` with working-tree contents. That is the same file set, since the
+  story adds no untracked files. Results:
+  - `uv sync`, 0 `nvidia-*` packages, torch `2.14.0+cpu`, version 0.2.0;
+  - `rag-ingest`: 561 pages, 1,708 chunks (the `v0.1` count), 0 failed, exit 0,
+    2:01;
+  - the query, with the shipped `mistral` config unmodified (7.6 GB available
+    after the maintainer freed RAM): exit 0, 7:06 including model load.
+- **The Audit step is not a plain `pip-audit`** (see Discovered). The story's
+  literal command was run as well, and it reports torch as skipped.
+- **Additions:** the trust-boundary doc lines owed from S1-2's review
+  (`registry.py` docstring, ARCHITECTURE.md §1.8, README); pre-flight caveats
+  9–14 (Phase 1 lessons); ADR-015 marked superseded by ADR-020.
+- **Not run here:** `gh run list` and the tag. Both follow your push and merge.

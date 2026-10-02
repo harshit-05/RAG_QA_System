@@ -5,18 +5,20 @@
 
 ## Now
 
-**Next action: [S1-8](phase-1/S1-8-phase-1-exit.md)**, the last Phase 1 story and the
-Phase 1 exit (`v0.2`), in a fresh session. It covers the `pip-audit` gate, doc
-hygiene, a literal check of the exit criterion against the issue map in
-`tests/test_config_regressions.py`, version 0.2.0, and the tag. S1-8 notes from S1-7: audit the installed environment
-with `pip-audit`, not the lock (it now records both torch variants); the Phase 3
-Docker image must install with `uv sync` or `uv export` (they honour the torch
-groups), never `pip install .`. Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
+**Now: [S1-8](phase-1/S1-8-phase-1-exit.md) is verified and awaiting the
+maintainer** (2026-10-02): review, PR on `chore/s1-8-phase-1-exit`, green CI,
+merge, then tag `v0.2` on the merge commit. Everything else in its Verification
+section ran and passed; see the story. **After the tag: the Phase 2 architecture
+pass** (WORKFLOW Step 1, fable, plan mode), then shard Phase 2. Inputs it must
+take: the re-deferred Phase 2 backlog lines below, the "API never supplies
+components" constraint, and the Phase 3 Docker rule from S1-7 (install with
+`uv sync` or `uv export`, never `pip install .`). Phase 2's first story bumps
+the version to `0.3.0.dev0`. Done so far: S1-1 `b22a37a`; S1-2 `1f1d6ff` + follow-up `f68eee3`; S1-3 `3b0e77f`
 + follow-up `ddcd98f` (PR #1); S1-4 `eff50ea` + follow-up `a6f21b3` + DEC-13
 `20c4a6a` (PR #2); S1-5 `e3927a4` … `4efa53d` (PR #3, 8 commits); S1-6
 `ff61088` … `be545a4` (PR #4, 9 commits); S1-7 `6a50792` … `234f437` (PR #5,
-7 commits). **CI exists**: every story closes on a green run. Run the rest
-in the **Depends** order of the Phase 1 table below.
+7 commits). **CI exists**: every story closes on a green run, and from S1-8 it
+gates ruff → mypy → pytest + coverage → pip-audit.
 
 **Commit and branch convention (maintainer, 2026-10-01):** Conventional Commits +
 Conventional Branch, as set out in CLAUDE.md's hard rules. Story and SRS IDs go in a `Refs:` trailer,
@@ -103,40 +105,17 @@ The final story of each phase performs the tag + version bump at close-out.
       Docker 29.6.2 ✓ (Phase 3), disk 311 GB free ✓. **No MCP servers are
       required for any phase** — built-in tools cover the whole workflow.
 
-## Pre-flight caveats (read before the first story session)
+## Pre-flight caveats (read before a story session)
 
-1. **Three commits pending (maintainer commits manually).** S0-1 and S0-2 ran
-   before the baseline commit, so the index holds all three.
+Numbered because stories cite them by number; resolved ones stay as one line so
+those references still land. Items 9 onward were learned in Phase 1; each one
+cost a session something.
 
-   **`git reset` silently undoes S0-1.** Unstaging restores the index to HEAD,
-   where the binaries are tracked again; `.gitignore` does **not** untrack an
-   already-tracked file, so a plain `git add -A && git commit` after a reset
-   keeps ~10 MB of index/parquet/media in the tree and ISS-09 quietly fails.
-   (This already happened once on 2026-09-18 and was re-applied.) If the index
-   ever looks wrong, check with
-   `git ls-files | grep -E '__pycache__|vectorstore/|\.webm|\.save|\.parquet'` —
-   it must print nothing. The recipe below is safe to re-run from any state:
-
-   ```bash
-   # 1 — baseline: pre-existing v2 edits + workflow kit + Phase 0 arch pass
-   git reset
-   git add v2/config.yaml v2/file_processor.py v2/pipeline_builder.py v2/check_config.py \
-           CLAUDE.md SRS.md WORKFLOW.md ARCHITECTURE.md stories/
-   git commit -m "pre-v0.1 baseline: workflow kit, Phase 0 architecture, uncommitted v2 edits"
-
-   # 2 — S0-1: the rm --cached IS the story; files stay on disk
-   git rm -r -q --cached __pycache__ v1/__pycache__ vectorstore/db_faiss \
-          "Screencast from 30-07-25 04_25_00 PM IST.webm" v1/docx_processor.py.save \
-          docs/0000.parquet docs/train.parquet
-   git add .gitignore scripts/fetch_dataset.py
-   git add -u                     # stages the on-disk deletions + the rename
-   git commit -m "S0-1: repo hygiene — gitignore, purge tracked artifacts (ISS-09)"
-
-   # 3 — S0-2
-   git add pyproject.toml uv.lock .python-version src/rag_qa/__init__.py
-   git commit -m "S0-2: uv project — pyproject, pinned 3.12, lockfile (ISS-08)"
-   ```
-
+1. **Resolved (2026-09-18), historical.** The three pending commits (baseline,
+   S0-1, S0-2) landed as `ee86e1f`, `f702dc8` + `e781b17` and `0987c60`. The
+   lesson still holds: `git reset` does not untrack anything, and `.gitignore`
+   never untracks an already-tracked file. `tests/test_repo_hygiene.py` now reads
+   `git ls-files` on every CI run and fails if an artifact is tracked (ISS-09).
 2. **Stale FAISS index trap (S0-5/S0-6).** `vectorstore/db_faiss/index.pkl`
    was pickled under the old LangChain — after the 1.x migration it will
    likely fail to unpickle. Any chain-construction check must re-ingest
@@ -148,9 +127,9 @@ The final story of each phase performs the tag + version bump at close-out.
    serving. Flagged in GPU offload notes below.
 4. **First run downloads models.** Ingestion pulls the MiniLM embedder
    (~90 MB) from HuggingFace on first use — needs network once.
-5. **`docs/` parquet files have no loader** — S0-1 untracks them and moves
-   `docs/dataset.py` to `scripts/`; after S0-1 the corpus dir holds only the
-   three PDFs.
+5. **Resolved (S0-1, S0-4), historical.** The parquet files were untracked,
+   `docs/dataset.py` became `scripts/fetch_dataset.py`, and `corpus/` holds only
+   the three PDFs.
 6. **PyTorch index trap (S0-2).** `download.pytorch.org/whl/cpu` hosts stale
    `langchain-community` releases. Declared as a general index it makes uv
    silently resolve the whole stack to LangChain 0.3.x. It must be
@@ -161,7 +140,29 @@ The final story of each phase performs the tag + version bump at close-out.
    `num_ctx: 4096`, `k: 5`. If answers look ungrounded, check these first.
 8. **Memory at S0-6.** This host showed only 4.3 GB free with desktop apps
    open (2026-09-18). Run `free -h` before the proof; use `phi3` if under
-   ~6 GB free, and record which model produced the transcript.
+   ~6 GB free, and record which model produced the transcript. Run `ollama ps`
+   first: Ollama keeps the last model resident for ~5 min, so `free -h`
+   under-reports, and `ollama stop <model>` gives that memory back (S1-1).
+
+9. **Scratch ingests set both paths.** Any command that ingests a scratch corpus
+   sets `RAG_DATA_PATH` **and** `RAG_VECTOR_STORE_PATH`. With only the first,
+   the scratch build overwrites the real index (S1-3, S1-4).
+10. **Check a guard the way CI runs it.** A plain `uv run` re-syncs the
+    environment first, so it can repair the very state a check is meant to
+    catch and then pass. Guards on the installed environment use
+    `uv run --no-sync` (S1-7).
+11. **Never gate warnings with `-W error` on the command line.**
+    `langchain_core` resets the warning filters on import, so the gate cannot
+    fail. Record warnings in-process, as `tests/test_deprecations.py` does (S0-5,
+    S1-5).
+12. **A plain `pip-audit` skips torch.** It looks up `2.14.0+cpu` on PyPI, finds
+    no such release and only warns. CI's Audit step strips the local label, and a
+    negative control showed that an old torch then fails the gate (S1-8).
+13. **Pushing a workflow change needs `gh`'s `workflow` scope.** A re-login drops
+    it, and the push is refused. Run `gh auth status` after any re-login (S1-7).
+14. **Attack a security check; don't only confirm it accepts the good input.**
+    The prefix-only allowlist passed every positive test and was bypassed twice
+    (S1-2, ADR-020).
 
 ## GPU offload notes (nothing *requires* GPU; Colab/Kaggle available)
 
@@ -209,7 +210,7 @@ Design: ARCHITECTURE.md §1.1–§1.7.
 | [S1-5](phase-1/S1-5-regression-suite.md) | Phase-0 regression suite and coverage gate | ISS-07, NFR-8 | S1-2, S1-4 | Done 2026-10-01 (PR #3) |
 | [S1-6](phase-1/S1-6-types-and-lint.md) | Type annotations, ruff and mypy configuration | ISS-19, NFR-9, ISS-12 | S1-5 | Done 2026-10-02 (PR #4) |
 | [S1-7](phase-1/S1-7-cuda-extra.md) | GPU embedder path installable (CPU/CUDA torch variants) | FR-1 (GPU axis) | S1-1 | Done 2026-10-02 (PR #5) |
-| [S1-8](phase-1/S1-8-phase-1-exit.md) | Phase 1 exit: audit gate, doc hygiene, 0.2.0 | — (exit) | S1-6, S1-7 | Todo |
+| [S1-8](phase-1/S1-8-phase-1-exit.md) | Phase 1 exit: audit gate, doc hygiene, 0.2.0 | — (exit) | S1-6, S1-7 | Verified 2026-10-02; awaiting PR, CI and tag |
 
 CI lands in S1-2, not at the end, so every later story closes on green rather
 than the whole phase arriving unverified at once. Each gate is added by the
@@ -239,46 +240,83 @@ be run whenever convenient before S1-8.
 
 ## Backlog
 
-Every line below is either **claimed by a story** or **explicitly deferred with a
-reason**. Reconciled in the Phase 1 architecture pass, 2026-09-25.
+Reconciled at the Phase 1 exit (S1-8, 2026-10-02). Every Phase 1 line is either
+**closed** by the story named, or **re-deferred** with a phase and a reason. The
+detail behind each closed line is in its story file.
 
-### Claimed by a Phase 1 story
+### Closed in Phase 1
 
-- `scripts/fetch_dataset.py` (moved from `docs/dataset.py` in S0-1) uses a
-  HuggingFace `/blob/` URL that downloads HTML, no timeout, and writes into
-  the corpus dir (ISS-18) → **S1-4**.
-- Loader selection via `pipeline.ingestion.loaders` keyed by extension; drop
-  the `extensions` key from `_target_` dicts so there is one instantiation
-  path (`build_object({**cfg, "file_path": path})`) → **S1-3** (DEC-8).
-- `build_rag_chain` must not mutate the config it is given → **S1-1**, where it
-  falls out of a frozen Pydantic model (DEC-6). Pre-S0-5, `resolve_ref` handed
-  back a live reference into the config dict and the next line wrote a
-  constructed retriever into it. S0-5 fixed the instance (`chain.py:72` now
-  copies); S1-1 removes the class of bug by only handing out copies.
-- Embedder resolution is duplicated: `chain.py:66` and `ingest.py:91` both
-  do `build_object(resolve_ref(cfg, cfg["pipeline"]["ingestion"]["embedder"]))`.
-  The two must agree or the index and queries use different vectors — a silent
-  wrong-answer bug, not a crash → **S1-3**, as `components.build_embedder`.
-- `vectorstore.create_store`/`open_store` take the whole config to read one key
-  (`vector_store_path`). Narrow to the path itself so the Phase 3 store swap has
-  a smaller contract → **S1-1**.
-- Error handling: ISS-05 (collect ingestion failures, non-zero exit) and
-  ISS-06 (REPL try/except around invoke) → **S1-4** (DEC-9).
-- `rag-ingest` and `rag-query` take no arguments, so `rag-ingest --help` starts
-  a real ingestion run. Add `argparse` with `--help` and `--config` → **S1-4**.
-- Malformed configs fail with raw internal errors instead of actionable ones:
-  `paths: {data: }` raises a `pathlib` `TypeError`, an empty YAML file raises
-  `AttributeError` on `NoneType`. The Pydantic schema (FR-8) is the right place
-  to fix this, not ad-hoc guards in `load_config` → **S1-1**.
-- Turn the S0-5 deprecation gate into a pytest (record warnings in-process,
-  allow only the DEC-5 sunset notice, keep the negative control). Never use a
-  command-line `-W error` gate here: `langchain_core` overrides it on import
-  → **S1-5**.
-- GPU embedder path is declarable but not installable: the `_cuda` embedder
-  entries need a CUDA torch build, while the lockfile pins CPU-only torch
-  (DEC-1 rule 2) → **S1-7** (DEC-12).
+- **S1-1:** the config stops being mutable (`build_rag_chain` gets fresh copies
+  only); `create_store` / `open_store` take a path, not the whole config;
+  malformed configs (`paths: {data: }`, an empty YAML) fail with a `ConfigError`
+  instead of a `TypeError` / `AttributeError`.
+- **S1-2:** the `_target_` allowlist (ISS-04). The trust-boundary *doc lines*
+  from its second review were written in S1-8: `registry.py` docstring,
+  ARCHITECTURE.md §1.8, and README "Known limitations".
+- **S1-3:** loaders selected by extension through `pipeline.ingestion.loaders`
+  (DEC-8); embedder resolution in one place (`components.build_embedder`).
+- **S1-4:** ISS-05 / ISS-06 error handling and exit codes (DEC-9, DEC-13);
+  `argparse` with `--help` / `--config`; `fetch_dataset.py` (ISS-18); ignored
+  files counted and symlinks never followed (two S1-3 leftovers).
+- **S1-5:** the deprecation gate as a pytest; CI on uv-managed Python;
+  two-dot extension keys rejected; ADR-009 as a runtime test.
+- **S1-6:** ruff from its defaults plus `E501`; `warn_unreachable` (ISS-12's
+  guard); the private-field test made behavioural.
+- **S1-7:** the GPU embedder path installable (DEC-12).
+- **S1-8:** the S1-1 doc items (Ollama `keep_alive` vs `free -h`, now in
+  caveat 8 and CLAUDE.md; `gemma2:9b` in CLAUDE.md's environment facts). The
+  "scratch ingests set both paths" habit is now pre-flight caveat 9.
 
-### Re-deferred or dropped in the Phase 1 pass
+### Re-deferred at the Phase 1 exit
+
+- **Phase 2 — prompt placeholder check (FR-8 follow-up, found in S1-1).** A
+  `human` prompt missing `{context}` silently answers without retrieval. One
+  validator on `Prompt`. S1-5 left it open, as the board allowed. It belongs with
+  the Phase 2 evaluation harness, which is what would catch an ungrounded
+  answer anyway. Ride the first Phase 2 story that touches `schema.py`.
+- **Phase 2 — the API must never let a request supply or override components
+  (S1-2 second review).** A constraint for the Phase 2 architecture pass, with
+  the optional load-time guard that rejects `trust_remote_code` anywhere in the
+  config. Re-deferred because it only matters once the config is reachable from
+  outside the host.
+- **Phase 2 — CLI polish (found in S1-4).** No single item is worth a story, so
+  batch them as one story when Phase 2 is sharded, or let them ride the first
+  story that touches `cli.py` / `ingest.py`:
+  - `rag-query` startup is unguarded: Ollama being down
+    (`validate_model_on_init`) and Ctrl-C while models load both print a
+    traceback. One startup try/except with a clean message.
+  - The connection error doesn't name Ollama (`ConnectError: [Errno 111]`). Add
+    the hint "Is Ollama running? `systemctl status ollama`", and stop the empty
+    `Answer:` header printing before the error.
+  - Zero-count summary lines ("Skipped 0 symlink(s)") print on every run; print
+    them only when nonzero.
+  - An unreadable corpus *root* reports `./: PermissionError`, exit 1. "Corpus
+    directory not readable" with exit 2 would match "not found". "Failed N
+    file(s)" also counts folders now; say "item(s)".
+  - `fetch_dataset.py`: its corpus guard checks only the repo's `corpus/`, not
+    `paths.data` / `RAG_DATA_PATH`; nothing checks the `PAR1` header; and
+    `requests` is undeclared (transitive only).
+- **Phase 2 — the walk descends into ignored trees** (found in S1-3 and S1-4).
+  It walks all of `.git` before discarding it. Performance only. Phase 2's
+  incremental ingestion rewrites discovery around the manifest, so prune there
+  (`Path.walk` is top-down, and pruning `folders[:]` in place fixes it).
+- **Phase 2 — type the YAML boundary; add `py.typed` (found in S1-6).** Add
+  `types-PyYAML` as a dev dependency so `pyyaml` stops being `Any`. An empty
+  `src/rag_qa/py.typed` makes a misspelled first-party import read as "cannot
+  find module". Both are small and optional; ride the first story that touches
+  `config.py` or packaging.
+- **Phase 3 — the parity tests and the corpus PDF they read** (found in S1-3).
+  They are accepted until `langchain-community` leaves. Removing that PDF before
+  then fails them loudly, which is right.
+- **On the first real GPU run — CUDA 12 fallback (found in S1-7).** `cu130`
+  wheels need a recent NVIDIA driver, and this host cannot check that. If
+  Colab/Kaggle refuse, add a `cuda12` variant on `cu128`, which caps torch at 2.11.
+  This is triggered by an event, not by a phase.
+- **Accepted, no action — torch parity between the variants (found in S1-7).**
+  CUDA resolves `2.14.1+cu130`, CPU stays at `2.14.0+cpu`.
+  `uv lock --upgrade-package torch` aligns them if it ever matters.
+
+### Re-deferred or dropped in the Phase 1 architecture pass (2026-09-25)
 
 - **Dropped — device selection as one env-driven setting.** The item assumed
   `pydantic-settings` interpolates `device: ${RAG_EMBED_DEVICE:-cpu}` inside
@@ -296,136 +334,6 @@ reason**. Reconciled in the Phase 1 architecture pass, 2026-09-25.
 - **Not yet storied — per-loader splitter strategies** (SRS §7.2): chunking
   configurable per document type. The `_target_` mechanism already supports it;
   it needs more splitter entries and a per-loader default, not new architecture.
-
-### Found in S1-1 (2026-09-26)
-
-- **Folded into the S1-6 story (2026-10-01) — ruff's default is now 788 rules.** Ruff 0.16 widened its
-  defaults well beyond `E4/E7/E9/F`, so S1-6's "explicit rule set rather than the
-  default — at minimum `E`, `F`, `I`, `B`, `UP`" would *narrow* the gate. Start
-  from the default and `extend-select`/`ignore` with reasons.
-- **FR-8 follow-up — prompt placeholders unchecked.** A `human` prompt missing
-  `{context}` silently answers without retrieval. One validator on `Prompt`.
-  Not yet storied; small enough to ride S1-5 or S1-6 if the maintainer agrees.
-- **For S1-8 doc hygiene.** (a) Ollama keeps the last model resident about
-  5 min (`keep_alive`), so pre-flight caveat 8's `free -h` under-reports — run
-  `ollama ps` / `ollama stop <model>` first. (b) `gemma2:9b` is now pulled; add
-  it to CLAUDE.md's environment facts.
-
-### Found in S1-2 (2026-09-29)
-
-- **Done in S1-5 — pin CI to uv-managed Python.** CI ran
-  on the runner's system Python 3.12.3; this host develops on uv-managed
-  3.12.13. `.python-version` says only `3.12`, and uv prefers a matching system
-  interpreter. Add `UV_PYTHON_PREFERENCE: only-managed` to the job env and
-  correct the `cache-python` comment, which wrongly claims the uv-managed build
-  is used.
-- **`config.yaml` is trusted input, like code — state it (second review,
-  2026-09-30).** The allowlist restricts which classes a config can build, not the
-  kwargs it passes them. `HuggingFaceEmbeddings` forwards `model_kwargs` into
-  `SentenceTransformer`, so `trust_remote_code: true` plus someone else's HF repo
-  runs that repo's Python. ISS-04 stays closed (the SRS requirement is an
-  allowlist, and that is met), but the trust boundary needs saying where ISS-16
-  says it for the FAISS index: in the `registry.py` docstring and ARCHITECTURE §1,
-  "never load a config from an untrusted source". Cheap optional guard: reject
-  `trust_remote_code` anywhere in the config at load, beside the prefix check.
-  **Proposed owners:** the doc lines → S1-8 doc hygiene; the constraint that the
-  Phase 2 API must never let a request supply or override components → Phase 2
-  architecture pass. Full finding in the S1-2 story, "Second review".
-
-### Found in S1-3 (2026-09-30)
-
-- **For S1-4 — ignored files leave no trace.** Since `ddcd98f`, hidden paths and
-  `~$` lock files are neither listed nor counted. SRS §7.1 asks for skip-and-report,
-  and a top-level dotfile that v0.1's `os.listdir` *did* ingest is now silently
-  dropped. A one-line count in `IngestReport.summary()` keeps it honest without
-  listing all of `.git`.
-- **For S1-4 — symlinks are inconsistent.** Symlinked files are followed, even
-  outside the corpus; symlinked directories are not (3.12 `rglob`). Pick one rule
-  and state it in `discover_files`. Detail in the S1-3 story, "Second review".
-- **Done in S1-5 — two-dot extension keys pass validation but never match.**
-  `".tar.gz"` is accepted, yet `Path.suffix` is `.gz`. Reject keys with a second
-  dot in `Ingestion.check_extensions`, with a regression case.
-- **Done in S1-5 — the ADR-009 check should be a runtime test.** The grep
-  `^(from|import) .*chain` false-positives on `langchain_core`; "importing
-  `rag_qa.ingest` leaves `rag_qa.chain` unloaded" is the reliable form.
-- **Folded into the S1-6 story (2026-10-01) — one test reads a private field** (`splitter._chunk_size` in
-  `test_components.py`). Test behaviour instead: split a long text, check chunk
-  lengths.
-- **Parity tests depend on `corpus/`** (the real 13-page PDF in
-  `test_loaders.py`). Acceptable: they are removed with `langchain-community` in
-  Phase 3. Removing that PDF before then fails them loudly, which is right.
-- **Backlog — the walk still traverses hidden trees before discarding them.**
-  `rglob` walks all of `.git` and then filters. Performance only; prune with
-  `os.walk` if a corpus ever holds a large hidden tree.
-- **Habit, for every story's verification:** any command that ingests a scratch
-  corpus sets **both** `RAG_DATA_PATH` and `RAG_VECTOR_STORE_PATH`. With the
-  first alone, the scratch build overwrites the real index. S1-3's step 3 is
-  fixed; S1-4's step 2 has the same bug and is fixed in S1-4.
-
-### Found in S1-4 (2026-10-01)
-
-Small follow-ups; no single one is worth a story. Batch them into one "CLI polish"
-story, or ride whichever story next touches the file. They cover the CLI front
-ends, startup handling and `fetch_dataset.py`:
-
-- **`rag-query` startup is still unguarded.** Ollama being down
-  (`validate_model_on_init`) and Ctrl-C while models load both print a
-  traceback: they happen before the REPL's boundary exists. One startup
-  try/except with a clean message.
-- **The connection error doesn't name Ollama.** `Error: ConnectError: [Errno 111]
-  Connection refused` (seen live). Add a hint on connection failures: "Is Ollama
-  running? `systemctl status ollama`". Also, an empty `Answer:` header prints
-  before the error.
-- **Zero-count summary lines print on every run** ("Skipped 0 symlink(s)",
-  "Ignored 0 hidden or lock file(s)"). Print them only when nonzero.
-- **An unreadable corpus *root* is reported as `./: PermissionError`, exit 1.**
-  "Corpus directory not readable" with exit 2 would match "not found". The
-  summary's "Failed N file(s)" also counts folders now; reword it to "item(s)".
-- **`fetch_dataset.py`.** Its corpus guard checks only the repo's own `corpus/`,
-  not a configured `paths.data` / `RAG_DATA_PATH`. Nothing checks the `PAR1`
-  header, so a 200 response carrying HTML would be saved as parquet again.
-  `requests` is undeclared (transitive only).
-- **Backlog — the walk still descends into ignored trees** (`.git`) before
-  discarding them. `Path.walk` is top-down, so pruning `folders[:]` in place
-  would fix it.
-
-### Found in S1-5's review (2026-10-01)
-
-- **Folded into the S1-6 story (2026-10-01) — turn on mypy's `warn_unreachable`.** It is the only guard for
-  ISS-12 (dead code after `return`): ruff 0.16 has no unreachable-code rule, and
-  mypy flags exactly that shape (both checked). The ISS → guard table in
-  `tests/test_config_regressions.py` names S1-6 as the owner; update that row
-  when it lands.
-
-### Found in S1-6 (2026-10-02)
-
-- **Backlog — type the YAML boundary.** `yaml` is one of mypy's
-  `ignore_missing_imports` overrides, so `pyyaml` is `Any`. Adding `types-PyYAML` as a dev dependency would check it.
-  Small and optional; ride whichever story next touches `config.py`.
-- **Backlog — add a `py.typed` marker to `src/rag_qa/`.** A misspelled first-party
-  import (`from rag_qa.vectorstor import …`) is caught by mypy since the review
-  scoped `ignore_missing_imports`, but reported as "module is installed, but missing
-  library stubs or py.typed marker". An empty `py.typed` file makes it read as a
-  plain "cannot find module". Cosmetic; it also tells downstream users that the
-  package ships its types.
-- The three S1-5 board items (ruff defaults, `warn_unreachable`, the private-field
-  test) are done; `E501` is on at 100 columns. CI now gates ruff → mypy → pytest.
-
-### Found in S1-7 (2026-10-02)
-
-- **Backlog — CUDA 12 fallback, if Colab/Kaggle drivers are too old for CUDA 13.**
-  `cu130` is the only CUDA index carrying torch 2.14, and its wheels need a recent
-  NVIDIA driver; this host has no GPU, so that was never checked. If the first
-  real GPU run fails on the driver, add a `cuda12` variant on `cu128`, which caps
-  torch at 2.11.
-- **Backlog — torch parity between the variants.** CUDA resolves `2.14.1+cu130`,
-  CPU stays at `2.14.0+cpu`. Accepted for now; `uv lock --upgrade-package torch`
-  aligns them if it ever matters.
-- **Lesson, already applied:** a guard has to be checked as CI runs it. A plain
-  `uv run` re-syncs the environment first, so the original guard would have
-  repaired the very trap it was meant to catch and then passed. This was shown in
-  a scratch environment: with torch removed, `uv run` printed "Installed 1
-  package" and passed, while `uv run --no-sync` failed.
 
 ### Later phases
 
@@ -461,6 +369,13 @@ S0-2 uv project · S0-3 single package · S0-4 config repair + corpus rename ·
 S0-5 LangChain 1.x LCEL chain with streaming · S0-7 docs layout · S0-6
 end-to-end proof. Per-story detail in `stories/phase-0/`; the Phase 0 table
 above is the index.
+
+**Phase 1 — version 0.2.0, tag `v0.2` pending the S1-8 merge (2026-10-02).**
+S1-1 frozen Pydantic config · S1-2 `_target_` allowlist + CI · S1-3 own loaders,
+recursive walk · S1-4 error handling, exit codes, real CLI · S1-5 Phase-0
+regression suite + coverage gate · S1-6 types and lint · S1-7 CPU/CUDA torch
+variants · S1-8 audit gate, doc hygiene, release. As delivered:
+ARCHITECTURE.md §1.8; per-story detail in `stories/phase-1/`.
 
 **Architecture passes.** Phase 0 confirmed 2026-09-18 (DEC-1/2/4, later DEC-5);
 Phase 1 confirmed 2026-09-25 (DEC-6 … DEC-12), sharded into S1-1 … S1-8.
