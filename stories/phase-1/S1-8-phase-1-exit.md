@@ -172,3 +172,26 @@ reasoning: a rule you have to remember is a rule that gets forgotten).
 - **PR #6's title is the branch name** ("chore/s1 8 phase 1 exit"):
   `gh pr create --fill` falls back to it when a branch has several commits.
   From S1-8 on, recipes pass `--title` explicitly.
+
+## Manual test of the released `v0.2` (2026-10-02)
+
+Run against a scratch clone of the tag, never the real index (its timestamps
+were checked unchanged afterwards). CI is hermetic, so this covers what it
+fakes: the real Ollama, the real embedder and a real terminal.
+
+| # | Check | Result |
+| --- | --- | --- |
+| 1 | `--help` on both commands | Pass: exit 0 in ~0.5 s, exit codes shown, no work started |
+| 2 | Bad configs: typo, bad reference, `os.system` target, empty, missing file | Pass: one-line reason, exit 2, no traceback |
+| 3 | Corrupt PDF + unreadable folder | Pass: both named, good files indexed, exit 1, "rebuilt without them". New: pypdf's warnings leak above the banner |
+| 4 | Nested folders, `.TXT`, `.xyz`, symlink, hidden and lock files | Pass: all as designed and reported |
+| 5 | `rag-query` with no index | Pass: "no index … Run rag-ingest", exit 2 |
+| 6 | `--config` run from `/`; relative `RAG_VECTOR_STORE_PATH` | Pass: config paths anchor to the config file, env paths to the cwd |
+| 7 | Grounding, phi3: YOLOv8, GLIDER, capital of Australia | YOLOv8 correct and deterministic; refusal correct; GLIDER unfaithful (known, generation side) |
+| 8 | Ollama stopped and restarted mid-session | Pass: three errors survived, recovered after the restart |
+| 9 | Ctrl-C at the prompt / while loading / mid-answer | Prompt: pass. Loading: traceback (known). Mid-answer: interrupts display, but blocks ~43 s until Ollama finishes (new) |
+
+New findings went to the board (STATUS.md backlog): no `readline` at the prompt,
+pypdf warning noise, and Ctrl-C not cancelling generation, which is an input to
+the Phase 2 architecture pass. None needs a `v0.2.1`: nothing produces a wrong
+result, and each has a workaround.

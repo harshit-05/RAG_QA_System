@@ -305,6 +305,29 @@ detail behind each closed line is in its story file.
   - `fetch_dataset.py`: its corpus guard checks only the repo's `corpus/`, not
     `paths.data` / `RAG_DATA_PATH`; nothing checks the `PAR1` header; and
     `requests` is undeclared (transitive only).
+  - **No line editing at the prompt** (v0.2 manual test). `input()` without
+    `readline` turns the arrow keys into text: an up-arrow was sent to the
+    model as the question `^[[A`. `import readline` in `cli.py` (stdlib) gives
+    editing and history.
+  - **pypdf's own warnings leak** (v0.2 manual test). A corrupt PDF prints
+    `invalid pdf header…` / `EOF marker not found` above the banner, before
+    the clean error. Quiet the `pypdf` logger to ERROR in `ingest.py`.
+- **Phase 2 architecture input — Ctrl-C does not cancel generation** (v0.2
+  manual test, reproduced in a pty). "(answer interrupted…)" appears in 0.1 s,
+  but the REPL then blocks until Ollama finishes the whole response (43 s with
+  phi3; minutes with mistral), because the abandoned stream is drained, not
+  closed. A second Ctrl-C in that window lands in the generator's cleanup and
+  is swallowed (`Exception ignored in: <generator RunnableSequence._transform>`
+  plus an httpx traceback), so the session does not quit. The Phase 2 SSE API
+  has the same need: a client that disconnects must cancel generation, not let
+  it run on. Design it once there (close the stream / the HTTP response), and
+  the CLI uses the same mechanism.
+- **Phase 2 — seed the golden dataset with GLIDER** (S0-6, re-confirmed by the
+  v0.2 manual test). "What is GLIDER and what does it evaluate?" is still
+  answered unfaithfully with phi3: every phrase is from the paper, but the
+  benchmark categories (p. 5) are presented as what GLIDER evaluates, and the
+  p. 8 description as what it "stands for". Retrieval is correct (all five
+  sources from the paper, p. 7 first). Ground truth: S0-6 story, "Fact-check".
 - **Phase 2 — the walk descends into ignored trees** (found in S1-3 and S1-4).
   It walks all of `.git` before discarding it. Performance only. Phase 2's
   incremental ingestion rewrites discovery around the manifest, so prune there
