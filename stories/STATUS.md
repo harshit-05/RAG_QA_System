@@ -269,6 +269,11 @@ detail behind each closed line is in its story file.
 
 ### Re-deferred at the Phase 1 exit
 
+- **Backlog — audit-gate policy (S1-8 review).** CI's Audit step does a live
+  advisory lookup and blocks, so a new advisory with no fixed release turns every
+  PR red, docs-only ones included. Decide an `--ignore-vuln` policy (ID + reason in
+  `ci.yml`) or a scheduled audit beside a PR gate for new dependencies. Not needed
+  until it first happens.
 - **Phase 2 — prompt placeholder check (FR-8 follow-up, found in S1-1).** A
   `human` prompt missing `{context}` silently answers without retrieval. One
   validator on `Prompt`. S1-5 left it open, as the board allowed. It belongs with
