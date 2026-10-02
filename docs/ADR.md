@@ -1175,7 +1175,7 @@ unofficial `langchain-faiss` was rejected on supply-chain grounds.
 
 **Decision.** Leave in three steps, each riding work its phase already
 plans, rather than in one big migration. Step 1 (DEC-8, S1-3) replaces the
-loaders with about 40 lines of our own code on `pypdf` and `docx2txt`, which
+loaders with about 60 lines of our own code on `pypdf` and `docx2txt`, which
 are the libraries the community loaders wrapped anyway. `pipeline.ingestion.loaders`
 maps each extension to a component reference, leaving one instantiation path
 under the allowlist (ADR-020). The risk was citation metadata, so the
@@ -1191,7 +1191,7 @@ transitive `langchain-classic` leave `pyproject.toml`.
   is now ours and tested, not inherited. Discovery became recursive
   (ISS-13). Afterwards, `langchain_community` is imported only by
   `vectorstore.py`.
-- *Cons:* we own about 40 lines plus their tests. The community loaders now
+- *Cons:* we own about 60 lines plus their tests. The community loaders now
   serve as test oracles (the parity tests). Those tests, and the real corpus
   PDF they read, go when the package does in Phase 3.
 
