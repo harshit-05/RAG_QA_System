@@ -697,8 +697,9 @@ Consequences:
 - **`Done.ttft_ms` is measured on every answer**: in the CLI, the API and evaluation
   alike. It is the data the Phase 3 NFR-2 decision needs (ADR-016).
 - **Retrieval cannot be cancelled while it runs.** The FAISS search, the query embedding
-  and the cross-encoder run in executor threads. Each takes milliseconds to a few hundred
-  milliseconds, so this is not worth more machinery.
+  and the cross-encoder run in executor threads. A cancel returns the awaiting task at
+  once (measured in the S2-1 review) and the thread finishes on its own. Each takes
+  milliseconds to a few hundred milliseconds, so this is not worth more machinery.
 
 Rejected:
 
@@ -710,9 +711,12 @@ Rejected:
 **DEC-15 — The quality bar is two gates. Retrieval is recomputed in CI; generation is run
 offline and checked in CI.** With a local judge, RAGAs takes hours on this host. A sweep
 of about 25 questions × 4 metrics with `gemma2:9b` is estimated at 3–4 h, plus about
-40 min to generate the answers. That cannot run on every push. A hosted judge would put a
-paid, networked dependency into CI, and the maintainer rejected it (2026-10-02). The bar
-is therefore split by what can be computed where.
+40 min to generate the answers. S2-1 later measured 254 s to first token, which would put
+generation nearer 2 h. That ran on Ollama's default of 2 threads, with swapped weights
+(STATUS.md caveat 3), so S2-5b sets `num_thread` and re-measures before it commits to a
+figure. That cannot run on every push. A hosted judge would put a paid, networked
+dependency into CI, and the maintainer rejected it (2026-10-02). The bar is therefore
+split by what can be computed where.
 
 **Tier 1: retrieval, recomputed on every push.**
 

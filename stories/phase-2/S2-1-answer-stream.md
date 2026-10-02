@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Implemented 2026-10-02; awaiting review (uncommitted) |
+| **Status** | Committed `1b923bf` 2026-10-02; reviewed twice (follow-ups below); closes when CI is green on the pushed branch |
 | **Closes** | FR-5 (structured citation output); backlog: Ctrl-C does not cancel generation, ChatOllama client left open (CLI half), `py.typed` + `types-PyYAML` |
 | **Depends on** | — |
 | **Model** | fable |
@@ -211,3 +211,36 @@ gh run list --limit 1                    # → green on the branch
     A mutant showed it, and the two-Ctrl-C test now fails that mutant.
 - **Model:** this session ran on Opus 5.5; the story names Fable.
 - **Verification 5 (CI)** can go green only after the maintainer pushes the branch.
+- **First-review follow-up (2026-10-02):**
+  - a failed `aclose()` in `stream_answer`'s `finally` no longer replaces the stream's
+    own error (`suppress(Exception)`; a cancel still passes), with a test;
+  - the no-index check moved into `build_query_pipeline` (`NoIndexError`), so the CLI
+    has one source for it;
+  - a Ctrl-C while the session closes exits quietly;
+  - the README names the prefill wait;
+  - the claim that a cancel during retrieval returns at once was measured.
+- **Second review (2026-10-03).** The core claim holds: the gates are green; the
+  cancellation and CLI tests passed five runs in a row; the negative control fails for
+  its intended reason (`assert False`, model still streaming); a Ctrl-C during a slow
+  retrieval returned the prompt in under 1 s with a process-directed SIGINT; the lock is
+  current. Follow-ups:
+  - **`close_session` caught only Ctrl-C.** A probe showed an error from `aclose()`
+    escaping `repl()` as a traceback at exit. It now catches `Exception` too, best
+    effort, and says so in one line.
+    `test_an_error_while_the_clients_close_still_exits_cleanly` fails without the fix.
+  - **A stale docstring.** `answering.py` said the API's "disconnect watcher" stops
+    generation, but DEC-18 has had no watcher since the second design review. It now
+    names Starlette's own cancel, and warns against a separate task.
+  - **The negative control's `xfail` gained `raises=AssertionError`**, so an unrelated
+    error in the test can no longer count as the expected failure.
+  - **The 254 s has a cause.** Ollama's journal shows `NumThreads:2` on every mistral
+    load (2 performance cores out of 12 threads), and a 2.3 GB swap peak. Caveats 3
+    and 16, S2-5b, ARCHITECTURE.md (DEC-15) and the README now say so. A new backlog
+    line has S2-5b set `num_thread` first: it is hashed into the tier-2 fingerprint, so
+    it must precede the baseline. Caveat 3 also no longer states the figure twice.
+  - Not changed: a cancel that is not a Ctrl-C (a library's own) is reported as "answer
+    interrupted". Cosmetic, and `Runner.run()` can raise `CancelledError` after a real
+    Ctrl-C as well, so the two cannot be told apart cleanly.
+  - For S2-7: `NoIndexError` from `build_query_pipeline` carries the absolute index
+    path. That is fine on the CLI's stderr, but it must never reach an HTTP body
+    (DEC-18).
