@@ -11,14 +11,23 @@ because the answer half is streamed *directly*, never through
 ``RunnablePassthrough.assign``: ``RunnableParallel`` waits on its step tasks with
 ``asyncio.wait`` and never cancels them, so under ``assign`` a cancelled consumer
 returns while the generation runs on (ARCHITECTURE.md §2.1, the verified trap). Here a
-cancel reaches the model's HTTP request, and the ``finally`` closes the stream before
-the cancelled consumer returns. ``tests/test_answering.py`` holds both shapes to that.
+cancel lands inside the model's await and unwinds every frame down to its HTTP request
+before the cancelled consumer returns. ``tests/test_answering.py`` holds both shapes to
+that.
+
+A consumer that merely *stops* at a ``yield`` is different: langchain-core 1.6.3 never
+closes a sequence's inner generators, so the model's stream closes about 20 loop
+iterations after ``aclose()``, not before it returns (S2-1, Discovered). Front ends that
+must stop generation therefore cancel the consuming task. In the API that is Starlette's
+own disconnect handling, which cancels the response stream that ``stream_answer`` runs
+inside (DEC-18): never a separate task, which a disconnect would not reach.
 
 Dependency direction: ``answering → chain``. Imports no front end.
 """
 
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -112,8 +121,9 @@ async def stream_answer(pipeline: QueryPipeline, question: str) -> AsyncIterator
         raise NoIndexError("no index yet: ingest the corpus first")
     start = time.perf_counter()
 
-    # Retrieval is awaited, not streamed. It runs in executor threads and takes
-    # milliseconds, so a cancel during it waits for it to finish (DEC-14).
+    # Retrieval is awaited, not streamed. It runs in an executor thread that a cancel
+    # cannot stop: the awaiting task returns at once and the thread finishes on its own
+    # (measured, S2-1 review). It takes milliseconds, so that is not worth machinery (DEC-14).
     docs = await pipeline.retrieve.ainvoke(question)
     yield Sources(source_refs(docs, pipeline.corpus_root))
 
@@ -140,5 +150,8 @@ async def stream_answer(pipeline: QueryPipeline, question: str) -> AsyncIterator
         # generator only: langchain-core 1.6.3 iterates the inner ones with `async for`
         # and never closes them, so the loop's async-generator finalizer closes the rest
         # over the next few iterations (about 20, measured in S2-1).
-        await stream.aclose()
+        # A failure to close must not replace the error that ended the stream (the
+        # model's own, say). BaseException, so a cancel, still gets through.
+        with suppress(Exception):
+            await stream.aclose()
     yield Done(ttft_ms=ttft_ms, total_ms=_ms_since(start))

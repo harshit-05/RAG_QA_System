@@ -32,10 +32,9 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
 from rag_qa.answering import AnswerEvent, Done, SourceRef, Sources, Token, stream_answer
-from rag_qa.chain import QueryPipeline, build_query_pipeline
+from rag_qa.chain import NoIndexError, QueryPipeline, build_query_pipeline
 from rag_qa.config import ConfigError, load_config
 from rag_qa.settings import ENV_CONFIG
-from rag_qa.vectorstore import store_exists
 
 GREEN, YELLOW, BLUE, RED, DIM, RESET = (
     "\033[92m", "\033[93m", "\033[94m", "\033[91m", "\033[2m", "\033[0m"
@@ -144,6 +143,15 @@ def close_session(runner: asyncio.Runner, pipeline: QueryPipeline) -> None:
         if leftovers:
             runner.run(_settle(leftovers))
         runner.run(pipeline.aclose())
+    except KeyboardInterrupt:
+        # Ctrl-C while the clients close: the session is already over, so leave quietly
+        # rather than print a traceback. The sockets go with the process.
+        print(f"\n{YELLOW}(closing interrupted){RESET}")
+    # Best effort, for the same reason: the user has already left, and an error while
+    # closing (httpx's, say) must not turn a clean exit into a traceback and exit 1.
+    except Exception as e:  # noqa: BLE001
+        print(f"\n{YELLOW}(could not close the model's connections cleanly: "
+              f"{type(e).__name__}){RESET}")
     finally:
         runner.close()
 
@@ -207,17 +215,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigError as e:
         print(f"Error: {e}", file=sys.stderr)
         return EXIT_CANNOT_START
-    if not store_exists(config.paths.vector_store):
-        # Otherwise this surfaces as FAISS's "could not open ... for reading".
-        print(
-            f"Error: no index at '{config.paths.vector_store}'. Run rag-ingest first "
-            f"to build it from the corpus.",
-            file=sys.stderr,
-        )
-        return EXIT_CANNOT_START
 
     print("Loading vector store and models...")
-    pipeline = build_query_pipeline(config)
+    try:
+        # Raises NoIndexError before any model is built; otherwise a missing index
+        # would surface as FAISS's "could not open ... for reading".
+        pipeline = build_query_pipeline(config)
+    except NoIndexError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return EXIT_CANNOT_START
     return repl(pipeline)
 
 

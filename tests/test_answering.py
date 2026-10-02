@@ -201,6 +201,9 @@ def test_cancel_closes_the_stream_before_the_consumer_returns(moment: str) -> No
 
 @pytest.mark.xfail(
     strict=True,
+    # Only the assertion below may satisfy it: a TypeError from a broken test, say,
+    # would otherwise count as the expected failure.
+    raises=AssertionError,
     reason="the trap DEC-14 avoids: RunnableParallel never cancels its step tasks, so "
     "under RunnablePassthrough.assign the cancelled consumer returns first. If this "
     "passes, langchain-core changed: re-check §2.1 rather than delete the control.",
@@ -236,3 +239,33 @@ def test_a_consumer_that_stops_early_closes_the_stream_while_the_loop_runs() -> 
 
     assert asyncio.run(iterations_until_closed()) is not None
     assert model.log == ["start", "t0 ", "closed"]  # nothing generated after the stop
+
+
+def test_a_failure_to_close_does_not_replace_the_streams_own_error() -> None:
+    class Boom(RuntimeError): ...
+
+    class FailingClose:
+        """An async generator that fails, and whose close fails as well."""
+
+        def __aiter__(self) -> "FailingClose":
+            return self
+
+        async def __anext__(self) -> str:
+            raise Boom("the model failed")
+
+        async def aclose(self) -> None:
+            raise RuntimeError("close failed too")
+
+    class FailingAnswer:
+        def astream(self, inputs: Any) -> FailingClose:
+            return FailingClose()
+
+    model = StreamingFakeChatModel()
+    pipeline = QueryPipeline(
+        retrieve=RunnableLambda(lambda question: DOCS),
+        answer=FailingAnswer(),  # type: ignore[arg-type]
+        llm=model,
+        corpus_root=CORPUS,
+    )
+    with pytest.raises(Boom):
+        asyncio.run(collect(stream_answer(pipeline, "q")))
