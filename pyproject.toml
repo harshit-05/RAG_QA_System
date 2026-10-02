@@ -54,6 +54,7 @@ dev = [
     "ruff>=0.16",
     "mypy>=1.17",
     "pytest-cov>=7.1.0",
+    "pip-audit>=2.10.1",   # CI's Audit step (S1-8); see ci.yml for why it reads a freeze
 ]
 
 # This host is CPU-only (no NVIDIA GPU). `explicit = true` is load-bearing on BOTH
