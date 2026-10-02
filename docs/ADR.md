@@ -35,15 +35,18 @@ be revisited — or `Superseded`.
 | [007](#adr-007-restricted-import-surface-for-langchain) | Restricted import surface for LangChain | Accepted (provisional) | 0–1 |
 | [008](#adr-008-hand-composed-lcel-chain-instead-of-a-prebuilt-chain-class) | Hand-composed LCEL chain instead of a prebuilt chain class | Accepted | 0 |
 | [009](#adr-009-module-split-with-an-enforced-one-way-dependency-direction) | Module split with an enforced one-way dependency direction | Accepted | 0 |
-| [010](#adr-010-config-driven-object-graph-via-a-target-convention) | Config-driven object graph via a `_target_` convention | Accepted | 0 |
+| [010](#adr-010-config-driven-object-graph-via-a-_target_-convention) | Config-driven object graph via a `_target_` convention | Accepted | 0 |
 | [011](#adr-011-mistral-over-qwen27b-for-the-phase-0-proof) | `mistral` over `qwen2:7b` for the Phase 0 proof | Accepted (provisional) | 0 |
 | [012](#adr-012-renaming-docs-to-corpus-instead-of-writing-a-standing-warning) | Renaming `docs/` to `corpus/` instead of writing a standing warning | Accepted | 0 |
 | [013](#adr-013-faiss-now-a-swap-seam-for-qdrant-later) | FAISS now, a swap seam for Qdrant later | Accepted (provisional) | 0 → 3 |
 | [014](#adr-014-accepting-allow_dangerous_deserializationtrue-with-a-documented-invariant) | Accepting `allow_dangerous_deserialization=True` with a documented invariant | Accepted | 0 |
-| [015](#adr-015-no-target-import-allowlist-yet) | No `_target_` import allowlist yet | Accepted (provisional) | 0 → 1 |
+| [015](#adr-015-no-_target_-import-allowlist-yet) | No `_target_` import allowlist yet | Superseded by ADR-020 | 0 → 1 |
 | [016](#adr-016-accepting-an-unmet-latency-slo-instead-of-buying-a-gpu) | Accepting an unmet latency SLO instead of buying a GPU | Accepted (provisional) | 0 → 3 |
 | [017](#adr-017-phase-exits-as-release-points-not-calendar-dates) | Phase exits as release points, not calendar dates | Accepted | Process |
 | [018](#adr-018-model-routing-for-ai-assisted-implementation) | Model routing for AI-assisted implementation | Accepted | Process |
+| [019](#adr-019-reach-_target_-through-a-pydantic-alias-not-a-field-of-that-name) | Reach `_target_` through a Pydantic alias, not a field of that name | Accepted | 1 |
+| [020](#adr-020-the-_target_-allowlist-lives-at-the-import-funnel-and-is-hardcoded) | The `_target_` allowlist lives at the import funnel, and is hardcoded | Accepted | 1 |
+| [021](#adr-021-own-loaders-as-step-1-of-leaving-langchain-community) | Own loaders as step 1 of leaving `langchain-community` | Accepted | 1 → 3 |
 
 ---
 
@@ -838,6 +841,10 @@ notices this is dangerous."
 
 ## ADR-015: No `_target_` import allowlist yet
 
+> **Superseded by [ADR-020](#adr-020-the-_target_-allowlist-lives-at-the-import-funnel-and-is-hardcoded)**
+> (Phase 1, S1-2). The allowlist landed in `import_from_string`, not `build_object`,
+> which also closes the loader gap this entry flagged.
+
 **Context.** `registry.build_object` (ADR-010) will import and instantiate
 *any* dotted path named in the config file, with any kwargs — SRS.md calls
 this "config is effectively arbitrary code execution" (`ISS-04`, High
@@ -1054,6 +1061,154 @@ review process than a database migration. The generalizable tell for
 this decision expensive or impossible to reverse if wrong" (a library
 version choice, a schema choice) versus "is this decision cheap to redo if
 wrong" (a file's location, a variable rename).
+
+---
+
+## ADR-019: Reach `_target_` through a Pydantic alias, not a field of that name
+
+**Context.** Phase 1 replaced the raw config dict with a frozen Pydantic model
+(DEC-6, S1-1). Every buildable component carries a `_target_` key (ADR-010),
+so the obvious schema is `class ComponentSpec(BaseModel): _target_: str`. In
+the architecture pass (2026-09-25), that model accepted the input without
+complaint, and `model_dump()` returned `{}`. Pydantic treats any name with a
+leading underscore as a *private attribute*, not a field: it is not validated,
+not dumped, and not an error.
+
+**Decision.** The field is `target: str = Field(alias="_target_")`, with
+`populate_by_name=True`, and every dump that feeds `build_object` uses
+`model_dump(by_alias=True)`, so the builder still sees a `_target_` key. The
+YAML stays unchanged. `ComponentSpec.spec()` is the only way out, so no call
+site has to remember `by_alias`.
+
+**Consequences.**
+
+- *Pros:* the config format, every existing `config.yaml` and the
+  `build_object` contract stayed exactly as they were. The trap is fixed in
+  one place rather than at each call site.
+- *Cons:* the Python name (`target`) and the YAML name (`_target_`) now
+  differ, which a reader has to learn once. A dump without `by_alias=True`
+  silently produces `target`, and `build_object` then fails. `spec()` exists
+  so that nobody writes that dump.
+
+**Alternatives considered.**
+
+- *Rename the key in YAML to `target`* — rejected: it breaks every config
+  and the Hydra-style convention ADR-010 chose deliberately, all to work
+  around a library naming rule.
+- *Keep validating a raw dict and skip Pydantic for components* — rejected:
+  component leaves are exactly where typos lived (ISS-03), and FR-8 asks for
+  the whole graph to be validated at load.
+
+**Lesson.** The dangerous failure mode of a validation library is not a
+loud rejection. It is a quiet acceptance that drops data. Any schema
+migration should check that the data survives the trip (`model_dump()`
+equals the input) rather than only that validation passes. This trap passed
+validation and lost the one field that mattered. The same shape shows up
+with ORMs that ignore unknown columns, and with JSON serializers that skip
+private fields.
+
+---
+
+## ADR-020: The `_target_` allowlist lives at the import funnel, and is hardcoded
+
+**Context.** ADR-015 deferred the import allowlist (ISS-04) to Phase 1 and
+planned to put it in `build_object`. It also flagged that `ingest.py` called
+`import_from_string` directly, bypassing that function. Both call sites
+share only one function, the one that does the import.
+
+**Decision.** The check lives inside `import_from_string` (DEC-7, S1-2), so
+nothing can reach an import without passing it. `ALLOWED_PREFIXES` is a
+module constant: it cannot be overridden from config or the environment, and
+adding a package means editing `registry.py` in review. Config load
+string-checks every `_target_`, nested ones included, without importing
+anything. When a component is built, three checks run:
+
+1. the dotted path starts with an allowed prefix;
+2. the resolved object is *defined* under an allowed prefix (its
+   `__module__`);
+3. the resolved object is a class.
+
+Checks 2 and 3 went beyond the planned design. Both were found necessary
+during the story, because prefixes alone did not stop arbitrary imports:
+`rag_qa.registry.import_module` is `importlib.import_module` re-exported,
+and `langchain_core` defines helpers (`guard_import`, `import_attr`) that
+import any module.
+
+**Consequences.**
+
+- *Pros:* one choke point, covering every current call site and any future
+  one by construction. A disallowed config fails at load with exit 2,
+  before any model downloads. The real config cost nothing: all 14 targets
+  pass.
+- *Cons:* the allowlist restricts *classes*, not *arguments*. An allowed
+  class with a dangerous kwarg (`HuggingFaceEmbeddings` with
+  `trust_remote_code: true`) still runs foreign code. The config therefore
+  stays trusted input, like code. That is stated in `registry.py`, in
+  ARCHITECTURE.md §1.8 and in the README. Adding a package to the allowlist
+  is a code change, on purpose.
+
+**Alternatives considered.**
+
+- *Check in `build_object`, as ADR-015 planned* — rejected: it misses the
+  direct call in `ingest.py`, and every future direct call.
+- *A configurable allowlist (config key or environment variable)* —
+  rejected: an allowlist the config can edit is not an allowlist.
+- *Prefix check only* — rejected once checks 2 and 3 were shown necessary;
+  it would have closed ISS-04 on paper and left it open in practice.
+
+**Lesson.** Put an enforcement point where every path *must* pass, not
+where most paths happen to pass today. "Every caller goes through X" is a
+convention, and "X is the only thing that can do this" is a guarantee. And
+test a security control by attacking it, not by confirming that the
+legitimate config still loads: the prefix check passed every positive test
+and was bypassable twice.
+
+---
+
+## ADR-021: Own loaders as step 1 of leaving `langchain-community`
+
+**Context.** `langchain-community` was sunset on 2026-05-22: frozen,
+unmaintained, and warning on import (DEC-5). The project used it for three
+things: the document loaders, FAISS and the disabled cross-encoder. No
+official standalone replacement exists for the loaders or for FAISS, and the
+unofficial `langchain-faiss` was rejected on supply-chain grounds.
+
+**Decision.** Leave in three steps, each riding work its phase already
+plans, rather than in one big migration. Step 1 (DEC-8, S1-3) replaces the
+loaders with about 40 lines of our own code on `pypdf` and `docx2txt`, which
+are the libraries the community loaders wrapped anyway. `pipeline.ingestion.loaders`
+maps each extension to a component reference, leaving one instantiation path
+under the allowlist (ADR-020). The risk was citation metadata, so the
+`v0.1` baseline was recorded before the change: every chunk, 1,708 from the
+real corpus, plus their citation strings. The same baseline was reproduced
+after it. Steps 2 (cross-encoder via `sentence-transformers`, Phase 2) and 3
+(FAISS → Qdrant, Phase 3) follow. After step 3, `langchain-community` and its
+transitive `langchain-classic` leave `pyproject.toml`.
+
+**Consequences.**
+
+- *Pros:* the metadata contract (`source`, `page`, `page_label`, `loader`)
+  is now ours and tested, not inherited. Discovery became recursive
+  (ISS-13). Afterwards, `langchain_community` is imported only by
+  `vectorstore.py`.
+- *Cons:* we own about 40 lines plus their tests. The community loaders now
+  serve as test oracles (the parity tests). Those tests, and the real corpus
+  PDF they read, go when the package does in Phase 3.
+
+**Alternatives considered.**
+
+- *Leave everything in one Phase 3 migration* — rejected: it would bundle
+  three unrelated risks into one diff, and keep importing a deprecated
+  package for two more phases.
+- *Keep the community loaders until they break* — rejected: a frozen
+  package breaks when a dependency does, at a time nobody chose.
+
+**Lesson.** A deprecation is a schedule, not an emergency. Split the exit
+along seams the roadmap already has, so that each step rides a story that
+was touching that code anyway. When you replace something that produces
+data downstream code depends on (here, citations), record what the old
+version produced first, then make the new one reproduce it. "It still
+works" is not a check; "the output is identical" is.
 
 ---
 

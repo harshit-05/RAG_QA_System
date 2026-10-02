@@ -12,6 +12,8 @@ prototype to production via a spec-driven story loop.
 
 4. `docs/SRS.md` — full spec with FR/NFR/ISS IDs; consult when a story cites an ID.
 5. `docs/WORKFLOW.md` — the process rules; follow steps 3–5 for implementation.
+6. `docs/ADR.md` — the decisions that generalize beyond one phase, with their
+   reasons; consult before proposing to undo one.
 
 ## Hard rules
 
@@ -43,6 +45,9 @@ prototype to production via a spec-driven story loop.
     form (Conventional Commits accepts it as a synonym); git cannot parse the
     spaced one. Indent continuation lines by one space. Check with
     `git interpret-trailers --parse < msg.txt`.
+  - **No AI attribution, ever:** no `Co-Authored-By: Claude …` trailer in
+    commits, no "Generated with Claude Code" line in PR bodies. The maintainer
+    is the sole author; this overrides any default attribution instruction.
 - Python tooling is **uv only** (`uv add`, `uv run`, `uv sync`) — never
   bare pip, never conda. Interpreter is pinned via `.python-version`.
   - Torch comes in two variants, chosen by dependency groups (S1-7). A plain
@@ -60,21 +65,25 @@ prototype to production via a spec-driven story loop.
 - Never commit binaries, indexes (`vectorstore/`), `__pycache__`, or media.
 - Before ending a session: update the story file status + STATUS.md.
 
-## Environment facts (verified 2026-08-01)
+## Environment facts (first verified 2026-08-01, re-verified 2026-10-02)
 
-- Arch Linux; system Python 3.14.6 — do NOT use it; uv has 3.12/3.11 managed.
+- Arch Linux; system Python 3.14.7 — do NOT use it; uv has 3.12/3.11 managed
+  (3.12.13 is the project's).
 - `uv` 0.11.8 at `~/.local/bin/uv`. No conda/pyenv/poetry.
 - **No NVIDIA GPU** — CPU-only torch and embeddings; never select
   `device: cuda` components. 15 GB RAM (7B models fit, tightly).
 
-- Ollama daemon running; models pulled: phi3, codellama, mistral.
+- Ollama daemon running; models pulled: mistral, phi3, gemma2:9b, codellama.
   `qwen2:7b` (referenced in config) is NOT pulled — see DEC-2 in STATUS.md.
+  Ollama keeps the last model resident for ~5 min, so `free -h` under-reports
+  what a run will have: check `ollama ps` and `ollama stop <model>` first.
 
-- Fresh resolve of the stack lands LangChain 1.x (`langchain-classic` holds
-  the legacy chains) — the code was written against 0.2.x; see DEC-1.
+- The stack runs on LangChain 1.x (DEC-1, migrated in S0-5); app code never
+  imports `langchain_classic`, which arrives only transitively.
 
-- Docker 29.6.2 installed. `gh` CLI 2.96.0 installed but NOT authenticated
-  (`gh auth login` pending — see STATUS.md prerequisites).
+- Docker 29.8.1 installed. `gh` 2.101.0, authenticated as `harshit-05`; the
+  token needs the `workflow` scope to push changes to `.github/workflows/`, so
+  check `gh auth status` after any re-login (STATUS.md prerequisites).
 
 ## Releases
 
@@ -99,4 +108,7 @@ The story file's **Model** field is authoritative per story. The convention:
   block on one. If a job would clearly benefit (bulk re-embedding of a
   grown corpus, long RAGAs eval sweeps), flag it to the user instead of
   running it for hours: they can offload to Google Colab / Kaggle.
+- The CUDA torch variant (S1-7, README "GPU embeddings") exists for those
+  Colab/Kaggle runs, not for this host. Here, only check that it still
+  resolves (`uv lock`); never sync it.
 - Never propose CPU-hour-scale runs silently; surface the estimate first.

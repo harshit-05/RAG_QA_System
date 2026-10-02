@@ -25,7 +25,8 @@ ISS-04  here (prefix at load); ``test_registry.py`` (all three import checks)
 ISS-05  ``test_ingest.py`` (a bad document fails the run; so does a folder)
 ISS-06  ``test_cli.py`` (the REPL survives a failing chain)
 ISS-07  this suite, gated in CI: ruff, pytest, coverage ≥ 80% (NFR-8)
-ISS-08  CI's ``uv sync --locked`` (lockfile drift); pip-audit → S1-8
+ISS-08  CI's ``uv sync --locked`` (lockfile drift); CI's Audit step,
+        pip-audit over the installed environment, torch included (S1-8)
 ISS-09  ``test_repo_hygiene.py`` (nothing build-, index- or media-like tracked)
 ISS-10  not a CI check: structural (three copies of the tree), fixed in S0-3
 ISS-11  here (load)
@@ -38,7 +39,7 @@ ISS-15  Phase 2: the eval harness and its golden dataset (FR-7)
 ISS-16  not a CI check: a documented invariant (never open an untrusted index)
 ISS-17  ``test_deprecations.py`` (with a negative control)
 ISS-18  not in CI: a standalone script (S1-4's call); fixed and verified by hand
-ISS-19  mypy → S1-6
+ISS-19  CI's mypy step: ``disallow_untyped_defs`` on ``src/rag_qa`` (S1-6)
 ISS-20  not a CI check: the README (S0-6)
 ISS-21  partly: the duplicated REPL is gone (one ``cli.py`` since S0-3, its
         loop pinned by ``test_cli.py``). Typos are style, not a CI check. The

@@ -28,6 +28,14 @@ escape hatch. An allowlist the config can edit is not an allowlist. Adding a
 package means editing this file, in review. This resolves ADR-015's deferred gap,
 including its follow-up: the loader call site that bypassed :func:`build_object`
 still goes through :func:`import_from_string`, so it is covered too.
+
+**Trust boundary: the config is trusted input, like code.** The allowlist restricts
+which classes a config can build, not the kwargs it passes them.
+``HuggingFaceEmbeddings`` forwards ``model_kwargs`` to ``SentenceTransformer``, so
+``trust_remote_code: true`` plus someone else's model repository runs that
+repository's Python. Never load a config from an untrusted source, and never let a
+request supply or override components (a constraint on the Phase 2 API). ISS-16
+draws the same line for the FAISS index.
 """
 
 from importlib import import_module

@@ -222,6 +222,9 @@ serving decision.
 _Confirmed 2026-09-25. Scope: SRS §12 Phase 1. Exit: CI is green and would have caught
 every Phase-0 bug; tag `v0.2`, version 0.2.0._
 
+_Delivered 2026-10-02 (S1-1 … S1-8, released as `v0.2`). §1.1–§1.7 are kept as
+confirmed; §1.8 records where the delivery differs from them._
+
 Phase 0 made the system run. Everything it deliberately left standing is what Phase 1
 closes: the config is a raw dict validated by nothing (a one-character typo, `llmS`, was
 a runtime `KeyError` that cost real debugging time), `registry.import_from_string` will
@@ -502,3 +505,54 @@ failing LLM.
 | Reranker | config validated, still disabled | Phase 2 |
 | Own loaders (DEC-5 exit) | step 1 of 3: loaders | Phase 2 cross-encoder, Phase 3 FAISS |
 | CI vulnerability scanning | `pip-audit` | Phase 3: Trivy + container build |
+
+### 1.8 As delivered (2026-10-02)
+
+The design held: no decision in §1.1 was reversed. These are the places where the
+code differs from the text above, each with the story that records why.
+
+- **Two typed accessors, not one** (S1-1). `RagConfig.component()` returns only
+  buildable `ComponentSpec`s, and `RagConfig.retriever()` returns `RetrieverSpec`s. A
+  union return would have needed narrowing at every call site under the mypy gate.
+- **ISS-01 is caught one level earlier than §1.4's sample message** (S1-1). With
+  typed kinds, `llmS` fails as an unknown key under `components` ("did you mean
+  'llms'"), before reference resolution runs. Reference-level did-you-mean still
+  covers typos in entry names. Pipeline slots are also kind-checked: `query.llm` must
+  point into `components.llms`.
+- **The allowlist has three checks, not one** (S1-2). Beyond the prefix check, the
+  resolved object must be _defined_ under an allowed prefix (its `__module__`), and
+  it must be a class. Prefixes alone let re-exported names and helper functions
+  through, such as `importlib.import_module` via `rag_qa.registry`, and
+  `langchain_core`'s `guard_import`. Both were verified, so the allowlist alone did not
+  stop arbitrary code. Detail in the `registry.py` docstring.
+- **Trust boundary, stated (S1-2 review, written down in S1-8).** The allowlist limits
+  which classes a config can build, not their kwargs: `trust_remote_code: true`
+  passed through `model_kwargs` runs a model repository's code. The config is
+  trusted input like code. Never load one from an untrusted source, and **the Phase 2
+  API must never let a request supply or override components.**
+- **Test fixtures are generated, not stored** (S1-3). `tests/fixtures/` does not exist:
+  `conftest.py` writes the PDF and DOCX at test time, because binaries are never
+  committed. The parity tests against the replaced community loaders, one of which
+  reads a real corpus PDF, leave with `langchain-community` in Phase 3.
+- **Ingestion walks with stated rules** (S1-3, S1-4). Hidden paths and lock files are
+  ignored and counted; symlinks are never followed and are listed as skipped; a
+  loader that cannot be _built_ is a config error (exit 2), while a document that
+  cannot be _read_ is recorded and fails the run (exit 1, DEC-13).
+- **`rag-query` refuses to start without an index** (S1-4), exiting 2 instead of
+  failing inside FAISS.
+- **CI carries more than §1.5's gate order:**
+  - `HF_HUB_OFFLINE=1` as a tripwire against model downloads (S1-2);
+  - uv-managed Python pinned with `UV_PYTHON_PREFERENCE: only-managed` (S1-5);
+  - a step that fails unless the installed torch is the `+cpu` build (S1-7).
+
+  The coverage floor and omissions live in `pyproject.toml`, so a local
+  `pytest --cov` enforces what CI does (S1-5).
+- **`pip-audit` reads a freeze of the installed environment** (S1-8), not `uv.lock`,
+  which records both torch variants. A plain `pip-audit` silently skips torch, because
+  `2.14.0+cpu` does not exist on PyPI. The local label is stripped so torch is
+  audited as its public release.
+- **mypy and ruff were tightened** (S1-6). `warn_unreachable` is ISS-12's only guard,
+  and `warn_unused_ignores` is on. Ruff starts from its 0.16 defaults plus `E501` at
+  100 columns, rather than an explicit narrower list.
+- **Torch variants are dependency groups** (S1-7, DEC-12 option (a)), on the `cu130`
+  index, the only CUDA index that carries torch 2.14.
