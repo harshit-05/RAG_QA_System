@@ -5,12 +5,11 @@
 
 ## Now
 
-**Next action: push [S2-1](phase-2/S2-1-answer-stream.md) and open its PR** (committed
-as `1b923bf` on `feat/s2-1-answer-stream`; two reviews done, their follow-ups ready to
-commit). Verification 1–4 passed, including the real-Ollama Ctrl-C checks; 5 (CI) follows
-the push, and the story closes on green. Its Discovered section has an input for S2-7.
-Then S2-2. The order of the Phase 2 stories, and what each depends on, are in the Phase 2
-table below.
+**Next action: merge PR #7 ([S2-1](phase-2/S2-1-answer-stream.md), done 2026-10-03, CI
+green), then [S2-2](phase-2/S2-2-golden-dataset.md)**: the golden dataset, seeded with
+GLIDER. Model opus-fast, not plan-first, on branch `feat/s2-2-golden-dataset`. S2-1's
+Discovered section has an input for S2-7, also in the Backlog. The order of the Phase 2
+stories, and what each depends on, are in the Phase 2 table below.
 
 **The Phase 2 architecture pass is done** (2026-10-02).
 
@@ -378,7 +377,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
-| [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Committed `1b923bf`; reviewed twice; awaiting push and CI |
+| [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Done 2026-10-03 (PR #7) |
 | [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Todo |
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Todo |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Todo |
@@ -444,6 +443,13 @@ leads with one of two things:
 - **its owning Phase 2 story**, as **S2-n —**, where the detail below is that story's
   input;
 - **its phase or trigger**, when it stays deferred.
+
+### Closed in Phase 2
+
+- **S2-1:** Ctrl-C cancels generation (DEC-14): one answer stream, `stream_answer`,
+  streamed outside `RunnablePassthrough.assign`, and the second Ctrl-C quits cleanly. The
+  CLI closes ChatOllama's clients at exit (`aclose_llm`); the API half stays with S2-7.
+  `py.typed` and `types-PyYAML` (found in S1-6).
 
 ### Closed in Phase 1
 
@@ -515,18 +521,6 @@ leads with one of two things:
   - **pypdf's own warnings leak** (v0.2 manual test). A corrupt PDF prints
     `invalid pdf header…` / `EOF marker not found` above the banner, before
     the clean error. Quiet the `pypdf` logger to ERROR in `ingest.py`.
-- **S2-1 — Ctrl-C does not cancel generation** (v0.2
-  manual test, reproduced in a pty). "(answer interrupted…)" appears in 0.1 s,
-  but the REPL then blocks until Ollama finishes the whole response (43 s with
-  phi3; minutes with mistral), because the abandoned stream is drained, not
-  closed. A second Ctrl-C in that window lands in the generator's cleanup and
-  is swallowed (`Exception ignored in: <generator RunnableSequence._transform>`
-  plus an httpx traceback), so the session does not quit. The Phase 2 SSE API
-  has the same need: a client that disconnects must cancel generation, not let
-  it run on. Design it once there (close the stream / the HTTP response), and
-  the CLI uses the same mechanism. Designed in DEC-14. Its verified trap: going async
-  alone does not fix this; the answer must be streamed outside
-  `RunnablePassthrough.assign`. The API half of the work is S2-7.
 - **S2-2 — seed the golden dataset with GLIDER** (S0-6, re-confirmed by the
   v0.2 manual test). "What is GLIDER and what does it evaluate?" is still
   answered unfaithfully with phi3: every phrase is from the paper, but the
@@ -542,11 +536,6 @@ leads with one of two things:
   1.6.3 never closes a sequence's inner generators, and the loop's finalizer closes them
   about 20 iterations later. A cancel, which DEC-18 already relies on, closes them at once.
   Detail in the S2-1 story, under Discovered.
-- **S2-1 — type the YAML boundary; add `py.typed` (found in S1-6).** Add
-  `types-PyYAML` as a dev dependency so `pyyaml` stops being `Any`. An empty
-  `src/rag_qa/py.typed` makes a misspelled first-party import read as "cannot
-  find module". Both are small and optional, so they ride S2-1, whose version bump
-  is the first packaging change.
 - **Phase 3 — the parity tests and the corpus PDF they read** (found in S1-3).
   They are accepted until `langchain-community` leaves. Removing that PDF before
   then fails them loudly, which is right.
@@ -614,10 +603,9 @@ leads with one of two things:
   what the answer used, so a refusal still shows a source. S2-4 adds the reranker's
   `min_score` knob (DEC-16), defaulting to off. Tuning it with the eval harness comes
   after the tier-2 baseline exists.
-- **S2-1 and S2-7 —** `ChatOllama` leaves its HTTP client open
-  (`ResourceWarning: unclosed socket` at exit).
-  - S2-1 adds `aclose_llm`, and the CLI calls it at exit.
-  - S2-7's API lifespan owns the client and closes it at shutdown.
+- **S2-7 —** `ChatOllama` leaves its HTTP client open
+  (`ResourceWarning: unclosed socket` at exit). S2-1 closed the CLI half: `aclose_llm`,
+  called at exit. S2-7's API lifespan owns the client and closes it at shutdown.
 - **DEC-5 exit tasks, one per phase:**
   - own loaders (**Phase 1 → S1-3**);
   - the cross-encoder via `sentence-transformers` (**Phase 2 → S2-4**);
