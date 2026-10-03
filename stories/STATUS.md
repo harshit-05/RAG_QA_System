@@ -538,7 +538,28 @@ leads with one of two things:
   at a `yield` does not close the model stream before `aclose()` returns: langchain-core
   1.6.3 never closes a sequence's inner generators, and the loop's finalizer closes them
   about 20 iterations later. A cancel, which DEC-18 already relies on, closes them at once.
-  Detail in the S2-1 story, under Discovered.
+  Detail in the S2-1 story, under Discovered. **Not always: see the next line.**
+- **Before S2-7 — a cancel sometimes closes the model stream late (found in S2-2's CI).**
+  S2-1's `test_cancel_closes_the_stream_before_the_consumer_returns[mid-stream]` is
+  flaky. CI tested `dd0f315` twice: the push run failed ("the consumer returned while the
+  model was still streaming"), and the PR run passed.
+  - **Reproduced locally (2026-10-03).** Calling the test function in a loop, it failed
+    5 times in 200 runs, and 21 in 200 pinned to one core (`taskset -c 0`), so a slow CI
+    runner meets it more often.
+  - **What a failure is.** In all 33 of 300 one-core failures, the model's stream closed
+    7 event-loop iterations after the cancelled consumer returned, and no token was
+    generated after the cancel. So nothing is orphaned: the close is late, through the
+    loop finalizer that the line above describes. A cancel landing at the wrong moment
+    (likely after a chunk is delivered, before the consumer resumes) takes that path
+    instead of unwinding through the model's `finally`.
+  - **Why it matters beyond the test.** The CLI's `Runner.run()` returns once the
+    cancelled task is done, and the loop then sits idle at the `input()` prompt. If the
+    remaining 7 iterations wait for the next `run()`, the HTTP stream to Ollama can stay
+    open while the user is at the prompt. That is not yet checked against real Ollama.
+    DEC-18's disconnect relies on the same claim that a cancel closes the stream at once.
+  - **Fix first, then re-measure:** make `stream_answer` close the model stream
+    deterministically on cancel, then show the test passing in a few hundred one-core
+    runs. Do not paper over it with a retry or a sleep in the test.
 - **Phase 3 — the parity tests and the corpus PDF they read** (found in S1-3).
   They are accepted until `langchain-community` leaves. Removing that PDF before
   then fails them loudly, which is right.

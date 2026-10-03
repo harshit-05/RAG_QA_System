@@ -154,6 +154,11 @@ The ground truths are the product here; the code is small. For each record:
   p. 500, not p. 499), and has been fixed. The check tolerates only line breaks,
   end-of-line hyphenation and OCR spaces around a hyphen, so a passage found on the
   printed page is the passage quoted.
+- **A flaky S2-1 test surfaced on this branch's CI.** Out of scope here, so it went to
+  the STATUS.md backlog, "Before S2-7 — a cancel sometimes closes the model stream late".
+  `dd0f315` failed on its push run and passed on its PR run, in
+  `test_cancel_closes_the_stream_before_the_consumer_returns[mid-stream]`. Reproduced
+  locally at 5 in 200 runs, 21 in 200 on one core. No S2-2 code is involved.
 
 ## Deviation from plan
 
