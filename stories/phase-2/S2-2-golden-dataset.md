@@ -241,6 +241,28 @@ The ground truths are the product here; the code is small. For each record:
   facts that span pages (`yolo-objectives`, `wos-linked-inference`, `cade7-venue`,
   `glider-purpose`); a comparison within one paper (`glider-flask-vs-gpt4o`).
 
+- **The maintainer's first sign-off (2026-10-03): 23 ✓, rows 13 and 15 ✗.** Both
+  objections were checked against the rendered scans, not the extracted text:
+  - **Row 13** was rejected as "the paper describes no severity classification, door
+    locks or emergency messages, only alerts through dashboards, mobile notifications or
+    alarm systems". The scan of p. 7 (journal p. 56, "1. System Architecture") states the
+    ground truth almost word for word: "forwarded to a decision-making and alert system,
+    which classifies the severity of the event … an automated response module that can
+    activate alarms, lock doors, or send emergency messages". The dashboards passage is a
+    different one, on p. 8 (Research Objective 2). The record stands. Its notes now name
+    the p. 8 passage, so the next reader does not mix up the two.
+  - **Row 15** was rejected because a search for "the four definitions" found nothing.
+    That phrase is the sign-off table's own wording, not a quote from the paper; the
+    passages to search are in the record's notes. The scan of p. 4 has all four
+    definitions (unitary, finitary, infinitary, type zero, over the symbol μUΣ). The
+    check did surface a real gap: p. 4 says "see part II for an exact definition", and
+    p. 17 gives the formal definitions in full, so retrieving p. 17 would have scored a
+    miss. p. 17 is now an `also_page`, named in the notes. It also says that a finitary
+    theory is not unitary, which the notes record. The ground truth keeps p. 4's
+    wording.
+
+  Rows 13 and 15 need the maintainer's re-check before they are ✓.
+
 ### Record-by-record sign-off (maintainer)
 
 Check each against the PDF at the printed page, following "Review notes for the human".
@@ -263,7 +285,7 @@ label + 49). Mark ✓, or write what is wrong.
 | 12 | `yolo-anomaly-model` | YOLOv8 p. 8 | LSTM-based; context-aware filtering + multi-modal fusion |✓|
 | 13 | `yolo-alert-pipeline` | YOLOv8 p. 7 | severity classification; alarms, door locks, emergency messages |x|
 | 14 | `cade7-venue` | Proceedings pp. i, iii | May 14-16, 1984, Napa; 27 papers; Siekmann keynote, Suppes banquet |✓|
-| 15 | `siekmann-unification-hierarchy` | Proceedings p. 4 | the four definitions |x|
+| 15 | `siekmann-unification-hierarchy` | Proceedings p. 4; also p. 17 | p. 4, items (i)–(iv): unitary, finitary, infinitary, type zero; p. 17 repeats them formally |x|
 | 16 | `lusk-overbeek-itp` | Proceedings p. 43 | Interactive Theorem Prover; LMA; Pascal; ~fifty sites |✓|
 | 17 | `ketonen-ekl` | Proceedings p. 65 | ~10000 lines, MACLISP; SAIL (KL10); began 1981 |✓|
 | 18 | `stickel-ring-commutativity` | Proceedings p. 248 | x^3 = x ⇒ commutative; Bledsoe 1977; Veroff, ANL-NIU |✓|
