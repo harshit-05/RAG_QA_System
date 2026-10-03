@@ -6,9 +6,10 @@
 ## Now
 
 **Next action: [S2-4](phase-2/S2-4-reranker.md)**: our own cross-encoder reranker, switched
-on or off by tier-1 numbers. Model fable, not plan-first, on branch `feat/s2-4-reranker`
-(risky: it changes the retrieval every answer depends on, and shrinks the `_target_`
-allowlist). Its inputs from S2-3 are in the backlog, under "S2-4 — inputs from S2-3",
+on or off by tier-1 numbers. Routed to fable, so it runs on Opus 5.5 at max effort while
+Fable is unavailable (CLAUDE.md, "Model routing"). Not plan-first, on branch
+`feat/s2-4-reranker` (risky: it changes the retrieval every answer depends on, and shrinks
+the `_target_` allowlist). Its inputs from S2-3 are in the backlog, under "S2-4 — inputs from S2-3",
 including a CI step-order trap for the cross-encoder warm-up. The order of the Phase 2
 stories, and what each depends on, are in the Phase 2 table below.
 
