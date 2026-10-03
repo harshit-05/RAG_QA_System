@@ -3,12 +3,13 @@
 * ADR-009: ``rag_qa.ingest`` never imports ``rag_qa.chain``, and the config layer
   (``registry``, ``schema``, ``settings``, ``config``) imports no LangChain at all.
   Nor does ``evaluation.dataset``, which CI's model-free eval gate imports (S2-2).
-* ``evaluation.gate`` loads no model stack: it holds the floors, and S2-5's
-  ``rag-eval check`` runs it in CI's model-free job (ARCHITECTURE.md §2.2).
   Checked at **runtime in a fresh interpreter**, replacing the grep
   ``^(from|import) .*chain``, which false-positives on ``langchain_core`` (S1-3).
   A fresh process is required: inside pytest, other tests have already loaded
   everything.
+* ``evaluation.gate`` loads no model stack: it holds the floors, and S2-5's
+  ``rag-eval check`` runs it in CI's model-free job (ARCHITECTURE.md §2.2). Checked the
+  same way, in a fresh interpreter.
 * ADR-007 / DEC-1: application code never imports ``langchain_classic`` or the
   ``langchain`` meta-package. Checked on the **parsed imports**, so a docstring that
   merely names the package cannot trip it.
