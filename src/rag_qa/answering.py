@@ -7,20 +7,29 @@ The CLI renders them, the API (S2-7) encodes them as SSE, and the evaluation har
 first token (the §0.4 order).
 
 **Stopping an answer means cancelling the task that consumes the stream.** That works
-because the answer half is streamed *directly*, never through
-``RunnablePassthrough.assign``: ``RunnableParallel`` waits on its step tasks with
-``asyncio.wait`` and never cancels them, so under ``assign`` a cancelled consumer
-returns while the generation runs on (ARCHITECTURE.md §2.1, the verified trap). Here a
-cancel lands inside the model's await and unwinds every frame down to its HTTP request
-before the cancelled consumer returns. ``tests/test_answering.py`` holds both shapes to
-that.
+because the prompt is rendered here and the *model itself* is streamed, in the
+consumer's own task (ARCHITECTURE.md §2.1, DEC-14). Two shapes would break it:
+
+- ``RunnablePassthrough.assign``: ``RunnableParallel`` waits on its step tasks with
+  ``asyncio.wait`` and never cancels them, so a cancelled consumer returns while the
+  generation runs on (the first verified trap).
+- ``prompt | llm | StrOutputParser()``, even streamed directly: langchain-core runs each
+  chunk of a sequence in its own task, and the parser hops to a thread per chunk. A
+  cancel that lands at one of those boundaries ends the chunk's task instead of reaching
+  the model's await, and the model's stream is left paused at a ``yield``, open until the
+  loop's finalizer closes it. In the CLI the loop is idle at the prompt, so that waited
+  for the next question (the second trap; found as a flaky test, fixed after S2-3).
+
+Streamed itself, the model's stream is only ever paused in its own read, so a cancel
+lands there and unwinds its HTTP response before the cancelled consumer returns.
+``tests/test_answering.py`` holds all three shapes to that.
 
 A consumer that merely *stops* at a ``yield`` is different: langchain-core 1.6.3 never
-closes a sequence's inner generators, so the model's stream closes about 20 loop
-iterations after ``aclose()``, not before it returns (S2-1, Discovered). Front ends that
-must stop generation therefore cancel the consuming task. In the API that is Starlette's
-own disconnect handling, which cancels the response stream that ``stream_answer`` runs
-inside (DEC-18): never a separate task, which a disconnect would not reach.
+closes a chat model's inner generator, so the model's stream closes a loop iteration or
+two after ``aclose()``, not before it returns (S2-1, Discovered). Front ends that must
+stop generation therefore cancel the consuming task. In the API that is Starlette's own
+disconnect handling, which cancels the response stream that ``stream_answer`` runs inside
+(DEC-18): never a separate task, which a disconnect would not reach.
 
 Dependency direction: ``answering → chain``. Imports no front end.
 """
@@ -33,6 +42,7 @@ from pathlib import Path
 from typing import cast
 
 from langchain_core.documents import Document
+from langchain_core.messages import AIMessageChunk
 
 from rag_qa.chain import NoIndexError, QueryPipeline, citation, format_docs, page_label
 
@@ -128,28 +138,31 @@ async def stream_answer(pipeline: QueryPipeline, question: str) -> AsyncIterator
     yield Sources(source_refs(docs, pipeline.corpus_root))
 
     ttft_ms: float | None = None
-    # Streamed directly — never through RunnablePassthrough.assign (module docstring).
-    # astream is an async generator; the cast exposes aclose(), which the
-    # AsyncIterator annotation hides.
-    stream = cast(
-        AsyncGenerator[str, None],
-        pipeline.answer.astream({"context": format_docs(docs), "question": question}),
-    )
+    # The prompt is rendered here and the model itself is streamed, in this task: never
+    # through a Runnable sequence, whose per-chunk tasks would let a cancel miss the
+    # model's read (module docstring). format_messages is what the sequence's prompt step
+    # runs, so the model gets the same messages, as test_chain checks. astream is an async
+    # generator; the cast exposes aclose(), which the AsyncIterator annotation hides.
+    messages = pipeline.prompt.format_messages(context=format_docs(docs), question=question)
+    stream = cast(AsyncGenerator[AIMessageChunk, None], pipeline.llm.astream(messages))
     try:
-        async for text in stream:
+        async for chunk in stream:
+            # What StrOutputParser yields for a chunk: its text blocks, joined. str(),
+            # because .text is a str subclass kept callable for compatibility.
+            text = str(chunk.text)
             if not text:
                 continue
             if ttft_ms is None:
                 ttft_ms = _ms_since(start)
             yield Token(text)
     finally:
-        # A cancel lands inside the model's await and unwinds every frame down to the
+        # A cancel lands inside the model's own read and unwinds every frame down to the
         # HTTP response before it reaches us: that is the path that stops generation at
         # once (the CLI's Ctrl-C, Starlette's disconnect). This aclose() covers the other
-        # ending, a consumer that stops at a `yield`. It closes the sequence's own
-        # generator only: langchain-core 1.6.3 iterates the inner ones with `async for`
-        # and never closes them, so the loop's async-generator finalizer closes the rest
-        # over the next few iterations (about 20, measured in S2-1).
+        # ending, a consumer that stops at a `yield`. It closes the chat model's own
+        # generator; langchain-core 1.6.3 iterates the provider's generator with
+        # `async for` and never closes it, so the loop's finalizer closes that one a
+        # loop iteration or two later.
         # A failure to close must not replace the error that ended the stream (the
         # model's own, say). BaseException, so a cancel, still gets through.
         with suppress(Exception):

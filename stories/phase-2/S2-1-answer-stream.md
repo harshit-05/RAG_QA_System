@@ -181,7 +181,22 @@ gh run list --limit 1                    # → green on the branch
     in between.
   - Cancellation (Ctrl-C, and Starlette's disconnect under DEC-18) unwinds every frame first,
     so it is unaffected. S2-7 must keep a disconnect a cancel, as DEC-18 already has it.
+    _Not every time; see the next entry._
   - `test_a_consumer_that_stops_early_closes_the_stream_while_the_loop_runs` pins this.
+- **Fixed after close-out (2026-10-04, `fix/s2-1-cancel-race`): a cancel could miss the
+  model's read.** This story streamed `prompt | llm | StrOutputParser()` (Scope, above).
+  - **What went wrong.** A sequence runs each chunk in its own task. So a Ctrl-C arriving
+    while a chunk was in flight ended that task, not the read from Ollama, and the stream
+    stayed open until the loop ran again: at the next question.
+  - **How it showed up.** The mid-stream cancel test failed 66 times in 300 on one core,
+    and turned CI red at random (S2-2's and S2-3's push runs).
+  - **The fix.** `stream_answer` now renders the prompt and streams the model itself.
+    `QueryPipeline.answer` became `QueryPipeline.prompt`.
+  - **Pinned by** `test_a_cancel_while_a_chunk_is_processed_closes_the_stream_before_returning`,
+    its strict negative control on the old shape, and
+    `test_ctrl_c_while_a_chunk_is_processed_leaves_no_stream_open_at_the_prompt`.
+  - Diagnosis and numbers: ARCHITECTURE.md §2.1 (DEC-14, the second trap), and S2-3's
+    second review.
 - **Telling the second Ctrl-C from the first needs the answer's task**, which `Runner.run()`
   keeps to itself. `_Answer.run()` records `asyncio.current_task()`, and the session quits
   when that task is pending, or finished with `KeyboardInterrupt`: the second SIGINT can land
