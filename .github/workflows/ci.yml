@@ -11,8 +11,18 @@
 
 name: CI
 
+# push runs on main and on release tags only. A branch that has a PR is tested by the
+# pull_request run, so a push to it would repeat the same work: with eval-retrieval,
+# about 2.5 minutes of network time twice per push (S2-3 review). main's own push is
+# also what writes the HF model cache that PR runs restore: a cache written on a PR is
+# visible to that PR only. Open the PR to get CI on a story branch.
+#
+# tags is load-bearing: with branches alone, GitHub runs nothing for a tag push, and
+# each release is tagged with CI green on the tag itself (v0.2; S2-3's second review).
 on:
   push:
+    branches: [main]
+    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -82,14 +92,18 @@ jobs:
           uv run --no-sync pip-audit --no-deps --disable-pip --progress-spinner off -r "$RUNNER_TEMP/audit.txt"
 
   # Tier 1 of the quality bar (DEC-15, S2-3): retrieval scored against the golden set
-  # (hit rate, MRR, recall), recomputed on every push against eval/thresholds.yaml.
+  # (hit rate, MRR, recall), recomputed on every pull request and every push to main
+  # against eval/thresholds.yaml.
   #
   # The only job with network access (STATUS.md caveat 19). Scoring needs the real
   # embedder's weights (~90 MB; S2-4 adds the cross-encoder's), which the hermetic check
-  # job must never fetch. Only the ingest step may download them, and only on a cache
-  # miss. The eval step runs under HF_HUB_OFFLINE=1, so it cannot reach the network.
+  # job must never fetch. Only the ingest step may reach the network, and only on a cache
+  # miss: on an exact hit it runs offline too (see that step). The eval step always runs
+  # under HF_HUB_OFFLINE=1.
   #
-  # Red here while check is green means retrieval quality moved, not that code broke.
+  # Red here while check is green: read the eval step's exit. 1 means retrieval ran and
+  # missed a floor, so retrieval quality moved. 2 means it could not run (a model missing
+  # offline, an unreadable index), and the log holds the traceback.
   eval-retrieval:
     needs: check
     runs-on: ubuntu-latest
@@ -121,10 +135,15 @@ jobs:
           restore-keys: hf-${{ runner.os }}-
 
       # The real corpus into a scratch index; never a committed or cached one. This step
-      # downloads the embedder on a cache miss.
+      # downloads the embedder on a cache miss. On an exact hit it runs offline: online,
+      # loading even a fully cached model sends huggingface.co a request per file (33,
+      # measured in S2-3's second review), and would fetch a newer upstream revision of
+      # the model, which CI would then embed with and never cache. "0" is false to
+      # huggingface_hub.
       - name: Ingest the corpus
         env:
           RAG_VECTOR_STORE_PATH: ${{ runner.temp }}/index
+          HF_HUB_OFFLINE: ${{ steps.hf-models.outputs.cache-hit == 'true' && '1' || '0' }}
         run: uv run rag-ingest
 
       # Saved here, as soon as ingest has filled it, rather than at the end of the job:
