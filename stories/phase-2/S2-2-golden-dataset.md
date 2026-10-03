@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Implemented 2026-10-03; reviewed twice; gates green locally. Awaiting the maintainer's record-by-record sign-off (table below) and CI on the branch (PR #8) |
+| **Status** | Done 2026-10-03 (PR #8). All 25 records signed off by the maintainer; CI green on the branch at `0ccc0ac`, push and PR runs. Reviewed twice; follow-ups below |
 | **Closes** | FR-7 (the dataset half), ISS-15 (the missing dataset), SRS §7.4; backlog: seed the golden dataset with GLIDER |
 | **Depends on** | — (can run alongside S2-1) |
 | **Model** | opus-fast (Claude drafts every record; the maintainer verifies every one) |
@@ -261,7 +261,11 @@ The ground truths are the product here; the code is small. For each record:
     theory is not unitary, which the notes record. The ground truth keeps p. 4's
     wording.
 
-  Rows 13 and 15 need the maintainer's re-check before they are ✓.
+  The maintainer accepted both after this review, and signed off rows 13 and 15
+  (2026-10-03). The fix is `0ccc0ac`.
+- **Verification 4 (CI):** green on `0ccc0ac`, push and PR runs. Two earlier push runs
+  were red in S2-1's flaky cancellation test, never in S2-2 code. Each time, the PR run
+  on the same commit passed. That test is in the STATUS.md backlog, "Before S2-7".
 
 ### Record-by-record sign-off (maintainer)
 
@@ -271,28 +275,28 @@ label + 49). Mark ✓, or write what is wrong.
 
 | # | id | File, pages | Check these facts | Signed off |
 | --- | --- | --- | --- | --- |
-| 1 | `glider-purpose` | GLIDER pp. 1, 2, 7 | name expansion; SLM = Small Language Model; 3.8B; Phi-3.5-mini-instruct; 0.654 / GPT-4o-mini 0.481 / Qwen-2.5-72B 0.485 |✓|
-| 2 | `glider-name` | GLIDER p. 1; also p. 2 | the title's expansion; p. 2 repeats it in full |✓|
-| 3 | `glider-slm` | GLIDER p. 2 | Small Language Model; "17x" |✓|
-| 4 | `glider-training-data` | GLIDER pp. 1, 2 | 685 domains, 183 criteria (not swapped) |✓|
-| 5 | `glider-flask-vs-gpt4o` | GLIDER pp. 5, 6; also p. 1 | FLASK is Table 1's 2nd column: GLIDER 0.615, GPT-4o 0.610 (second review read it: ✓); p. 1 says GLIDER is higher on FLASK |✓|
-| 6 | `glider-human-study` | GLIDER p. 7 | 100 points, 3 annotators; 91/90/91%; alpha 0.838 |✓|
-| 7 | `glider-data-filtering` | GLIDER p. 3 | 18,258 samples; 14.6% |✓|
-| 8 | `yolo-accuracy` | YOLOv8 pp. 3, 9 | 95.4% and 92.7%, and what each is attributed to |✓|
-| 9 | `yolo-response-overhead` | YOLOv8 p. 9 | 2-3 s; 30% overhead |✓|
-| 10 | `yolo-acronym` | YOLOv8 p. 3; also pp. 4, 5 | You Only Look Once, repeated in full on pp. 4 and 5 |✓|
-| 11 | `yolo-objectives` | YOLOv8 pp. 3–4 | the three objectives, across the page break |✓|
-| 12 | `yolo-anomaly-model` | YOLOv8 p. 8 | LSTM-based; context-aware filtering + multi-modal fusion |✓|
-| 13 | `yolo-alert-pipeline` | YOLOv8 p. 7 | severity classification; alarms, door locks, emergency messages |x|
-| 14 | `cade7-venue` | Proceedings pp. i, iii | May 14-16, 1984, Napa; 27 papers; Siekmann keynote, Suppes banquet |✓|
-| 15 | `siekmann-unification-hierarchy` | Proceedings p. 4; also p. 17 | p. 4, items (i)–(iv): unitary, finitary, infinitary, type zero; p. 17 repeats them formally |x|
-| 16 | `lusk-overbeek-itp` | Proceedings p. 43 | Interactive Theorem Prover; LMA; Pascal; ~fifty sites |✓|
-| 17 | `ketonen-ekl` | Proceedings p. 65 | ~10000 lines, MACLISP; SAIL (KL10); began 1981 |✓|
-| 18 | `stickel-ring-commutativity` | Proceedings p. 248 | x^3 = x ⇒ commutative; Bledsoe 1977; Veroff, ANL-NIU |✓|
-| 19 | `wos-linked-inference` | Proceedings pp. 316–317 | linked UR-resolution; one step for many; semantic for syntactic criteria |✓|
-| 20 | `ohlbach-wrightson-mkrp` | Proceedings p. 496 | "converse of contraction"; MKRP expansion; Karlsruhe and Kaiserslautern |✓|
-| 21 | `unanswerable-yolo-dataset` | — | the paper names no dataset (p. 8); `must_not_contain` COCO |✓|
-| 22 | `unanswerable-yolo-gpus` | — | no hardware in the YOLOv8 paper; `must_not_contain` H100 |✓|
-| 23 | `unanswerable-glider-mmlu` | — | MMLU appears nowhere |✓|
-| 24 | `unanswerable-cade8-venue` | — | the foreword lists only earlier venues; `must_not_contain` Oxford |✓|
-| 25 | `unanswerable-capital-australia` | — | `must_not_contain` Canberra |✓|
+| 1 | `glider-purpose` | GLIDER pp. 1, 2, 7 | name expansion; SLM = Small Language Model; 3.8B; Phi-3.5-mini-instruct; 0.654 / GPT-4o-mini 0.481 / Qwen-2.5-72B 0.485 | ✓ |
+| 2 | `glider-name` | GLIDER p. 1; also p. 2 | the title's expansion; p. 2 repeats it in full | ✓ |
+| 3 | `glider-slm` | GLIDER p. 2 | Small Language Model; "17x" | ✓ |
+| 4 | `glider-training-data` | GLIDER pp. 1, 2 | 685 domains, 183 criteria (not swapped) | ✓ |
+| 5 | `glider-flask-vs-gpt4o` | GLIDER pp. 5, 6; also p. 1 | FLASK is Table 1's 2nd column: GLIDER 0.615, GPT-4o 0.610 (second review read it: ✓); p. 1 says GLIDER is higher on FLASK | ✓ |
+| 6 | `glider-human-study` | GLIDER p. 7 | 100 points, 3 annotators; 91/90/91%; alpha 0.838 | ✓ |
+| 7 | `glider-data-filtering` | GLIDER p. 3 | 18,258 samples; 14.6% | ✓ |
+| 8 | `yolo-accuracy` | YOLOv8 pp. 3, 9 | 95.4% and 92.7%, and what each is attributed to | ✓ |
+| 9 | `yolo-response-overhead` | YOLOv8 p. 9 | 2-3 s; 30% overhead | ✓ |
+| 10 | `yolo-acronym` | YOLOv8 p. 3; also pp. 4, 5 | You Only Look Once, repeated in full on pp. 4 and 5 | ✓ |
+| 11 | `yolo-objectives` | YOLOv8 pp. 3–4 | the three objectives, across the page break | ✓ |
+| 12 | `yolo-anomaly-model` | YOLOv8 p. 8 | LSTM-based; context-aware filtering + multi-modal fusion | ✓ |
+| 13 | `yolo-alert-pipeline` | YOLOv8 p. 7 | severity classification; alarms, door locks, emergency messages | ✓ |
+| 14 | `cade7-venue` | Proceedings pp. i, iii | May 14-16, 1984, Napa; 27 papers; Siekmann keynote, Suppes banquet | ✓ |
+| 15 | `siekmann-unification-hierarchy` | Proceedings p. 4; also p. 17 | p. 4, items (i)–(iv): unitary, finitary, infinitary, type zero; p. 17 repeats them formally | ✓ |
+| 16 | `lusk-overbeek-itp` | Proceedings p. 43 | Interactive Theorem Prover; LMA; Pascal; ~fifty sites | ✓ |
+| 17 | `ketonen-ekl` | Proceedings p. 65 | ~10000 lines, MACLISP; SAIL (KL10); began 1981 | ✓ |
+| 18 | `stickel-ring-commutativity` | Proceedings p. 248 | x^3 = x ⇒ commutative; Bledsoe 1977; Veroff, ANL-NIU | ✓ |
+| 19 | `wos-linked-inference` | Proceedings pp. 316–317 | linked UR-resolution; one step for many; semantic for syntactic criteria | ✓ |
+| 20 | `ohlbach-wrightson-mkrp` | Proceedings p. 496 | "converse of contraction"; MKRP expansion; Karlsruhe and Kaiserslautern | ✓ |
+| 21 | `unanswerable-yolo-dataset` | — | the paper names no dataset (p. 8); `must_not_contain` COCO | ✓ |
+| 22 | `unanswerable-yolo-gpus` | — | no hardware in the YOLOv8 paper; `must_not_contain` H100 | ✓ |
+| 23 | `unanswerable-glider-mmlu` | — | MMLU appears nowhere | ✓ |
+| 24 | `unanswerable-cade8-venue` | — | the foreword lists only earlier venues; `must_not_contain` Oxford | ✓ |
+| 25 | `unanswerable-capital-australia` | — | `must_not_contain` Canberra | ✓ |

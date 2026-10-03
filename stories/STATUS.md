@@ -5,14 +5,19 @@
 
 ## Now
 
-**Next action: sign off [S2-2](phase-2/S2-2-golden-dataset.md)'s 25 golden records**, one
-by one against the PDFs (the table in its Deviation section), then push
-`feat/s2-2-golden-dataset` for CI (PR #8). Implemented 2026-10-03, reviewed twice, and
-green locally. The second review added `also_pages` to three records, which the sign-off
-covers too; its "check these" column says where the automated checks stop. PR #7 (S2-1)
-is merged. Next after S2-2 is [S2-3](phase-2/S2-3-retrieval-eval.md), whose metrics now
-count `also_pages` towards hit rate and MRR. The order of the Phase 2
-stories, and what each depends on, are in the Phase 2 table below.
+**Next action: merge PR #8 ([S2-2](phase-2/S2-2-golden-dataset.md), done 2026-10-03, CI
+green), then [S2-3](phase-2/S2-3-retrieval-eval.md)**: tier-1 retrieval metrics and the
+`eval-retrieval` CI job. Model opus-fast, not plan-first, on branch
+`feat/s2-3-retrieval-eval` (risky: the first CI job with network access). Its metrics
+count `also_pages` towards hit rate and MRR; S2-2's Discovered section says how to read
+a miss. The order of the Phase 2 stories, and what each depends on, are in the Phase 2
+table below.
+
+**Known red CI runs.** S2-1's mid-stream cancellation test is flaky (backlog, "Before
+S2-7"). It failed two push runs on S2-2's branch, while the PR run on each commit passed.
+It does not block S2-3, but every story will meet it until it is fixed. A red `check` job
+failing only in `test_cancel_closes_the_stream_before_the_consumer_returns[mid-stream]`
+is this, not the change under review.
 
 **The Phase 2 architecture pass is done** (2026-10-02).
 
@@ -381,7 +386,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
 | [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Done 2026-10-03 (PR #7) |
-| [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Implemented 2026-10-03; awaiting record sign-off and CI |
+| [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Done 2026-10-03 (PR #8) |
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Todo |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Todo |
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Todo |
@@ -453,6 +458,10 @@ leads with one of two things:
   streamed outside `RunnablePassthrough.assign`, and the second Ctrl-C quits cleanly. The
   CLI closes ChatOllama's clients at exit (`aclose_llm`); the API half stays with S2-7.
   `py.typed` and `types-PyYAML` (found in S1-6).
+- **S2-2:** the golden set, `eval/eval_dataset.jsonl`, seeded with GLIDER (S0-6, and the
+  v0.2 manual test's two traps). It has 25 records, 20 answerable and 5 unanswerable, each
+  signed off by the maintainer against its PDF. `evaluation/dataset.py` validates the
+  file, and a committed test checks that every quote in the notes is on its cited page.
 
 ### Closed in Phase 1
 
@@ -524,12 +533,6 @@ leads with one of two things:
   - **pypdf's own warnings leak** (v0.2 manual test). A corrupt PDF prints
     `invalid pdf header…` / `EOF marker not found` above the banner, before
     the clean error. Quiet the `pypdf` logger to ERROR in `ingest.py`.
-- **S2-2 — seed the golden dataset with GLIDER** (S0-6, re-confirmed by the
-  v0.2 manual test). "What is GLIDER and what does it evaluate?" is still
-  answered unfaithfully with phi3: every phrase is from the paper, but the
-  benchmark categories (p. 5) are presented as what GLIDER evaluates, and the
-  p. 8 description as what it "stands for". Retrieval is correct (all five
-  sources from the paper, p. 7 first). Ground truth: S0-6 story, "Fact-check".
 - **S2-6 — the walk descends into ignored trees** (found in S1-3 and S1-4).
   It walks all of `.git` before discarding it. Performance only. Phase 2's
   incremental ingestion rewrites discovery around the manifest, so prune there
@@ -616,8 +619,8 @@ leads with one of two things:
     fingerprint's `query` part, so adding it afterwards marks the baseline stale and
     forces another multi-hour run. A different thread count can also change the
     floating-point sums, and so, rarely, an answer.
-  - A small change on its own: config plus a measured comment. It can also ride S2-2 or
-    S2-3 if one of them is open first.
+  - A small change on its own: config plus a measured comment. It can also ride S2-3. S2-2
+    closed without it.
 - **S2-6 —** the ingestion manifest records the embedder's identity and dimension;
   refuse to open an index built with a different embedder (DEC-17).
 - **Phase 3 —** NFR-2 (<2 s first token) is unachievable CPU-only: revise the SLO
