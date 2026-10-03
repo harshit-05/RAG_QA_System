@@ -67,7 +67,17 @@ ARCHITECTURE.md §2.1 DEC-15, config in §2.3, file shapes in §2.4.
   - It is omitted from coverage, and gets a mypy no-stub override if needed.
   - It scores the answerable items with the four metrics.
   - It computes the decline rate over the unanswerable ones: the answer contains
-    `decline_marker` (case-insensitive), and none of the record's `must_not_contain`.
+    `decline_marker`, and none of the record's `must_not_contain`. Both comparisons are
+    case-insensitive: the answer and each entry are lower-cased, so "coco" leaks "COCO".
+    A `must_not_contain` entry matches **as a whole word** (`\b` on both sides, the
+    entry `re.escape`d), so "COCO" does not fire on "cocoa", nor "H100" on "H1000"
+    (S2-2 second review). The marker stays a substring match, because it is a phrase.
+    - Accepted cost: a refusal that names a leak word to explain itself ("the references
+      mention Oxford, but not CADE-8's venue") counts as a leak. S2-5b's three hand-checked
+      answers should include an unanswerable one, so this shows up if it happens.
+  - Before scoring, it checks that every unanswerable record's `ground_truth` contains
+    `decline_marker`, and exits 2 naming the record if not. The golden-set loader cannot
+    check this: it knows nothing of the config (S2-2 review).
   - **It copies the generation parts from the answers file**, and refuses to score an
     answers file whose `query`, `ingestion`, `corpus` or `questions` part does not match
     the checkout it runs in. `references` and `judge` are computed at score time.
@@ -131,6 +141,10 @@ ARCHITECTURE.md §2.1 DEC-15, config in §2.3, file shapes in §2.4.
   - Placeholder validator cases: `{context}` missing, `{context}` in system, a stray
     `{x}`, and escaped `{{x}}` allowed.
   - `decline_marker` missing from the system prompt.
+  - A `must_not_contain` leak in a different case ("coco" for "COCO") still counts as a
+    leak, and an unanswerable `ground_truth` without the marker is refused.
+  - Whole-word matching: "cocoa" is not a COCO leak, and "H100." at the end of a sentence
+    is an H100 leak.
   - `generate` against a fake pipeline, with no Ollama.
 
 ## Out of scope

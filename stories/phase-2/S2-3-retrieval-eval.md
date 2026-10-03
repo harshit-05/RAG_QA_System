@@ -14,9 +14,15 @@
 Retrieval quality becomes numbers that CI recomputes on every push. For each answerable
 golden question, three are taken over what the prompt would actually receive:
 
-- **hit rate**: an expected page appears anywhere in the context;
-- **MRR**: the reciprocal rank of the first expected page;
-- **recall**: the share of the expected pages the context covers.
+- **hit rate**: an expected page, or one of its `also_pages`, appears anywhere in the
+  context;
+- **MRR**: the reciprocal rank of the first such page;
+- **recall**: the share of the expected `pages` the context covers (`also_pages` are not
+  in the denominator).
+
+`also_pages` came from S2-2's second review: three records name pages that repeat the
+whole answer. Without them, retrieving the repeat scores as a miss (ARCHITECTURE.md §2.1,
+DEC-15 tier 1).
 
 This is the half of the quality bar that can be recomputed: deterministic, with no LLM,
 and taking minutes. Design: ARCHITECTURE.md §2.1 DEC-15 (tier 1), CI in §2.5.
@@ -63,7 +69,9 @@ and taking minutes. Design: ARCHITECTURE.md §2.1 DEC-15 (tier 1), CI in §2.5.
   The `check` job keeps `HF_HUB_OFFLINE` exactly as it is.
 - **Tests.**
   - Metric arithmetic on hand-built documents: a hit at rank 1, at rank 3 and no hit;
-    partial recall; `page_label` matching; absolute versus relative `source`.
+    partial recall; `page_label` matching; absolute versus relative `source`. An
+    `also_pages` hit counts for hit rate and MRR but leaves recall unchanged; an
+    expected page ranked below an also-page sets the rank by the also-page.
   - `rag-eval retrieval` exit codes, against a tiny index built with
     `DeterministicFakeEmbedding`.
 

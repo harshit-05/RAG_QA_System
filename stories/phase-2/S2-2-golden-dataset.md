@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Implemented 2026-10-03; gates green locally. Awaiting the maintainer's record-by-record sign-off (table below) and CI on the branch |
+| **Status** | Implemented 2026-10-03; reviewed twice; gates green locally. Awaiting the maintainer's record-by-record sign-off (table below) and CI on the branch (PR #8) |
 | **Closes** | FR-7 (the dataset half), ISS-15 (the missing dataset), SRS §7.4; backlog: seed the golden dataset with GLIDER |
 | **Depends on** | — (can run alongside S2-1) |
 | **Model** | opus-fast (Claude drafts every record; the maintainer verifies every one) |
@@ -118,10 +118,13 @@ The ground truths are the product here; the code is small. For each record:
 
 - **Which pages a record lists (input for S2-3).** `expected_sources` lists the pages the
   ground truth is written from: the passages its `notes` quote, one per fact. When the
-  same fact is repeated elsewhere, `notes` names that page ("also p. 4") but does not
-  list it. So a tier-1 miss can be a retrieved repeat. Read the record's notes before
-  calling it a retrieval failure. Listing every repeat instead would have made recall
-  punish a context that held the fact on another page.
+  same fact is repeated elsewhere, `notes` names that page ("also p. 4"). Listing every
+  repeat in `pages` would have made recall punish a context that held the fact on
+  another page. **Since the second review**, a page that repeats the *whole* answer is
+  also listed in `also_pages`: a hit and a rank for tier 1, but outside recall's
+  denominator. A page that repeats only part of it stays in `notes` alone, so a tier-1
+  miss there can still be a retrieved partial repeat. Read the notes before calling it a
+  retrieval failure.
 - **The YOLOv8 PDF has two page numberings.** `citation()` prints the PDF's page labels,
   1–13 (the first page is a ResearchGate cover). The journal's own numbers, 52–62, are
   printed on the pages too, 49 higher. The records use the labels, as tier 1 must; each
@@ -154,6 +157,63 @@ The ground truths are the product here; the code is small. For each record:
 
 ## Deviation from plan
 
+- **First review (2026-10-03), fixed in a follow-up commit.** The reviewer re-checked the
+  records against the PDFs independently: every quote is on its page, every number in each
+  ground truth is on its expected pages, and the five unanswerables are unanswerable.
+  Four gaps were found in the code and tests:
+  - `source` values like `./x.pdf`, `a//b.pdf` or `x/` passed the relative-path check but
+    could never equal a chunk's source, so a normalised form is now required;
+  - repeated page labels, or a source listed twice, would have skewed S2-3's recall, so
+    both are rejected;
+  - the quote check was a scratch script. `test_every_quoted_passage_is_on_the_page_the_notes_name`
+    now commits it, over the cited pages only (about 1.3 s, not the 42 s of extracting all
+    561 pages). It covers the 64 `p. N: "..."` quotes; it tolerates line breaks and
+    hyphenation only, and a mutant with a swapped digit fails it;
+  - `load_golden` split on `splitlines()`, which also breaks on U+2028, legal inside a
+    JSON string. It now splits on `\n`.
+  Passed to S2-5: case-insensitive `must_not_contain`, and a marker check on unanswerable
+  ground truths.
+
+- **Second review (2026-10-03).** These checks are independent of the first review's.
+  The data holds:
+  - **The unanswerables, against all 561 extracted pages:**
+    - COCO, MMLU and any GPU hardware occur nowhere, in the YOLOv8 paper or elsewhere;
+    - "Oxford" occurs only in two reference lists (pp. 38 and 475);
+    - nothing names CADE-8 or its venue;
+    - Australia occurs once, on p. 500.
+  - **Every number and proper noun in all 20 answerable ground truths is on the record's
+    expected pages.** Planted wrong values (0.645, 0.841) are caught, so the check can
+    fail.
+  - **Quotes and pages:** every quoted page is a listed page, and every listed page
+    carries a quote.
+  - **FLASK (#5)** was read by hand in the p. 5 table: eight numeric columns, GPT-4o
+    0.610 and GLIDER 0.615 in the FLASK column.
+  - These checks confirm tokens and quotes, not relations (which score belongs to which
+    model). The sign-off below remains the check for those, and the reviewer's
+    "check these" column says where to look.
+
+  Changes:
+  - **`also_pages`** (schema, data, tests). Five records named repeat pages in their
+    notes but did not list them, so retrieving the repeat would have scored as a miss on
+    hit rate and MRR, and biased S2-4's reranker decision. Each candidate was checked
+    against the page text, and three repeat the whole answer:
+    - `glider-name` (p. 2, the expansion);
+    - `glider-flask-vs-gpt4o` (p. 1, "higher Pearson's correlation than GPT-4o on
+      FLASK");
+    - `yolo-acronym` (pp. 4 and 5, "You Only Look Once").
+
+    Two repeat only part of the answer and stay in `notes` alone: `glider-training-data`
+    p. 3 has the 685 domains but not the 183 criteria, and `yolo-accuracy` p. 8 has the
+    95.4% but not the 92.7%. Rules: `also_pages` needs `pages`, a page is never in both,
+    and each also-page must be named in `notes`
+    (`test_every_also_page_is_named_in_the_notes`). Tier 2 is unaffected:
+    `expected_sources` is outside its fingerprint. ARCHITECTURE.md (DEC-15 tier 1, §2.4)
+    and S2-3 now define the metrics with it.
+  - **Surrounding spaces** in `source` or a page label are rejected. Neither could ever
+    match a chunk; before this, only the real-file tests would have caught them.
+  - **For S2-5:** `must_not_contain` matches as a whole word, and its accepted cost is
+    recorded there.
+
 - **Rules added beyond the story's list**, all from ARCHITECTURE.md §2.4 or needed to
   apply it:
   - `source` must be corpus-relative (§2.4 says so; an absolute path would silently never
@@ -185,15 +245,15 @@ label + 49). Mark ✓, or write what is wrong.
 | # | id | File, pages | Check these facts | Signed off |
 | --- | --- | --- | --- | --- |
 | 1 | `glider-purpose` | GLIDER pp. 1, 2, 7 | name expansion; SLM = Small Language Model; 3.8B; Phi-3.5-mini-instruct; 0.654 / GPT-4o-mini 0.481 / Qwen-2.5-72B 0.485 | |
-| 2 | `glider-name` | GLIDER p. 1 | the title's expansion | |
+| 2 | `glider-name` | GLIDER p. 1; also p. 2 | the title's expansion; p. 2 repeats it in full | |
 | 3 | `glider-slm` | GLIDER p. 2 | Small Language Model; "17x" | |
 | 4 | `glider-training-data` | GLIDER pp. 1, 2 | 685 domains, 183 criteria (not swapped) | |
-| 5 | `glider-flask-vs-gpt4o` | GLIDER pp. 5, 6 | FLASK is Table 1's 2nd column: GLIDER 0.615, GPT-4o 0.610 | |
+| 5 | `glider-flask-vs-gpt4o` | GLIDER pp. 5, 6; also p. 1 | FLASK is Table 1's 2nd column: GLIDER 0.615, GPT-4o 0.610 (second review read it: ✓); p. 1 says GLIDER is higher on FLASK | |
 | 6 | `glider-human-study` | GLIDER p. 7 | 100 points, 3 annotators; 91/90/91%; alpha 0.838 | |
 | 7 | `glider-data-filtering` | GLIDER p. 3 | 18,258 samples; 14.6% | |
 | 8 | `yolo-accuracy` | YOLOv8 pp. 3, 9 | 95.4% and 92.7%, and what each is attributed to | |
 | 9 | `yolo-response-overhead` | YOLOv8 p. 9 | 2-3 s; 30% overhead | |
-| 10 | `yolo-acronym` | YOLOv8 p. 3 | You Only Look Once | |
+| 10 | `yolo-acronym` | YOLOv8 p. 3; also pp. 4, 5 | You Only Look Once, repeated in full on pp. 4 and 5 | |
 | 11 | `yolo-objectives` | YOLOv8 pp. 3–4 | the three objectives, across the page break | |
 | 12 | `yolo-anomaly-model` | YOLOv8 p. 8 | LSTM-based; context-aware filtering + multi-modal fusion | |
 | 13 | `yolo-alert-pipeline` | YOLOv8 p. 7 | severity classification; alarms, door locks, emergency messages | |

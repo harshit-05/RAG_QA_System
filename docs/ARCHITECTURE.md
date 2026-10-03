@@ -723,9 +723,15 @@ split by what can be computed where.
 - **What it measures.** `rag-eval retrieval` runs every answerable golden question
   through `pipeline.retrieve`, which is exactly what the prompt would receive. It scores
   the result against the question's `expected_sources`: a file and its printed pages.
-  - **Hit rate**: an expected page appears anywhere in the context.
-  - **MRR**: the reciprocal rank of the first expected page.
-  - **Recall**: the share of expected pages the context covers.
+  - **Hit rate**: an expected page, or one of its `also_pages`, appears anywhere in the
+    context.
+  - **MRR**: the reciprocal rank of the first such page.
+  - **Recall**: the share of expected `pages` the context covers. `also_pages` are not in
+    its denominator.
+
+  `also_pages` are pages that answer the whole question on their own, by repeating the
+  fact (S2-2 review). Without them, retrieving the repeat would count as a miss, and a
+  reranker that prefers the cleaner repeat would look worse than it is (S2-4).
 - **Deterministic, with no LLM.**
 - **The CI job, `eval-retrieval`**, ingests the real corpus into a temporary index
   (`RAG_VECTOR_STORE_PATH`). It then computes the metrics under `HF_HUB_OFFLINE=1`.
@@ -774,8 +780,11 @@ split by what can be computed where.
     deterministic, and an answer counts as a decline only if both hold:
     - it contains the refusal's core phrase, `evaluation.decline_marker` (for example
       "could not find the answer"), compared case-insensitively;
-    - it contains none of the record's `must_not_contain` strings: the prior-knowledge
-      leak that S0-6 checked for ("Canberra").
+    - it contains none of the record's `must_not_contain` strings, also compared
+      case-insensitively: the prior-knowledge leak that S0-6 checked for ("Canberra").
+
+    `rag-eval score` also refuses a golden set whose unanswerable `ground_truth` lacks the
+    marker, which the pure loader cannot know.
 
     It is not an exact match on the full refusal sentence, because S0-6 showed mistral
     paraphrasing that sentence while keeping its core.
@@ -1399,6 +1408,10 @@ the front end, which renders them.
 
 - **`pages`** are printed page labels: what `citation()` shows and what a chunk's
   `page_label` holds. They are omitted for formats without pages.
+- **`also_pages`** (optional, per source) are pages that repeat the whole answer. Tier 1
+  counts them towards hit rate and MRR, but not towards recall. A page that repeats only
+  part of the answer stays out, and is mentioned in `notes` only. Each one must be named
+  in `notes`, which a test checks.
 - **`source`** is corpus-relative. Tier 1 makes a chunk's `source` relative to
   `paths.data` before matching, so matching works both before and after DEC-17 makes
   `source` relative in the index.
@@ -1410,10 +1423,14 @@ the front end, which renders them.
 - **`evaluation/dataset.py` validates the file:**
   - ids are unique;
   - an answerable record has a non-empty ground truth and sources;
-  - an unanswerable record has no sources.
+  - an unanswerable record has no sources;
+  - `source` and page labels are written exactly as they will be matched: normalised,
+    with no surrounding spaces, and none repeated;
+  - a page is in `pages` or `also_pages`, never both.
 
-  A test checks that every `source` exists in the corpus and every page label exists in
-  that file.
+  Tests check that every `source` exists in the corpus, that every page label
+  (`also_pages` included) exists in that file, and that every passage `notes` quotes is
+  on the page it names.
 
 **Floors and runs:**
 

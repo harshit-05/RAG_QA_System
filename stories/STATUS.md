@@ -7,9 +7,11 @@
 
 **Next action: sign off [S2-2](phase-2/S2-2-golden-dataset.md)'s 25 golden records**, one
 by one against the PDFs (the table in its Deviation section), then push
-`feat/s2-2-golden-dataset` for CI. Implemented 2026-10-03 and green locally. PR #7 (S2-1)
-is merged. Next after S2-2 is [S2-3](phase-2/S2-3-retrieval-eval.md); S2-2's Discovered
-section has an input for it (which pages a record lists). The order of the Phase 2
+`feat/s2-2-golden-dataset` for CI (PR #8). Implemented 2026-10-03, reviewed twice, and
+green locally. The second review added `also_pages` to three records, which the sign-off
+covers too; its "check these" column says where the automated checks stop. PR #7 (S2-1)
+is merged. Next after S2-2 is [S2-3](phase-2/S2-3-retrieval-eval.md), whose metrics now
+count `also_pages` towards hit rate and MRR. The order of the Phase 2
 stories, and what each depends on, are in the Phase 2 table below.
 
 **The Phase 2 architecture pass is done** (2026-10-02).
