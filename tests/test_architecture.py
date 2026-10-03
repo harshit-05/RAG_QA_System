@@ -3,6 +3,8 @@
 * ADR-009: ``rag_qa.ingest`` never imports ``rag_qa.chain``, and the config layer
   (``registry``, ``schema``, ``settings``, ``config``) imports no LangChain at all.
   Nor does ``evaluation.dataset``, which CI's model-free eval gate imports (S2-2).
+* ``evaluation.gate`` loads no model stack: it holds the floors, and S2-5's
+  ``rag-eval check`` runs it in CI's model-free job (ARCHITECTURE.md §2.2).
   Checked at **runtime in a fresh interpreter**, replacing the grep
   ``^(from|import) .*chain``, which false-positives on ``langchain_core`` (S1-3).
   A fresh process is required: inside pytest, other tests have already loaded
@@ -54,6 +56,14 @@ def test_the_config_layer_loads_no_langchain(module: str) -> None:
     # set's loader is held to the same rule: the tier-2 gate runs it with no models.
     langchain = sorted(m for m in modules_loaded_by(module) if m.startswith("langchain"))
     assert langchain == []
+
+
+def test_the_floors_load_without_the_model_stack() -> None:
+    # S2-5 adds the fingerprint, which may bring in langchain_core, but never any of these:
+    # `check` must stay a CPU-only, model-free step.
+    heavy = {"ragas", "openai", "torch", "sentence_transformers", "langchain_huggingface"}
+    loaded = modules_loaded_by("rag_qa.evaluation.gate")
+    assert sorted(m for m in loaded if m.split(".")[0] in heavy) == []
 
 
 def _imported_modules(path: Path) -> set[str]:
