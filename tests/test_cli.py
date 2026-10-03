@@ -18,7 +18,6 @@ import pytest
 from conftest import MakeConfig, StreamingFakeChatModel
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessageChunk, BaseMessage
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
@@ -30,6 +29,7 @@ from rag_qa.cli import EXIT_CANNOT_START, EXIT_OK, repl
 
 CTRL_C = "ctrl-c"  # script: the user presses Ctrl-C once, mid-answer
 CTRL_C_TWICE = "ctrl-c twice"  # and again while the answer is unwinding
+CTRL_C_AT_A_CHUNK = "ctrl-c at a chunk"  # once, while a chunk is being processed
 
 
 def _chunk(text: str) -> ChatGenerationChunk:
@@ -55,6 +55,12 @@ class ScriptedModel(StreamingFakeChatModel):
             if behaviour in (CTRL_C, CTRL_C_TWICE):
                 signal.raise_signal(signal.SIGINT)  # the Runner cancels this answer...
                 await asyncio.sleep(30)  # ...and the cancel lands here, as in a read from Ollama
+            elif behaviour == CTRL_C_AT_A_CHUNK:
+                # Ctrl-C while the next chunk is being handed on, not while waiting on
+                # Ollama: the moment that used to leave the stream open (S2-3 review).
+                signal.raise_signal(signal.SIGINT)
+                yield _chunk("more ")
+                await asyncio.sleep(30)
             elif isinstance(behaviour, BaseException):
                 raise behaviour
             else:
@@ -70,7 +76,7 @@ def fake_pipeline(model: StreamingFakeChatModel) -> QueryPipeline:
     prompt = ChatPromptTemplate.from_messages([("human", "{context}\n\nQuestion: {question}")])
     return QueryPipeline(
         retrieve=RunnableLambda(lambda question: [doc]),
-        answer=prompt | model | StrOutputParser(),
+        prompt=prompt,
         llm=model,
         corpus_root=Path("/x"),
     )
@@ -136,6 +142,26 @@ def test_ctrl_c_during_an_answer_stops_it_and_returns_to_the_prompt(capsys: Any)
     assert model.log == ["start", "closed", "start", "closed"]
     assert len(set(map(id, model.loops))) == 1  # one loop for the whole session
     assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+
+
+def test_ctrl_c_while_a_chunk_is_processed_leaves_no_stream_open_at_the_prompt(
+    capsys: Any,
+) -> None:
+    # The moment langchain's per-chunk tasks used to lose: the stream to Ollama stayed
+    # open, and Ollama kept generating, until the next question ran the loop again
+    # (S2-3's second review). Checked where the user sees it: at the next prompt.
+    require_default_sigint_handler()
+    model = ScriptedModel(script=[CTRL_C_AT_A_CHUNK, "next answer"])
+    log_at_prompt: list[list[str]] = []
+    read = scripted("slow question", "next")
+
+    def watching(prompt: str) -> str:
+        log_at_prompt.append(list(model.log))
+        return read(prompt)
+
+    assert repl(fake_pipeline(model), watching) == EXIT_OK
+    assert "answer interrupted" in capsys.readouterr().out
+    assert log_at_prompt[1] == ["start", "closed"]  # closed before the prompt came back
 
 
 def test_two_ctrl_cs_during_an_answer_end_the_session(

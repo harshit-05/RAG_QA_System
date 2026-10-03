@@ -646,15 +646,43 @@ Ollama finishes.
 >
 > On CPU, that gap is 5–15 s of Ollama work. In a CLI, the loop is paused between
 > questions, so the orphaned task would not stop at all. **`stream_answer` therefore never
-> streams the `assign` chain.** It awaits retrieval, yields `Sources`, then streams
-> `prompt | llm | StrOutputParser()` directly and calls `aclose()` on it in a `finally`.
+> streams the `assign` chain.** It awaits retrieval, yields `Sources`, renders the prompt,
+> then streams the model itself (the second trap, below) and calls `aclose()` on it in a
+> `finally`.
+
+> **Second verified trap (2026-10-04): streaming `prompt | llm | StrOutputParser()`
+> directly is not enough either.** S2-1 shipped that shape, and its mid-stream cancel test
+> turned out flaky in CI.
+>
+> - **The cause.** A Runnable sequence runs each chunk in its own task:
+>   `coro_with_context` always calls `create_task` (`runnables/utils.py:155`). The parser
+>   also hands each chunk to `run_in_executor` (`output_parsers/transform.py:47`).
+> - **What goes wrong.** A cancel that arrives while a chunk is in flight ends that chunk's
+>   task, not the model's read. The model's generator is left paused at a `yield`, and only
+>   the loop's async-generator finalizer closes it, 7 loop iterations later.
+> - **What a user would see.** In the CLI the loop is idle at the prompt, so the stream to
+>   Ollama stayed open, and generation ran on, until the next question.
+>
+> | Shape | Mid-stream cancel, one core | Cancel forced while a chunk is processed |
+> | --- | --- | --- |
+> | `prompt \| llm \| parser`, streamed directly | 66 of 300 left the stream open | open on return, every time |
+> | the model itself, `llm.astream(messages)` | 0 of 300 | closed before return, every time |
+>
+> **`stream_answer` therefore renders the prompt (`prompt.format_messages`) and streams
+> `llm.astream(messages)` in its own task.** The model's stream is then only ever paused
+> in its own read, so a cancel always lands there. This holds with no callback handlers
+> (none are configured). A handler whose `on_llm_new_token` suspends, such as a tracer
+> that hops threads, would reopen the window until the loop's finalizer closes the stream.
 
 Other facts checked in this pass:
 
 - **The cancel reaches the HTTP request.**
-  - `BaseChatModel.astream` spawns no task; only `stream_events` does.
-  - Each chunk task created by `_atransform_stream_with_config` is awaited directly, so
-    a cancel reaches `ChatOllama._astream`.
+  - `BaseChatModel.astream` spawns no task; only `stream_events` does. Streamed itself,
+    the model runs in the consuming task, so a cancel reaches `ChatOllama._astream`.
+  - _Corrected 2026-10-04:_ this pass first reasoned that a sequence's chunk tasks,
+    created by `_atransform_stream_with_config` and awaited directly, pass a cancel on
+    just as well. They do, except when it arrives while a chunk is in flight: the second
+    trap above.
   - That method streams through `ollama.AsyncClient`, which wraps the request in
     `async with httpx…stream(...)` (`ollama/_client.py:777`). The HTTP response is
     therefore closed.
@@ -685,10 +713,12 @@ Consequences:
 
 - **`chain.py` gains `QueryPipeline`, which holds the parts** (§2.4):
   - `retrieve`: the retriever, then the reranker when one is configured;
-  - `answer`: `prompt | llm | StrOutputParser()`;
-  - the `llm` itself, so that its clients can be closed.
-- **`build_rag_chain` stays, composed from the same parts.** The §0.4 `invoke` contract
-  and ADR-008 therefore stand. Its docstring says it is not for cancellable streaming.
+  - `prompt`: the chat prompt, which `stream_answer` renders (`chain.build_prompt`);
+  - the `llm` itself, which `stream_answer` streams, and whose clients `aclose()` closes.
+- **`build_rag_chain` stays, composed from the same parts:** the same `build_prompt`
+  and `llm`, as `prompt | llm | StrOutputParser()`. The §0.4 `invoke` contract and
+  ADR-008 therefore stand. Its docstring says it is not for cancellable streaming, and
+  `test_chain` checks that both paths give the model the same prompt.
 - **`components.aclose_llm(llm)` closes ChatOllama's HTTP clients.**
   - ChatOllama has no public close. `ollama.AsyncClient.close()` exists, but is reachable
     only through the private `_async_client`.
@@ -707,6 +737,10 @@ Rejected:
   reaches into private state on every answer, and it still leaves the orphaned task.
 - **A thread per answer with a stop flag.** Python threads cannot be cancelled, which is
   the shape of the current bug.
+- **Keeping `prompt | llm | StrOutputParser()` and letting the loop drain after a
+  cancel** (2026-10-04). The stream would close only once the loop ran again, so the CLI
+  would need a drain step after every interrupt. Streaming the model itself removes the
+  per-chunk tasks instead.
 
 **DEC-15 — The quality bar is two gates. Retrieval is recomputed in CI; generation is run
 offline and checked in CI.** With a local judge, RAGAs takes hours on this host. A sweep
@@ -1315,8 +1349,9 @@ eval files under `eval/` beside the config file.
 class QueryPipeline:
     retrieve: Runnable[str, list[Document]] | None   # retriever, then reranker; awaited, never streamed.
                                                      # None only while the API has no index (S2-7)
-    answer: Runnable[dict[str, str], str]     # prompt | llm | StrOutputParser(); streamed directly
-    llm: BaseChatModel                        # kept so aclose() can close its HTTP clients
+    prompt: ChatPromptTemplate                # rendered by stream_answer (chain.build_prompt)
+    llm: BaseChatModel                        # streamed itself, never via a sequence (DEC-14);
+                                              # kept too so aclose() can close its HTTP clients
     corpus_root: Path                         # SourceRef.source is relative to it
     async def aclose(self) -> None: ...
 
@@ -1461,11 +1496,14 @@ The unit suite stays hermetic (DEC-11). Each story adds tests:
 
 - **Cancellation (S2-1).** A fake chat model whose `_astream` is slow and records, in a
   `finally`, when it is closed.
-  - Asserted: cancelling the consumer closes the stream before the consumer returns,
-    both mid-stream and during the simulated prefill.
-  - Negative control: the same assertion fails against the `RunnablePassthrough.assign`
-    shape. It is written as `xfail(strict=True)`, so if langchain-core ever fixes the
-    behaviour, the suite goes red and says the trap is gone, not silently green.
+  - Asserted: cancelling the consumer closes the stream before the consumer returns:
+    mid-stream, during the simulated prefill, and with the cancel forced while a chunk
+    is being processed (deterministic, the second trap). The CLI test raises a real
+    SIGINT at that moment and checks that the stream is closed when the prompt returns.
+  - Negative controls: the same assertion fails against the `RunnablePassthrough.assign`
+    shape, and the forced cancel fails against `prompt | llm | StrOutputParser()`. Both
+    are `xfail(strict=True)`, so if langchain-core ever fixes the behaviour, the suite
+    goes red and says the trap is gone, not silently green.
   - Plus the manual check against real Ollama, which only the daemon can show: our
     connection closes within about 1 s, and the runner idles by the end of the prefill
     at the latest (DEC-14).

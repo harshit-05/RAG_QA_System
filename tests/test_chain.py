@@ -16,6 +16,7 @@ from langchain_core.documents import Document
 from rag_qa.answering import stream_answer
 from rag_qa.chain import (
     NoIndexError,
+    QueryPipeline,
     build_query_pipeline,
     build_rag_chain,
     citation,
@@ -23,6 +24,12 @@ from rag_qa.chain import (
 )
 from rag_qa.config import load_config
 from rag_qa.settings import ENV_VECTOR_STORE_PATH
+
+
+def answer_from(pipeline: QueryPipeline) -> str:
+    """The LLM half on its own: the prompt rendered, then the model invoked."""
+    messages = pipeline.prompt.format_messages(context="c", question="q")
+    return str(pipeline.llm.invoke(messages).text)
 
 
 def test_invoke_returns_question_context_and_answer(fake_rag: Path) -> None:
@@ -96,7 +103,7 @@ def test_without_require_index_the_llm_half_is_built_anyway(
     monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "no-index"))
     pipeline = build_query_pipeline(load_config(make_config(use_fakes)), require_index=False)
     assert pipeline.retrieve is None
-    assert pipeline.answer.invoke({"context": "c", "question": "q"}) == FAKE_ANSWER
+    assert answer_from(pipeline) == FAKE_ANSWER
 
 
 @pytest.mark.parametrize("require_index", [True, False])
@@ -104,7 +111,7 @@ def test_with_an_index_both_halves_are_built(fake_rag: Path, require_index: bool
     pipeline = build_query_pipeline(load_config(fake_rag), require_index=require_index)
     assert pipeline.retrieve is not None
     assert 0 < len(pipeline.retrieve.invoke("How many staff?")) <= 5  # retriever k
-    assert pipeline.answer.invoke({"context": "c", "question": "q"}) == FAKE_ANSWER
+    assert answer_from(pipeline) == FAKE_ANSWER
 
 
 def test_build_rag_chain_and_stream_answer_give_the_model_the_same_prompt(

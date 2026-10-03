@@ -282,7 +282,10 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
 15. **Never stream an answer through `RunnablePassthrough.assign` where cancelling must
     stop it.** `RunnableParallel` waits on its step tasks with `asyncio.wait` and never
     cancels them. A cancelled consumer therefore returns while the generation runs on
-    (verified; ARCHITECTURE.md §2.1, DEC-14). Stream `prompt | llm | parser` directly, as
+    (verified; ARCHITECTURE.md §2.1, DEC-14). **Not through `prompt | llm | parser`
+    either** (the second trap, fixed 2026-10-04). A sequence runs each chunk in its own
+    task, so a cancel that arrives while a chunk is in flight leaves the model's stream
+    open until the loop runs again. Render the prompt and stream the model itself, as
     `stream_answer` does.
 16. **Tier-2 evaluation is hours-scale on CPU.** About 25 questions × 4 RAGAs metrics with
     `gemma2:9b` take about 3–4 h to score.
@@ -550,10 +553,24 @@ leads with one of two things:
   (`Path.walk` is top-down, and pruning `folders[:]` in place fixes it).
 - **S2-7 — keep a client disconnect a cancel (found in S2-1).** Closing `stream_answer`
   at a `yield` does not close the model stream before `aclose()` returns: langchain-core
-  1.6.3 never closes a sequence's inner generators, and the loop's finalizer closes them
-  about 20 iterations later. A cancel, which DEC-18 already relies on, closes them at once.
-  Detail in the S2-1 story, under Discovered. **Not always: see the next line.**
-- **Before S2-7 — a cancel sometimes closes the model stream late (found in S2-2's CI).**
+  1.6.3 never closes a chat model's inner generator, and the loop's finalizer closes it a
+  loop iteration or two later. A cancel, which DEC-18 already relies on, closes it at once:
+  since the fix in the next line, every time. Detail in the S2-1 story, under Discovered.
+- **Closed 2026-10-04 (`fix/s2-1-cancel-race`) — a cancel sometimes closed the model
+  stream late (found in S2-2's CI; diagnosed in S2-3's second review).**
+  - **The cause:** `stream_answer` streamed `prompt | llm | StrOutputParser()`, and a
+    sequence runs each chunk in its own task. A cancel arriving while a chunk was in
+    flight ended that task, not the model's read, and the stream stayed open until the
+    loop's finalizer closed it. In the CLI that was not until the next question:
+    Ollama kept generating while the user sat at the prompt. That was shown with the
+    real `repl()`, a real SIGINT and a fake model, not yet against real Ollama.
+  - **The fix:** render the prompt and stream `llm.astream(messages)` itself
+    (ARCHITECTURE.md §2.1, the second trap).
+  - **The numbers:** one core, mid-stream, 66 of 300 failures before and 0 of 300
+    after. Forcing the cancel while a chunk is processed is now a deterministic test, with
+    a strict `xfail` control on the old shape. The CLI test checks that the stream is
+    closed when the prompt returns.
+  - **The history below is kept as found.**
   S2-1's `test_cancel_closes_the_stream_before_the_consumer_returns[mid-stream]` is
   flaky. CI tested `dd0f315` twice: the push run failed ("the consumer returned while the
   model was still streaming"), and the PR run passed.
