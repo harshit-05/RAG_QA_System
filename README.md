@@ -196,7 +196,7 @@ stories/           the delivery board and a record of each change
 ## Development
 
 The test suite is hermetic: no Ollama, no model download, no network. CI
-(`.github/workflows/ci.yml`) runs these gates on every push and pull request, and each
+(`.github/workflows/ci.yml`) runs these gates on every pull request and every push to `main`, and each
 one blocks:
 
 ```bash
