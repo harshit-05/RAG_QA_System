@@ -1,9 +1,10 @@
 """``rag-eval``: the evaluation harness's command line (FR-7, DEC-15).
 
 ``rag-eval retrieval`` scores retrieval against the golden set. That is tier 1, the half
-of the quality bar CI recomputes on every push (:mod:`rag_qa.evaluation.retrieval`). It
-prints one row per answerable question, misses first, then the means against their
-floors. S2-5 adds ``generate``, ``score`` and ``check``, for tier 2.
+of the quality bar CI recomputes on every pull request and every push to ``main``
+(:mod:`rag_qa.evaluation.retrieval`). It prints one row per answerable question, misses
+first, then the means against their floors. S2-5 adds ``generate``, ``score`` and
+``check``, for tier 2.
 
 The eval files live in ``eval/`` beside the config file (ARCHITECTURE.md §2.3), the way
 ``paths`` are anchored to it: ``eval/eval_dataset.jsonl`` and ``eval/thresholds.yaml``.
@@ -12,13 +13,17 @@ working directory, as usual.
 
 ``rag-eval retrieval`` exit codes: **0** every floor is met; **1** a floor is missed;
 **2** it could not run: no index, a bad config, dataset or thresholds file, a ``--json``
-file it cannot write, or a command-line usage error (as ``argparse`` uses).
+file it cannot write, a command-line usage error (as ``argparse`` uses), or any other
+error while retrieving, such as a model missing offline or an unreadable index (printed
+with its traceback). So exit 1 only ever means that retrieval ran and scored below a
+floor, which is how CI's ``eval-retrieval`` job is read (S2-3's second review).
 """
 
 import argparse
 import json
 import string
 import sys
+import traceback
 from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
@@ -219,6 +224,13 @@ def run_retrieval(args: argparse.Namespace) -> int:
         scores = evaluate_retrieval(config, answerable)
     except NoIndexError as e:
         return _cannot_run(e)
+    # Deliberately broad: whatever stops retrieval from running is "could not run",
+    # never a floor verdict. Uncaught, it would exit 1, and CI reads exit 1 as "retrieval
+    # quality moved". A model missing offline did exactly that (S2-3's second review).
+    except Exception as e:  # noqa: BLE001
+        sys.stdout.flush()
+        traceback.print_exc()
+        return _cannot_run(f"retrieval could not run: {type(e).__name__}: {e}")
     means = aggregate(scores)
     below = below_floors(asdict(means), floors)
 
@@ -258,7 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
         "the embedder only.",
         epilog="Exit status: 0 every floor is met; 1 a floor is missed; 2 could not run "
         "(no index; a bad config, dataset or thresholds file; a --json file that cannot be "
-        "written; or a usage error).",
+        "written; a usage error; or any other error while retrieving, with its traceback).",
     )
     retrieval.add_argument(
         "--config",
