@@ -1,0 +1,15 @@
+# The quality bar's floors (DEC-15). Each floor is the first measured baseline minus a
+# tolerance, and floors are only ever raised deliberately (ARCHITECTURE.md §2.1). A metric
+# passes when it is at or above its floor. `rag-eval` reads this file from eval/ beside the
+# config file. S2-5b adds a `generation:` section for tier 2.
+
+# Tier 1: retrieval, recomputed on every push by CI's eval-retrieval job (S2-3).
+#   Measured 2026-10-03 on the 20 answerable golden questions, with this config: dense
+#   search, k=5, no reranker, all-MiniLM-L6-v2 over 1,708 chunks.
+#   Baseline: hit_rate 0.800 (16 of 20), mrr 0.5875, recall 0.7167.
+#   Floors: the baseline minus 0.05, one question in 20, rounded down to 3 decimals.
+#   S2-4 re-baselines them for the retrieval config it chooses.
+retrieval:
+  hit_rate: 0.75
+  mrr: 0.537
+  recall: 0.666

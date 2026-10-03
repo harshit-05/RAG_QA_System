@@ -1,12 +1,13 @@
-# CI — ARCHITECTURE.md §1.5, DEC-11.
+# CI — ARCHITECTURE.md §1.5 and §2.5, DEC-11, DEC-15.
 #
 # Gates run cheapest first and all block. Each gate is added by the story that
 # makes it passable: ruff + pytest here (S1-2), coverage (S1-5), mypy (S1-6),
-# pip-audit (S1-8).
+# pip-audit (S1-8), the tier-1 retrieval eval (S2-3).
 #
-# Hermetic by design: no Ollama, no model download, no network in the suite.
-# HF_HUB_OFFLINE is the tripwire for that: a test that tries to fetch an
-# embedding model fails loudly here instead of quietly downloading ~90 MB.
+# The check job is hermetic by design: no Ollama, no model download, no network in
+# the suite. HF_HUB_OFFLINE is the tripwire for that: a test that tries to fetch an
+# embedding model fails loudly here instead of quietly downloading ~90 MB. The
+# eval-retrieval job is the one exception, and its comment says why.
 
 name: CI
 
@@ -79,3 +80,64 @@ jobs:
           uv pip freeze --exclude-editable | sed 's/^\(torch==.*\)+cpu$/\1/' > "$RUNNER_TEMP/audit.txt"
           test -s "$RUNNER_TEMP/audit.txt"
           uv run --no-sync pip-audit --no-deps --disable-pip --progress-spinner off -r "$RUNNER_TEMP/audit.txt"
+
+  # Tier 1 of the quality bar (DEC-15, S2-3): retrieval scored against the golden set
+  # (hit rate, MRR, recall), recomputed on every push against eval/thresholds.yaml.
+  #
+  # The only job with network access (STATUS.md caveat 19). Scoring needs the real
+  # embedder's weights (~90 MB; S2-4 adds the cross-encoder's), which the hermetic check
+  # job must never fetch. Only the ingest step may download them, and only on a cache
+  # miss. The eval step runs under HF_HUB_OFFLINE=1, so it cannot reach the network.
+  #
+  # Red here while check is green means retrieval quality moved, not that code broke.
+  eval-retrieval:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20  # a few minutes expected; a stalled download must not run for hours
+    env:
+      UV_PYTHON_PREFERENCE: only-managed  # the same CPython as the check job
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.11.8"
+          enable-cache: true
+          cache-python: true
+
+      - name: Install
+        run: uv sync --locked
+
+      # Keyed on the model names, not on config.yaml, so a prompt edit keeps the weights.
+      # The key names the models config.yaml uses: update it with them (S2-4 adds the
+      # cross-encoder). When it changes, the prefix restore key brings back the old
+      # weights, and only the new model downloads.
+      - name: Restore the HF models
+        id: hf-models
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-sentence-transformers--all-MiniLM-L6-v2
+          restore-keys: hf-${{ runner.os }}-
+
+      # The real corpus into a scratch index; never a committed or cached one. This step
+      # downloads the embedder on a cache miss.
+      - name: Ingest the corpus
+        env:
+          RAG_VECTOR_STORE_PATH: ${{ runner.temp }}/index
+        run: uv run rag-ingest
+
+      # Saved here, as soon as ingest has filled it, rather than at the end of the job:
+      # a first run that misses a floor still caches the weights for the re-run.
+      - name: Save the HF models
+        if: steps.hf-models.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ steps.hf-models.outputs.cache-primary-key }}
+
+      - name: Retrieval eval (offline)
+        env:
+          HF_HUB_OFFLINE: "1"
+          RAG_VECTOR_STORE_PATH: ${{ runner.temp }}/index
+        run: uv run rag-eval retrieval
