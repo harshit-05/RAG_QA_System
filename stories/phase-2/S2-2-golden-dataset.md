@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | Implemented 2026-10-03; gates green locally. Awaiting the maintainer's record-by-record sign-off (table below) and CI on the branch |
 | **Closes** | FR-7 (the dataset half), ISS-15 (the missing dataset), SRS §7.4; backlog: seed the golden dataset with GLIDER |
 | **Depends on** | — (can run alongside S2-1) |
 | **Model** | opus-fast (Claude drafts every record; the maintainer verifies every one) |
@@ -116,8 +116,96 @@ The ground truths are the product here; the code is small. For each record:
 
 ## Discovered
 
-(Filled during implementation.)
+- **Which pages a record lists (input for S2-3).** `expected_sources` lists the pages the
+  ground truth is written from: the passages its `notes` quote, one per fact. When the
+  same fact is repeated elsewhere, `notes` names that page ("also p. 4") but does not
+  list it. So a tier-1 miss can be a retrieved repeat. Read the record's notes before
+  calling it a retrieval failure. Listing every repeat instead would have made recall
+  punish a context that held the fact on another page.
+- **The YOLOv8 PDF has two page numberings.** `citation()` prints the PDF's page labels,
+  1–13 (the first page is a ResearchGate cover). The journal's own numbers, 52–62, are
+  printed on the pages too, 49 higher. The records use the labels, as tier 1 must; each
+  YOLOv8 record's notes give both numbers.
+- **The source papers contradict themselves**, so a judge will sometimes see two figures
+  in the context:
+  - GLIDER is "a powerful 3B evaluator" in the abstract and "3.8B parameters" on p. 2 and
+    in every table;
+  - GLIDER's human agreement is "91.3%" in the abstract, 91%, 90% and 91% on p. 7, and
+    0.918, 0.905 and 0.917 in Table 6;
+  - the YOLOv8 paper credits its 95.4% to "object detection" (p. 3) and to "crowd
+    detection and anomaly identification" (p. 8–9).
+
+  Each ground truth takes the specific statement, and its notes name the other.
+- **The proceedings are an OCR'd scan.** Some pages extract with broken spacing ("s
+  ubstitut ion", pp. 3, 249 and 303), and some characters come out wrong: "19S4" for 1984
+  (p. iii), "19n" for 1977 (p. 248), "wur" for the unifier-set symbol (p. 4). Retrieval
+  embeds this text. The proceedings questions were therefore chosen on cleanly extracted
+  passages, so they measure retrieval rather than OCR. A re-OCR of the corpus is a
+  corpus change, out of scope here. It is worth knowing before anyone reads a low
+  proceedings score as a retrieval problem.
+- **Each quote in `notes` was checked against the text `PdfLoader` extracts at the cited
+  label** (a scratch script, not committed). All 65 quotes are found, and every listed
+  page carries at least one. Negative controls (a swapped score, a wrong page, an
+  invented expansion) are not found. The claims in notes that carry no quote were checked
+  the same way. One was wrong, a page cited from memory ("Melbourne, Australia" is on
+  p. 500, not p. 499), and has been fixed. The check tolerates only line breaks,
+  end-of-line hyphenation and OCR spaces around a hyphen, so a passage found on the
+  printed page is the passage quoted.
 
 ## Deviation from plan
 
-(Filled at close-out, including the maintainer's record-by-record sign-off.)
+- **Rules added beyond the story's list**, all from ARCHITECTURE.md §2.4 or needed to
+  apply it:
+  - `source` must be corpus-relative (§2.4 says so; an absolute path would silently never
+    match in tier 1);
+  - fields are strictly typed, so a page label must be the string `"7"`, never the number
+    7, and `answerable` must be a real boolean;
+  - page labels and `must_not_contain` entries must be non-empty (an empty string is a
+    substring of every answer, so every decline would fail);
+  - blank lines are skipped, and a file with no records is an error.
+- **Model:** this session ran on Opus 5.5, as the story's opus-fast routing asks.
+- **The record mix:** 25 records. 20 are answerable: 7 on GLIDER, 6 on YOLOv8 and 7 on
+  the proceedings, each proceedings question naming its paper. 5 are unanswerable: 4 near
+  the corpus topics, and Canberra. Two of the unanswerable questions are traps: one
+  rests on a cross-document distractor (the YOLOv8 GPU question, where only GLIDER
+  names H100s), and one has a known prior-knowledge leak ("Oxford" for CADE-8). The
+  question types the story asks for: numbers and attributions (`glider-purpose`,
+  `glider-data-filtering`, `yolo-accuracy`, `yolo-response-overhead`, `ketonen-ekl`);
+  definitions and acronyms (`glider-name`, `glider-slm`, `yolo-acronym`,
+  `siekmann-unification-hierarchy`, `lusk-overbeek-itp`, `ohlbach-wrightson-mkrp`);
+  facts that span pages (`yolo-objectives`, `wos-linked-inference`, `cade7-venue`,
+  `glider-purpose`); a comparison within one paper (`glider-flask-vs-gpt4o`).
+
+### Record-by-record sign-off (maintainer)
+
+Check each against the PDF at the printed page, following "Review notes for the human".
+Each record's `notes` quotes the passages; YOLOv8 pages are PDF labels (journal page =
+label + 49). Mark ✓, or write what is wrong.
+
+| # | id | File, pages | Check these facts | Signed off |
+| --- | --- | --- | --- | --- |
+| 1 | `glider-purpose` | GLIDER pp. 1, 2, 7 | name expansion; SLM = Small Language Model; 3.8B; Phi-3.5-mini-instruct; 0.654 / GPT-4o-mini 0.481 / Qwen-2.5-72B 0.485 | |
+| 2 | `glider-name` | GLIDER p. 1 | the title's expansion | |
+| 3 | `glider-slm` | GLIDER p. 2 | Small Language Model; "17x" | |
+| 4 | `glider-training-data` | GLIDER pp. 1, 2 | 685 domains, 183 criteria (not swapped) | |
+| 5 | `glider-flask-vs-gpt4o` | GLIDER pp. 5, 6 | FLASK is Table 1's 2nd column: GLIDER 0.615, GPT-4o 0.610 | |
+| 6 | `glider-human-study` | GLIDER p. 7 | 100 points, 3 annotators; 91/90/91%; alpha 0.838 | |
+| 7 | `glider-data-filtering` | GLIDER p. 3 | 18,258 samples; 14.6% | |
+| 8 | `yolo-accuracy` | YOLOv8 pp. 3, 9 | 95.4% and 92.7%, and what each is attributed to | |
+| 9 | `yolo-response-overhead` | YOLOv8 p. 9 | 2-3 s; 30% overhead | |
+| 10 | `yolo-acronym` | YOLOv8 p. 3 | You Only Look Once | |
+| 11 | `yolo-objectives` | YOLOv8 pp. 3–4 | the three objectives, across the page break | |
+| 12 | `yolo-anomaly-model` | YOLOv8 p. 8 | LSTM-based; context-aware filtering + multi-modal fusion | |
+| 13 | `yolo-alert-pipeline` | YOLOv8 p. 7 | severity classification; alarms, door locks, emergency messages | |
+| 14 | `cade7-venue` | Proceedings pp. i, iii | May 14-16, 1984, Napa; 27 papers; Siekmann keynote, Suppes banquet | |
+| 15 | `siekmann-unification-hierarchy` | Proceedings p. 4 | the four definitions | |
+| 16 | `lusk-overbeek-itp` | Proceedings p. 43 | Interactive Theorem Prover; LMA; Pascal; ~fifty sites | |
+| 17 | `ketonen-ekl` | Proceedings p. 65 | ~10000 lines, MACLISP; SAIL (KL10); began 1981 | |
+| 18 | `stickel-ring-commutativity` | Proceedings p. 248 | x^3 = x ⇒ commutative; Bledsoe 1977; Veroff, ANL-NIU | |
+| 19 | `wos-linked-inference` | Proceedings pp. 316–317 | linked UR-resolution; one step for many; semantic for syntactic criteria | |
+| 20 | `ohlbach-wrightson-mkrp` | Proceedings p. 496 | "converse of contraction"; MKRP expansion; Karlsruhe and Kaiserslautern | |
+| 21 | `unanswerable-yolo-dataset` | — | the paper names no dataset (p. 8); `must_not_contain` COCO | |
+| 22 | `unanswerable-yolo-gpus` | — | no hardware in the YOLOv8 paper; `must_not_contain` H100 | |
+| 23 | `unanswerable-glider-mmlu` | — | MMLU appears nowhere | |
+| 24 | `unanswerable-cade8-venue` | — | the foreword lists only earlier venues; `must_not_contain` Oxford | |
+| 25 | `unanswerable-capital-australia` | — | `must_not_contain` Canberra | |
