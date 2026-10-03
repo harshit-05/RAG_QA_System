@@ -9,7 +9,9 @@ SRS §7.4, schema in ARCHITECTURE.md §2.4. One JSON object per line:
   the decline rate (DEC-15);
 * ``expected_sources``: the corpus-relative file and the printed page labels the ground
   truth rests on. Required when answerable, forbidden otherwise. Tier 1 scores
-  retrieval against it (S2-3);
+  retrieval against it (S2-3). Each source may also list ``also_pages``: other pages
+  that answer the whole question on their own. They count towards a hit and the rank,
+  but not towards recall, which measures the pages the ground truth was written from;
 * ``must_not_contain``: strings whose appearance in an answer would show the model
   answering from prior knowledge, e.g. ``["Canberra"]``. Unanswerable records only;
 * ``notes``: free text for the human check, typically the passage quoted.
@@ -44,26 +46,55 @@ class ExpectedSource(_Frozen):
     #: Relative to the corpus root (``paths.data``), with ``/`` separators.
     source: str = Field(min_length=1)
     #: Printed page labels, as ``citation()`` shows them: ``"7"``, ``"iii"``. Empty
-    #: for formats without pages.
+    #: for formats without pages. Recall's denominator.
     pages: tuple[str, ...] = ()
+    #: Pages that repeat the whole answer. A hit or a rank, never a recall miss: listing
+    #: them under ``pages`` instead would make recall demand every repeat (S2-2 review).
+    also_pages: tuple[str, ...] = ()
 
     @field_validator("source")
     @classmethod
     def check_relative(cls, source: str) -> str:
         path = PurePosixPath(source)
-        if path.is_absolute() or ".." in path.parts or "\\" in source:
+        # as_posix() normalises "./x", "a//b", "x/" and "." away, so a source that is not
+        # already in that form would never string-match a chunk's source in tier 1. Nor
+        # would one with surrounding spaces.
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or "\\" in source
+            or path.as_posix() != source
+            or source == "."
+            or source != source.strip()
+        ):
             raise ValueError(
-                f"{source!r} must be a path relative to the corpus root, with '/' "
-                f"separators and no '..'"
+                f"{source!r} must be a normalised path relative to the corpus root, with "
+                f"'/' separators, no '..', no './' prefix, no '//', no trailing '/' and "
+                f"no surrounding spaces"
             )
         return source
 
-    @field_validator("pages")
+    @field_validator("pages", "also_pages")
     @classmethod
     def check_pages(cls, pages: tuple[str, ...]) -> tuple[str, ...]:
         if any(not page.strip() for page in pages):
             raise ValueError("page labels must be non-empty")
+        # " 7" would never equal a chunk's page_label.
+        if any(page != page.strip() for page in pages):
+            raise ValueError("page labels must not have surrounding spaces")
+        # Recall is the share of expected pages the context covers: a repeated label
+        # would count twice in its denominator.
+        if len(set(pages)) != len(pages):
+            raise ValueError("page labels must not repeat")
         return pages
+
+    @model_validator(mode="after")
+    def check_also_pages(self) -> "ExpectedSource":
+        if self.also_pages and not self.pages:
+            raise ValueError("also_pages needs pages: a file without pages has no repeats")
+        if overlap := sorted(set(self.pages) & set(self.also_pages)):
+            raise ValueError(f"a page is either in pages or in also_pages, not both: {overlap}")
+        return self
 
 
 class GoldenItem(_Frozen):
@@ -80,6 +111,9 @@ class GoldenItem(_Frozen):
     @model_validator(mode="after")
     def check_kind(self) -> "GoldenItem":
         """The rules that differ between answerable and unanswerable records."""
+        sources = [expected.source for expected in self.expected_sources]
+        if len(set(sources)) != len(sources):
+            raise ValueError("expected_sources must not repeat a source: list its pages together")
         if self.answerable:
             if not self.ground_truth.strip():
                 raise ValueError("an answerable record needs a non-empty ground_truth")
@@ -109,15 +143,17 @@ def _describe(error: ValidationError) -> list[str]:
 def load_golden(path: str | Path) -> list[GoldenItem]:
     """Every record in a golden set file, in file order.
 
-    Blank lines are skipped. Raises :class:`GoldenSetError` listing every problem,
-    each with its line number, when any line is invalid, an id repeats, or the file
-    holds no record. An unreadable file raises the ``OSError`` as is.
+    Lines are split on ``\\n`` only: ``str.splitlines`` would also split on U+2028 and
+    similar, which are legal inside a JSON string. Blank lines are skipped. Raises
+    :class:`GoldenSetError` listing every problem, each with its line number, when any
+    line is invalid, an id repeats, or the file holds no record. An unreadable file raises
+    the ``OSError`` as is.
     """
     path = Path(path)
     items: list[GoldenItem] = []
     first_line: dict[str, int] = {}
     problems: list[str] = []
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), start=1):
         if not line.strip():
             continue
         try:
