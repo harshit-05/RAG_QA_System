@@ -308,6 +308,21 @@ def test_no_index_exits_2_and_says_to_ingest(
     assert "Run rag-ingest first" in capsys.readouterr().err
 
 
+def test_an_error_while_retrieving_exits_2_with_its_traceback(
+    evals: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    # The error CI's offline eval step gets when a model is not in the cache. Exit 1
+    # would read as "a floor is missed" (S2-3's second review).
+    def offline(config: Any, items: Any) -> None:
+        raise OSError("We couldn't connect to 'https://huggingface.co' to load the files")
+
+    monkeypatch.setattr("rag_qa.evaluation.cli.evaluate_retrieval", offline)
+    assert run(evals) == EXIT_CANNOT_RUN
+    err = capsys.readouterr().err
+    assert "Traceback (most recent call last)" in err
+    assert "retrieval could not run: OSError: We couldn't connect" in err
+
+
 def test_a_bad_golden_set_exits_2(evals: Path, tmp_path: Path, capsys: Any) -> None:
     bad = write_golden(tmp_path / "bad.jsonl", EVERY_FILE, "{oops")
     assert run(evals, "--dataset", str(bad)) == EXIT_CANNOT_RUN
