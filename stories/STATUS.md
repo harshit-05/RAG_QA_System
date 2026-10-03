@@ -5,12 +5,18 @@
 
 ## Now
 
-**Next action: merge PR #8 ([S2-2](phase-2/S2-2-golden-dataset.md), done 2026-10-03, CI
-green), then [S2-3](phase-2/S2-3-retrieval-eval.md)**: tier-1 retrieval metrics and the
-`eval-retrieval` CI job. Model opus-fast, not plan-first, on branch
-`feat/s2-3-retrieval-eval` (risky: the first CI job with network access). Its metrics
-count `also_pages` towards hit rate and MRR; S2-2's Discovered section says how to read
-a miss. The order of the Phase 2 stories, and what each depends on, are in the Phase 2
+**Next action: review [S2-3](phase-2/S2-3-retrieval-eval.md)** (tier-1 retrieval metrics,
+`rag-eval retrieval` and the `eval-retrieval` CI job), then push branch
+`feat/s2-3-retrieval-eval` so that CI runs its verification 4. Verification 1–3 passed
+locally on 2026-10-03.
+
+- **Baseline:** hit rate 0.800, MRR 0.5875 and recall 0.7167, so the floors are 0.75,
+  0.537 and 0.666.
+- **CI's first run must reproduce the baseline** on the runner's CPU before the floors are
+  trusted. A re-run must then show a cache hit.
+
+After that comes [S2-4](phase-2/S2-4-reranker.md). Its two inputs from S2-3 are in the
+backlog. The order of the Phase 2 stories, and what each depends on, are in the Phase 2
 table below.
 
 **Known red CI runs.** S2-1's mid-stream cancellation test is flaky (backlog, "Before
@@ -387,7 +393,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | --- | --- | --- | --- | --- |
 | [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Done 2026-10-03 (PR #7) |
 | [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Done 2026-10-03 (PR #8) |
-| [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Todo |
+| [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | In review 2026-10-03 (CI after the push) |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Todo |
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Todo |
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Todo |
@@ -597,6 +603,19 @@ leads with one of two things:
 
 - **S2-6 —** chunk metadata: content hash of the source file + ingestion timestamp
   (SRS §7.3), with the manifest that needs them (DEC-17).
+- **S2-4 — two inputs from S2-3's baseline (found in S2-3).** Detail in S2-3's
+  Discovered section.
+  - **What a reranker can reach.** At k=20, three of tier 1's four misses have their page
+    in the candidates (ranks 10, 10 and 11). So the reranker can at best lift the hit rate
+    from 0.80 to 0.95. `glider-slm`'s p. 2 is not in the top 20 at all, so no reranker can
+    recover it.
+  - **Step 3's scratch configs need `--dataset` and `--thresholds`.** The eval files are
+    anchored beside the config file, as `paths` are. Without the flags, a scratch copy of
+    `config.yaml` exits 2: "cannot read the golden set". Pass
+    `--dataset eval/eval_dataset.jsonl --thresholds eval/thresholds.yaml`, beside
+    `RAG_DATA_PATH`.
+  - **"S2-3's scratch index" was in a session scratchpad under `/tmp`.** Build a fresh
+    one with `RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-ingest` (about 2 min).
 - **S2-4, closes as not needed —** `langchain-classic` is referenced by the (disabled)
   reranker component but is only a transitive dependency via `langchain-community`.
   The question was whether to declare it in `pyproject.toml`. DEC-16 hand-rolls the

@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | In review (2026-10-03). Verification 1–3 run and shown; 4 (CI) runs on the branch's push |
 | **Closes** | FR-7 (tier 1 of the quality gate) |
 | **Depends on** | S2-1 (`build_retrieve`), S2-2 (the golden set) |
 | **Model** | opus-fast |
@@ -115,8 +115,59 @@ gh run list --limit 2
 
 ## Discovered
 
-(Filled during implementation.)
+- **The baseline (2026-10-03): hit rate 0.800 (16 of 20), MRR 0.5875, recall 0.7167.**
+  The scratch index built for verification 2 and the real index built on 2026-10-02 give
+  identical results, question by question. That shows reproducibility on this host only;
+  the runner's CPU is verification 4's question.
+- **The four misses are real retrieval misses, not partial repeats.** S2-2 says to read the
+  notes before calling a miss a retrieval failure, and none of these retrieved a page that
+  its notes name as a repeat:
+  - Three are GLIDER's opening pages: `glider-name` (p. 1, also p. 2), `glider-slm`
+    (p. 2) and `glider-training-data` (pp. 1–2). The retriever prefers the paper's later
+    pages (7, 8, 9, 4, 5). `glider-name` even retrieves p. 8, the trap its notes name.
+  - `glider-slm` is S0-6's own failure, now measured: "none of its five retrieved chunks
+    defined SLM". The model's invented expansion was at least partly a retrieval failure.
+  - `ohlbach-wrightson-mkrp` (p. 496) retrieves p. 500, which its notes do not name.
+- **Input for S2-4: what a reranker over 20 candidates can reach.** The same scratch index,
+  with a scratch config at k=20 (a diagnostic, not a config change), scores hit rate 0.95,
+  MRR 0.602 and recall 0.90.
+  - Three of the four misses have their page in the top 20, at ranks 10, 10 and 11.
+  - `glider-slm`'s p. 2 is not in the top 20 at all. No reranker over 20 candidates can
+    recover it; that takes a chunking, embedder or hybrid-retrieval change, each a later
+    and measured one.
+- **Input for S2-4: a copied config needs `--dataset` and `--thresholds`.** The eval files
+  are anchored to `eval/` beside the config file (ARCHITECTURE.md §2.3), as `paths` are. S2-4's
+  step 3 runs two scratch copies of `config.yaml`. Without those flags each exits 2 with
+  `cannot read the golden set <scratch>/eval/eval_dataset.jsonl` (seen here). Pass
+  `--dataset eval/eval_dataset.jsonl --thresholds eval/thresholds.yaml`, beside
+  `RAG_DATA_PATH`. Both S2-4 inputs are in the STATUS.md backlog.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+Drafted for review; finalised at close-out.
+
+- **The floors live in `evaluation/gate.py`.** The story names only `retrieval.py` and
+  `cli.py`, but ARCHITECTURE.md §2.2 gives the floors to `gate.py` ("freshness + floors"),
+  and the thresholds file is shared with tier 2. Tier 2's check runs in CI's model-free
+  job, so the floors cannot live in `retrieval.py`, which imports the chain and FAISS.
+  S2-5 adds the `generation:` floors and the freshness check to `gate.py`.
+  - `tests/test_architecture.py` asserts that importing `gate` loads none of ragas,
+    openai, torch, sentence-transformers or langchain_huggingface. S2-5's story lists
+    that test; it is added here because the module exists from here.
+- **The floors are rounded down to 3 decimals**: 0.75, 0.537 and 0.666. A floor of exactly
+  "baseline minus 0.05" could fail on floating-point rounding at the boundary. Rounding
+  loosens each floor by less than 0.001.
+- **The cache uses `actions/cache/restore` and `actions/cache/save`.** These come from the
+  same repository and SHA as `actions/cache`. The save runs right after the ingest step, not
+  at the end of the job. With the combined action, a first run that missed a floor would
+  save nothing, and verification 4's "miss, then hit" would fail on the re-run.
+- **The new job has `timeout-minutes: 20`.** Without it, a stalled download would run to
+  GitHub's 6-hour default.
+- **Smaller additions:**
+  - `--json` holds every question in golden-set order, for S2-4's question-by-question
+    comparison.
+  - Exit 2 also covers a `--json` file that cannot be written.
+  - Errors flush stdout first, so in a CI log the verdict comes after the table.
+  - The deprecation gate imports `rag_qa.evaluation.cli`, so its "every module" claim
+    stays true.
+- **Model:** this session ran on Opus 5.5, as the story's opus-fast routing asks.
