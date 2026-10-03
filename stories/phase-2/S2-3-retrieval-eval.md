@@ -1,8 +1,8 @@
-# S2-3: Score retrieval against the golden set, in CI on every push
+# S2-3: Score retrieval against the golden set, in CI on every pull request
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-03). Verification 1–3 run and shown; 4 (CI) runs on the branch's push |
+| **Status** | In review (2026-10-04): two reviews done. Verification 1–3 run and shown; 4 half done (the runner reproduced the baseline exactly; the cache-hit re-run is outstanding). Merge after `fix/s2-1-cancel-race` |
 | **Closes** | FR-7 (tier 1 of the quality gate) |
 | **Depends on** | S2-1 (`build_retrieve`), S2-2 (the golden set) |
 | **Model** | opus-fast |
@@ -11,7 +11,8 @@
 
 ## Goal
 
-Retrieval quality becomes numbers that CI recomputes on every push. For each answerable
+Retrieval quality becomes numbers that CI recomputes on every pull request and every push
+to `main`. For each answerable
 golden question, three are taken over what the prompt would actually receive:
 
 - **hit rate**: an expected page, or one of its `also_pages`, appears anywhere in the
@@ -48,7 +49,8 @@ and taking minutes. Design: ARCHITECTURE.md §2.1 DEC-15 (tier 1), CI in §2.5.
     | --- | --- |
     | 0 | every floor is met |
     | 1 | a floor is missed |
-    | 2 | it cannot start: no index, or a bad dataset or config |
+    | 2 | it cannot run: no index, a bad dataset or config, or any error while retrieving (with its traceback) |
+
 - **`eval/thresholds.yaml`, `retrieval:` section.**
   - Measure the baseline of the current config: dense search, k=5, no reranker.
   - Set each floor to the baseline minus a 0.05 tolerance. That is one question on about
@@ -97,6 +99,11 @@ RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-eval retrieval; echo "exit $?"
 # 3. negative control: a floor above what was measured must fail
 printf 'retrieval: {hit_rate: 1.01, mrr: 0, recall: 0}\n' > <scratch>/strict.yaml
 RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-eval retrieval --thresholds <scratch>/strict.yaml; echo "exit $?"   # → 1
+#    and a run that cannot load its model is "could not run", never a floor verdict. The
+#    scratch index is set, so the exit 2 cannot come from a missing index instead
+mkdir -p <scratch>/empty-hf
+HF_HOME=<scratch>/empty-hf HF_HUB_OFFLINE=1 RAG_VECTOR_STORE_PATH=<scratch>/index \
+  uv run rag-eval retrieval; echo "exit $?"   # → 2, "retrieval could not run", with the traceback
 
 # 4. CI
 gh run list --limit 2
@@ -171,3 +178,44 @@ Drafted for review; finalised at close-out.
   - The deprecation gate imports `rag_qa.evaluation.cli`, so its "every module" claim
     stays true.
 - **Model:** this session ran on Opus 5.5, as the story's opus-fast routing asks.
+- **First review (2026-10-03).**
+  - CI on push now runs for `main` only, plus every pull request. A story branch is tested
+    by its PR run, and the doubled run cost about 2.5 minutes of network time per push.
+    The comment records why `main`'s push matters: it writes the HF cache that PR runs
+    restore.
+  - S2-4's verification passes `--dataset` and `--thresholds` to its copied configs.
+  - README and ARCHITECTURE.md say "every pull request and every push to `main`".
+- **Second review (2026-10-04).**
+  - **Verified:**
+    - **Verification 4's cross-CPU question is answered.** The runner's fresh ingest and
+      this host's index give identical per-question tables: the same pages, in the same
+      order, for all 20 questions.
+    - MRR (0.5875) and recall (0.7167) were recomputed by hand from the CI table.
+    - Every metric rule has a test.
+  - **Why CI failed:** S2-1's mid-stream cancel test, not this story's code. It is a real
+    race in `stream_answer`. A sequence runs each chunk in its own task, so a cancel
+    arriving while a chunk is in flight left the model's stream open until the next
+    question. That was shown with the real `repl()` and a real SIGINT.
+    - On one core it failed 66 times in 300.
+    - It is fixed on `fix/s2-1-cancel-race` (patch from this review), which streams the
+      model itself: 0 in 300, plus deterministic tests.
+    - That fix lands first.
+  - **Changes here:**
+    - **A crash read as a missed floor.** With the model missing offline, `rag-eval
+      retrieval` died with a traceback and exit 1, and CI's comment read exit 1 as
+      "retrieval quality moved". Any error while retrieving now exits 2, with the
+      traceback (`test_an_error_while_retrieving_exits_2_with_its_traceback`). A negative
+      control was added to verification 3.
+    - **Ingest went online even on a cache hit.** Loading the fully cached embedder sent
+      huggingface.co 33 requests, and would have taken a newer upstream revision. On an
+      exact cache hit, ingest now runs with `HF_HUB_OFFLINE=1`. Offline, huggingface_hub
+      refuses all 9 of its lookups in-process (`OfflineModeIsEnabled`), and the model
+      loads from the cache.
+    - **The first review's trigger dropped tag runs.** With `branches` alone, GitHub runs
+      nothing for a tag push, so `v0.3` would have had no CI. The push trigger adds
+      `tags: ["v*"]`.
+    - "Every push" is corrected in `ci.yml`, `thresholds.yaml`, `retrieval.py`, `cli.py`,
+      ARCHITECTURE.md (§2.1) and STATUS.md (DEC-15), and in this story's title.
+  - **Outstanding:** verification 4's cache-hit re-run. With the push trigger on `main`
+    only, the PR run is the one to re-run (`gh run rerun <run> --job <eval-retrieval
+    job>`), and its log should show a cache hit.

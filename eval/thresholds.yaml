@@ -3,7 +3,8 @@
 # passes when it is at or above its floor. `rag-eval` reads this file from eval/ beside the
 # config file. S2-5b adds a `generation:` section for tier 2.
 
-# Tier 1: retrieval, recomputed on every push by CI's eval-retrieval job (S2-3).
+# Tier 1: retrieval, recomputed on every pull request and every push to main by CI's
+#   eval-retrieval job (S2-3).
 #   Measured 2026-10-03 on the 20 answerable golden questions, with this config: dense
 #   search, k=5, no reranker, all-MiniLM-L6-v2 over 1,708 chunks.
 #   Baseline: hit_rate 0.800 (16 of 20), mrr 0.5875, recall 0.7167.

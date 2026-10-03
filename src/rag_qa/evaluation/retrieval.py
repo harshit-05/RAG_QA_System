@@ -19,7 +19,8 @@ A source listed without pages (a format that has none) matches any chunk of that
 and counts as one page towards recall.
 
 Deterministic, and it needs only the embedder and the index: no LLM, so no Ollama. That
-is what lets CI recompute it on every push (ARCHITECTURE.md §2.5, ``eval-retrieval``).
+is what lets CI recompute it on every pull request and every push to ``main``
+(ARCHITECTURE.md §2.5, ``eval-retrieval``).
 """
 
 from collections.abc import Iterable, Sequence

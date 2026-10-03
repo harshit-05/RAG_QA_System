@@ -104,10 +104,16 @@ uv run pytest tests/test_config_regressions.py -v      # ISS-03 still caught, no
 grep -n "langchain_classic\|langchain_community" src/rag_qa/registry.py config.yaml   # → no allowlist or _target_ hits
 
 # 3. the decision, on S2-3's scratch index (both configs; the table goes below)
-RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-eval retrieval --config <scratch>/dense.yaml
-RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-eval retrieval --config <scratch>/reranked.yaml
+RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-eval retrieval --config <scratch>/dense.yaml \
+  --dataset eval/eval_dataset.jsonl --thresholds eval/thresholds.yaml
+RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-eval retrieval --config <scratch>/reranked.yaml \
+  --dataset eval/eval_dataset.jsonl --thresholds eval/thresholds.yaml
 #    Two copies of config.yaml that differ only in pipeline.query. Copied configs anchor
-#    their paths to <scratch>, so also set RAG_DATA_PATH=$PWD/corpus.
+#    their paths to <scratch>, so also set RAG_DATA_PATH=$PWD/corpus. The eval files are
+#    found beside the config file, so --dataset and --thresholds point the copies at the
+#    real ones; without them each run exits 2 with "cannot read the golden set
+#    <scratch>/eval/..." (S2-3). The flags are spelled out on purpose: zsh does not
+#    word-split an unquoted $VAR, so a shared variable would arrive as one argument.
 
 # 4. real end to end. The first use downloads the cross-encoder, about 90 MB.
 uv run rag-query       # one question: the answer, then the sources in reranked order

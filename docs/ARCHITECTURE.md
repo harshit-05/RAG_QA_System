@@ -752,7 +752,7 @@ figure. That cannot run on every push. A hosted judge would put a paid, networke
 dependency into CI, and the maintainer rejected it (2026-10-02). The bar is therefore
 split by what can be computed where.
 
-**Tier 1: retrieval, recomputed on every push.**
+**Tier 1: retrieval, recomputed on every pull request and every push to `main`.**
 
 - **What it measures.** `rag-eval retrieval` runs every answerable golden question
   through `pipeline.retrieve`, which is exactly what the prompt would receive. It scores
@@ -855,7 +855,7 @@ fixes a stale result:
 - **Left out on purpose:**
   - paths, the judge's `base_url` and device keys, which are machine-specific;
   - the golden set's `notes` and `expected_sources`, which tier 2 never reads (tier 1
-    recomputes its own numbers on every push).
+    recomputes its own numbers on every pull request and every push to `main`).
 - **Where it is computed.** `evaluation/fingerprint.py` computes it, and `generate`,
   `score` and `check` all import it.
   - It may import `langchain_core` and `rag_qa.chain`, which the probe needs. Both are
@@ -892,9 +892,9 @@ lets a reviewer see what was judged.
 The fingerprint covers configuration, data and the rendered prompt. It does **not** cover:
 
 - **code:** a change to a loader, the splitter, the reranker or `answering.py` that alters
-  answers leaves it unchanged. Tier 1 recomputes retrieval on every push, which catches
-  the retrieval half. For the generation half, the maintainer re-runs tier 2 after such a
-  change; the check cannot force it.
+  answers leaves it unchanged. Tier 1 recomputes retrieval on every pull request, which
+  catches the retrieval half. For the generation half, the maintainer re-runs tier 2 after
+  such a change; the check cannot force it.
 - **model weights behind a tag:** these are recorded and checked locally only (above).
 
 **`rag-eval score` copies the generation parts from the answers file**, and refuses to
