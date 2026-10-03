@@ -5,15 +5,23 @@ Two claims are under test:
 * **The events.** ``stream_answer`` yields ``Sources``, then ``Token``\\ s, then ``Done``,
   numbered exactly as the prompt numbers its chunks, with no absolute host path.
 * **Cancelling works.** Cancelling the task that consumes the stream closes the model's
-  stream *before* that task returns — during the simulated prefill and mid-stream. The
-  fake model's ``finally`` stands in for ChatOllama closing its HTTP response.
+  stream *before* that task returns: during the simulated prefill, mid-stream, and when
+  the cancel arrives while a chunk is being processed (forced, so it is deterministic).
+  The fake model's ``finally`` stands in for ChatOllama closing its HTTP response.
 
-**Read the negative control first.** The same assertion against the
-``RunnablePassthrough.assign`` shape (today's ``build_rag_chain``) must fail:
-``RunnableParallel`` waits on its step tasks with ``asyncio.wait`` and never cancels them
-(ARCHITECTURE.md §2.1, the verified trap). It is ``xfail(strict=True)``: if a
-langchain-core release fixes that, the suite goes red and says the trap is gone, instead
-of the control quietly passing and no longer telling the bug from the fix.
+**Read the negative controls first.** The same assertion must fail against the two
+shapes ``stream_answer`` avoids (ARCHITECTURE.md §2.1, DEC-14):
+
+* ``RunnablePassthrough.assign`` (today's ``build_rag_chain``): ``RunnableParallel``
+  waits on its step tasks with ``asyncio.wait`` and never cancels them;
+* ``prompt | llm | StrOutputParser()``, streamed directly, as ``stream_answer`` did until
+  S2-3's second review: each chunk runs in its own task, so a cancel that arrives while a
+  chunk is in flight ends that task and leaves the model's stream paused at a ``yield``.
+  That made the mid-stream test flaky (66 failures in 300 on one core).
+
+Both are ``xfail(strict=True)``: if a langchain-core release fixes either, the suite goes
+red and says the trap is gone, instead of a control quietly passing and no longer telling
+the bug from the fix.
 """
 
 import asyncio
@@ -25,7 +33,9 @@ from typing import Any
 import pytest
 from conftest import StreamingFakeChatModel
 from langchain_core.documents import Document
+from langchain_core.messages import AIMessageChunk, BaseMessage
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrough
 
@@ -47,13 +57,15 @@ DOCS = [
 ]
 
 
+PROMPT = ChatPromptTemplate.from_messages(
+    [("system", "Answer from the context."), ("human", "{context}\n\n{question}")]
+)
+
+
 def fake_pipeline(model: StreamingFakeChatModel, docs: list[Document] = DOCS) -> QueryPipeline:
-    prompt = ChatPromptTemplate.from_messages(
-        [("system", "Answer from the context."), ("human", "{context}\n\n{question}")]
-    )
     return QueryPipeline(
         retrieve=RunnableLambda(lambda question: docs),
-        answer=prompt | model | StrOutputParser(),
+        prompt=PROMPT,
         llm=model,
         corpus_root=CORPUS,
     )
@@ -104,7 +116,7 @@ def test_an_answer_without_text_has_no_time_to_first_token() -> None:
 
 def test_a_pipeline_without_an_index_raises_no_index_error() -> None:
     model = StreamingFakeChatModel()
-    pipeline = QueryPipeline(retrieve=None, answer=model, llm=model, corpus_root=CORPUS)
+    pipeline = QueryPipeline(retrieve=None, prompt=PROMPT, llm=model, corpus_root=CORPUS)
     with pytest.raises(NoIndexError):
         asyncio.run(collect(stream_answer(pipeline, "q")))
     assert model.prompts == []
@@ -151,16 +163,28 @@ MOMENTS: dict[str, tuple[dict[str, Any], Callable[[StreamingFakeChatModel], bool
 }
 
 
+def sequence(pipeline: QueryPipeline) -> Runnable[dict[str, str], str]:
+    """``prompt | llm | StrOutputParser()`` over the pipeline's parts."""
+    return pipeline.prompt | pipeline.llm | StrOutputParser()
+
+
 def assign_shape(pipeline: QueryPipeline) -> Runnable[dict[str, str], dict[str, Any]]:
-    """The shape ``build_rag_chain`` composes, over the same parts: the bug under DEC-14."""
+    """The shape ``build_rag_chain`` composes, over the same parts: the first trap."""
     assert pipeline.retrieve is not None
     to_prompt_inputs: Runnable[dict[str, Any], dict[str, str]] = RunnableLambda(
         lambda x: {"context": format_docs(x["context"]), "question": x["question"]}
     )
     return (
         RunnablePassthrough.assign(context=itemgetter("question") | pipeline.retrieve)
-        | RunnablePassthrough.assign(answer=to_prompt_inputs | pipeline.answer)
+        | RunnablePassthrough.assign(answer=to_prompt_inputs | sequence(pipeline))
     )
+
+
+def sequence_shape(pipeline: QueryPipeline, question: str) -> AsyncIterator[str]:
+    """What ``stream_answer`` streamed until S2-3's second review: the second trap."""
+    assert pipeline.retrieve is not None
+    docs = pipeline.retrieve.invoke(question)
+    return sequence(pipeline).astream({"context": format_docs(docs), "question": question})
 
 
 async def closed_when_cancelled(
@@ -216,13 +240,82 @@ def test_negative_control_cancel_under_assign_leaves_the_stream_open(moment: str
     assert asyncio.run(closed_when_cancelled(events, model, ready))
 
 
+class CancelsAtAChunk(StreamingFakeChatModel):
+    """Cancels the consuming task while a chunk is being processed: just before it yields
+    token ``at``, instead of while it waits on Ollama.
+
+    That is where Ctrl-C lands when it arrives as a chunk comes in, and it is the moment
+    that made the mid-stream test flaky. Forcing it makes the test deterministic.
+    ``consumer`` is the task to cancel, set by the test once it exists.
+    """
+
+    at: int = 0
+    consumer: Any = None
+
+    async def _astream(
+        self, messages: list[BaseMessage], stop: Any = None, run_manager: Any = None, **kw: Any
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        self._record(messages)
+        self.log.append("start")
+        try:
+            for i, token in enumerate(self.tokens):
+                if i == self.at:
+                    self.consumer.cancel()
+                self.log.append(token)
+                yield ChatGenerationChunk(message=AIMessageChunk(content=token))
+                await asyncio.sleep(0)  # the next read from Ollama
+        finally:
+            self.log.append("closed")
+
+
+async def closed_on_return(events: AsyncIterator[Any], model: CancelsAtAChunk) -> bool:
+    """Consume ``events`` in a task the model cancels, and report whether the model's
+    stream was closed when that task returned."""
+
+    async def consume() -> None:
+        async for _ in events:
+            pass
+
+    model.consumer = asyncio.create_task(consume())
+    with pytest.raises(asyncio.CancelledError):
+        await model.consumer
+    return model.closed
+
+
+TOKENS = [f"t{i} " for i in range(6)]
+
+
+@pytest.mark.parametrize("at", [0, 1, 3, 5])
+def test_a_cancel_while_a_chunk_is_processed_closes_the_stream_before_returning(at: int) -> None:
+    model = CancelsAtAChunk(tokens=TOKENS, at=at)
+    assert asyncio.run(closed_on_return(stream_answer(fake_pipeline(model), "q"), model)), (
+        f"the consumer returned with the model's stream still open: {model.log}"
+    )
+    assert model.log == ["start", *TOKENS[: at + 1], "closed"]  # nothing after the cancel
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="the second trap DEC-14 avoids: a sequence runs each chunk in its own task, so "
+    "a cancel while a chunk is in flight ends that task and leaves the model's stream "
+    "paused at a yield. If this passes, langchain-core changed: re-check §2.1.",
+)
+@pytest.mark.parametrize("at", [0, 3])
+def test_negative_control_the_same_cancel_under_a_sequence_leaves_the_stream_open(
+    at: int,
+) -> None:
+    model = CancelsAtAChunk(tokens=TOKENS, at=at)
+    assert asyncio.run(closed_on_return(sequence_shape(fake_pipeline(model), "q"), model))
+
+
 def test_a_consumer_that_stops_early_closes_the_stream_while_the_loop_runs() -> None:
     # The other ending: the consumer stops at a yield and closes the generator, instead
-    # of being cancelled inside the model's await. Not immediate: langchain-core 1.6.3
-    # never aclose()s the inner generators of a sequence, so the loop's async-generator
-    # finalizer closes them, one level per iteration (about 20 in S2-1). Prompt while a
-    # loop runs, so no more tokens are generated; cancellation remains the path that
-    # closes the stream *before* control returns (the tests above).
+    # of being cancelled inside the model's read. Not immediate: langchain-core 1.6.3
+    # never aclose()s the provider's generator inside BaseChatModel.astream, so the
+    # loop's async-generator finalizer closes it a loop iteration or two later. Prompt
+    # while a loop runs, so no more tokens are generated; cancellation remains the path
+    # that closes the stream *before* control returns (the tests above).
     model = StreamingFakeChatModel(tokens=[f"t{i} " for i in range(40)], gap_s=0.01)
 
     async def iterations_until_closed() -> int | None:
@@ -256,15 +349,14 @@ def test_a_failure_to_close_does_not_replace_the_streams_own_error() -> None:
         async def aclose(self) -> None:
             raise RuntimeError("close failed too")
 
-    class FailingAnswer:
-        def astream(self, inputs: Any) -> FailingClose:
+    class FailingModel:
+        def astream(self, messages: Any) -> FailingClose:
             return FailingClose()
 
-    model = StreamingFakeChatModel()
     pipeline = QueryPipeline(
         retrieve=RunnableLambda(lambda question: DOCS),
-        answer=FailingAnswer(),  # type: ignore[arg-type]
-        llm=model,
+        prompt=PROMPT,
+        llm=FailingModel(),  # type: ignore[arg-type]
         corpus_root=CORPUS,
     )
     with pytest.raises(Boom):

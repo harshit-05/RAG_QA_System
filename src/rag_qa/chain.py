@@ -4,9 +4,9 @@
 answer kept apart:
 
 - ``retrieve``: question in, chunks out. Awaited, never streamed.
-- ``answer``: ``prompt | llm | StrOutputParser()``. Streamed directly by
-  :func:`rag_qa.answering.stream_answer`, which is what lets a cancel close the stream
-  to the model (DEC-14).
+- ``prompt`` and ``llm``: :func:`rag_qa.answering.stream_answer` renders the prompt,
+  then streams the model itself, never ``prompt | llm | StrOutputParser()``. That is
+  what makes a cancel close the stream to the model every time (DEC-14).
 
 :func:`build_rag_chain` composes the same parts into the Phase 0 chain, for the
 ``invoke`` contract of §0.4, relied on by the evaluation harness:
@@ -51,8 +51,8 @@ class QueryPipeline:
     """
 
     retrieve: Runnable[str, list[Document]] | None
-    answer: Runnable[dict[str, str], str]
-    llm: BaseChatModel  # kept so aclose() can close its HTTP clients
+    prompt: ChatPromptTemplate  # rendered by stream_answer, which then streams llm itself
+    llm: BaseChatModel  # streamed directly; also kept so aclose() can close its clients
     corpus_root: Path  # sources are reported relative to it
 
     async def aclose(self) -> None:
@@ -108,18 +108,18 @@ def build_retrieve(config: RagConfig, embeddings: Embeddings) -> Runnable[str, l
     return retriever
 
 
-def _build_answer(config: RagConfig, llm: BaseChatModel) -> Runnable[dict[str, str], str]:
-    """The generation half: ``{"context": str, "question": str}`` in, answer text out.
+def build_prompt(config: RagConfig) -> ChatPromptTemplate:
+    """The chat prompt: ``{"context": str, "question": str}`` in, messages out.
 
     Instructions and retrieved content stay in different chat roles (OWASP LLM01).
+    The one prompt both :func:`build_query_pipeline` and :func:`build_rag_chain` use.
     """
-    prompt = ChatPromptTemplate.from_messages(
+    return ChatPromptTemplate.from_messages(
         [
             ("system", config.pipeline.query.prompt.system),
             ("human", config.pipeline.query.prompt.human),
         ]
     )
-    return prompt | llm | StrOutputParser()
 
 
 def build_query_pipeline(config: RagConfig, *, require_index: bool = True) -> QueryPipeline:
@@ -146,7 +146,7 @@ def build_query_pipeline(config: RagConfig, *, require_index: bool = True) -> Qu
     retrieve = build_retrieve(config, build_embedder(config)) if has_index else None
     return QueryPipeline(
         retrieve=retrieve,
-        answer=_build_answer(config, llm),
+        prompt=build_prompt(config),
         llm=llm,
         corpus_root=config.paths.data,
     )
@@ -158,7 +158,9 @@ def build_rag_chain(config: RagConfig) -> Runnable[dict[str, str], dict[str, Any
     **For** ``invoke`` **only, never for cancellable streaming** (DEC-14). Its
     ``RunnablePassthrough.assign`` steps run under ``RunnableParallel``, which never
     cancels its step tasks: a cancelled consumer returns while the generation runs on.
-    Front ends stream :func:`rag_qa.answering.stream_answer` instead.
+    Even its inner ``prompt | llm | StrOutputParser()`` would not do: a sequence runs each
+    chunk in its own task, and a cancel at one of those boundaries leaves the model's
+    stream open. Front ends stream :func:`rag_qa.answering.stream_answer` instead.
 
     Streaming it still yields ``question``, then the whole ``context`` in one chunk,
     then ``answer`` token by token.
@@ -170,5 +172,7 @@ def build_rag_chain(config: RagConfig) -> Runnable[dict[str, str], dict[str, Any
     )
     return (
         RunnablePassthrough.assign(context=itemgetter("question") | retrieve)
-        | RunnablePassthrough.assign(answer=to_prompt_inputs | _build_answer(config, llm))
+        | RunnablePassthrough.assign(
+            answer=to_prompt_inputs | build_prompt(config) | llm | StrOutputParser()
+        )
     )
