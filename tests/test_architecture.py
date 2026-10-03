@@ -2,6 +2,7 @@
 
 * ADR-009: ``rag_qa.ingest`` never imports ``rag_qa.chain``, and the config layer
   (``registry``, ``schema``, ``settings``, ``config``) imports no LangChain at all.
+  Nor does ``evaluation.dataset``, which CI's model-free eval gate imports (S2-2).
   Checked at **runtime in a fresh interpreter**, replacing the grep
   ``^(from|import) .*chain``, which false-positives on ``langchain_core`` (S1-3).
   A fresh process is required: inside pytest, other tests have already loaded
@@ -39,10 +40,18 @@ def test_ingest_never_loads_the_query_chain() -> None:
 
 
 @pytest.mark.parametrize(
-    "module", ["rag_qa.registry", "rag_qa.schema", "rag_qa.settings", "rag_qa.config"]
+    "module",
+    [
+        "rag_qa.registry",
+        "rag_qa.schema",
+        "rag_qa.settings",
+        "rag_qa.config",
+        "rag_qa.evaluation.dataset",
+    ],
 )
 def test_the_config_layer_loads_no_langchain(module: str) -> None:
-    # What lets config validation (and its tests) run without the ML stack.
+    # What lets config validation (and its tests) run without the ML stack. The golden
+    # set's loader is held to the same rule: the tier-2 gate runs it with no models.
     langchain = sorted(m for m in modules_loaded_by(module) if m.startswith("langchain"))
     assert langchain == []
 

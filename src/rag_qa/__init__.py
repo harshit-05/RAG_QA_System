@@ -13,7 +13,8 @@ Module layout is fixed by ARCHITECTURE.md §0.2 and §1.2:
 - ``chain``       ``build_query_pipeline(cfg) -> QueryPipeline``; ``build_rag_chain`` for invoke
 - ``answering``   ``stream_answer``: one answer as typed events, for every front end
 - ``cli``         interactive REPL over that stream
-- ``evaluate``    RAGAs harness (Phase 2)
+- ``evaluate``    RAGAs harness (Phase 2); replaced by ``evaluation`` in S2-5
+- ``evaluation``  the golden set (``evaluation.dataset``) and, from S2-3, the eval gates
 
 Version tracks the release tags: ``.dev0`` between tags, bumped at each phase exit
 (Phase 0 shipped 0.1.0 / tag v0.1; Phase 1 shipped 0.2.0 / tag v0.2; Phase 2's
