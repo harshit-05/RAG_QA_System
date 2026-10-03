@@ -104,6 +104,11 @@ The story file's **Model** field is authoritative per story. The convention:
 | Any story after the obvious fix failed twice | escalate to fable |
 | Library/design choices (e.g. Qdrant vs pgvector, Phase 3) | fable |
 
+**Fable is unavailable from 2026-10-04 (maintainer).** Until access returns, work routed
+to fable runs on Opus 5.5 at max effort: S2-4, S2-5, S2-6, S2-7 and the Phase 3
+architecture pass. There is no stronger model to escalate to, so those stories keep the
+two-review habit, and each records the substitution under Deviation.
+
 ## GPU policy
 
 - This host is CPU-only. Nothing in Phase 0–3 *requires* a GPU — do not
