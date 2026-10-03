@@ -5,30 +5,23 @@
 
 ## Now
 
-**Next action: merge `fix/s2-1-cancel-race`, then finish [S2-3](phase-2/S2-3-retrieval-eval.md)**
-(PR #9; reviewed twice).
+**Next action: [S2-4](phase-2/S2-4-reranker.md)**: our own cross-encoder reranker, switched
+on or off by tier-1 numbers. Model fable, not plan-first, on branch `feat/s2-4-reranker`
+(risky: it changes the retrieval every answer depends on, and shrinks the `_target_`
+allowlist). Its inputs from S2-3 are in the backlog, under "S2-4 — two inputs". The order
+of the Phase 2 stories, and what each depends on, are in the Phase 2 table below.
 
-1. **The cancel-race fix goes first, as its own PR.** It is the cause of the red CI runs
-   (below). Then update S2-3's branch from `main`.
-2. **S2-3's verification 4 is half done.** CI's first PR run reproduced the baseline
-   exactly, question by question (hit rate 0.800, MRR 0.5875, recall 0.7167; floors
-   0.75, 0.537 and 0.666). Re-running its `eval-retrieval` job must still show a cache
-   hit.
+**S2-3 is done** (2026-10-04, PR #9). Tier 1 runs in CI's `eval-retrieval` job. Its
+baseline is hit rate 0.800, MRR 0.5875 and recall 0.7167, against floors of 0.75, 0.537
+and 0.666. GitHub's runner reproduced the baseline exactly, question by question.
 
-After that comes [S2-4](phase-2/S2-4-reranker.md). Its two inputs from S2-3 are in the
-backlog. The order of the Phase 2 stories, and what each depends on, are in the Phase 2
-table below.
+**CI runs on pull requests, not on pushes to a story branch** (S2-3's first review). Push
+runs are for `main` and `v*` tags only, so open the PR to get CI on a branch. `main`'s push
+run is what writes the HF model cache that every PR run restores.
 
-**Known red CI runs, now explained.** S2-1's mid-stream cancellation test failed push runs
-on S2-2's and S2-3's branches.
-
-- **The cause** is a real race in `stream_answer`, not the test (S2-3's second review).
-  It is fixed on `fix/s2-1-cancel-race`, and recorded in the backlog line "Closed
-  2026-10-04".
-- **Once that is merged**, a red `check` job is real.
-- **Until then**, a red `check` failing only in
-  `test_cancel_closes_the_stream_before_the_consumer_returns[mid-stream]` is that race,
-  not the change under review.
+**The flaky cancel test is fixed** (PR #10, 2026-10-04). It was a real race in
+`stream_answer`; the backlog line "Closed 2026-10-04" has the detail. A red `check` job is
+real now.
 
 **The Phase 2 architecture pass is done** (2026-10-02).
 
@@ -399,9 +392,9 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
-| [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Done 2026-10-03 (PR #7) |
+| [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Done 2026-10-03 (PR #7); cancel-race fix 2026-10-04 (PR #10) |
 | [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Done 2026-10-03 (PR #8) |
-| [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | In review: two reviews done; waiting on the cancel-race fix, then CI's cache-hit re-run |
+| [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Done 2026-10-04 (PR #9) |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Todo |
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Todo |
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Todo |
@@ -476,6 +469,11 @@ leads with one of two things:
   v0.2 manual test's two traps). It has 25 records, 20 answerable and 5 unanswerable, each
   signed off by the maintainer against its PDF. `evaluation/dataset.py` validates the
   file, and a committed test checks that every quote in the notes is on its cited page.
+- **S2-3:** tier 1 of the quality bar. `rag-eval retrieval` scores hit rate, MRR and recall
+  against the golden set. The `eval-retrieval` CI job recomputes them on every pull request
+  and every push to `main`, against the floors in `eval/thresholds.yaml`. It is CI's only
+  job with network access: the model weights are cached, and on a cache hit nothing
+  reaches the network. Exit 1 means a floor was missed; exit 2 means it could not run.
 
 ### Closed in Phase 1
 
@@ -632,10 +630,9 @@ leads with one of two things:
     from 0.80 to 0.95. `glider-slm`'s p. 2 is not in the top 20 at all, so no reranker can
     recover it.
   - **Step 3's scratch configs need `--dataset` and `--thresholds`.** The eval files are
-    anchored beside the config file, as `paths` are. Without the flags, a scratch copy of
-    `config.yaml` exits 2: "cannot read the golden set". Pass
-    `--dataset eval/eval_dataset.jsonl --thresholds eval/thresholds.yaml`, beside
-    `RAG_DATA_PATH`.
+    anchored beside the config file, as `paths` are, so without the flags a scratch copy
+    of `config.yaml` exits 2: "cannot read the golden set". Already written into S2-4's
+    step 3, with the flags spelled out: zsh does not word-split an unquoted `$VAR`.
   - **"S2-3's scratch index" was in a session scratchpad under `/tmp`.** Build a fresh
     one with `RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-ingest` (about 2 min).
 - **S2-4, closes as not needed —** `langchain-classic` is referenced by the (disabled)

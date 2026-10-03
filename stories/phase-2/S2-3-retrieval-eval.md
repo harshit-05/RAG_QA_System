@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-04): two reviews done. Verification 1–3 run and shown; 4 half done (the runner reproduced the baseline exactly; the cache-hit re-run is outstanding). Merge after `fix/s2-1-cancel-race` |
+| **Status** | Done 2026-10-04 (PR #9, merged after the cancel-race fix in PR #10). Verification 1–4 run and shown; reviewed twice |
 | **Closes** | FR-7 (tier 1 of the quality gate) |
 | **Depends on** | S2-1 (`build_retrieve`), S2-2 (the golden set) |
 | **Model** | opus-fast |
@@ -12,8 +12,8 @@
 ## Goal
 
 Retrieval quality becomes numbers that CI recomputes on every pull request and every push
-to `main`. For each answerable
-golden question, three are taken over what the prompt would actually receive:
+to `main`. For each answerable golden question, three are taken over what the prompt
+would actually receive:
 
 - **hit rate**: an expected page, or one of its `also_pages`, appears anywhere in the
   context;
@@ -125,7 +125,7 @@ gh run list --limit 2
 - **The baseline (2026-10-03): hit rate 0.800 (16 of 20), MRR 0.5875, recall 0.7167.**
   The scratch index built for verification 2 and the real index built on 2026-10-02 give
   identical results, question by question. That shows reproducibility on this host only;
-  the runner's CPU is verification 4's question.
+  the runner's CPU was verification 4's question, and the runner reproduced it exactly.
 - **The four misses are real retrieval misses, not partial repeats.** S2-2 says to read the
   notes before calling a miss a retrieval failure, and none of these retrieved a page that
   its notes name as a repeat:
@@ -147,11 +147,10 @@ gh run list --limit 2
   step 3 runs two scratch copies of `config.yaml`. Without those flags each exits 2 with
   `cannot read the golden set <scratch>/eval/eval_dataset.jsonl` (seen here). Pass
   `--dataset eval/eval_dataset.jsonl --thresholds eval/thresholds.yaml`, beside
-  `RAG_DATA_PATH`. Both S2-4 inputs are in the STATUS.md backlog.
+  `RAG_DATA_PATH`. The first review wrote them into S2-4's step 3. Both inputs are in the
+  STATUS.md backlog.
 
 ## Deviation from plan
-
-Drafted for review; finalised at close-out.
 
 - **The floors live in `evaluation/gate.py`.** The story names only `retrieval.py` and
   `cli.py`, but ARCHITECTURE.md §2.2 gives the floors to `gate.py` ("freshness + floors"),
@@ -216,6 +215,24 @@ Drafted for review; finalised at close-out.
       `tags: ["v*"]`.
     - "Every push" is corrected in `ci.yml`, `thresholds.yaml`, `retrieval.py`, `cli.py`,
       ARCHITECTURE.md (§2.1) and STATUS.md (DEC-15), and in this story's title.
-  - **Outstanding:** verification 4's cache-hit re-run. With the push trigger on `main`
-    only, the PR run is the one to re-run (`gh run rerun <run> --job <eval-retrieval
-    job>`), and its log should show a cache hit.
+- **Checked before the review commits (2026-10-04).** Two fixes went into them:
+  - S2-4's step 3 had put the flags in `EVAL="..."` and passed `$EVAL` unquoted. zsh,
+    this host's shell, does not word-split it, so both commands failed with
+    `unrecognized arguments` (reproduced). The flags are now spelled out.
+  - Verification 3's offline control did not set the index path, so without an index it
+    would exit 2 for the wrong reason. It now uses the scratch index.
+
+  The cancel-race patch was checked before it was applied: it applies cleanly to `main`,
+  and an independent re-measurement on one core gave 37 failures in 300 without it and 0
+  with it. A simulated merge showed no conflict with this branch's `STATUS.md` and
+  `ARCHITECTURE.md`.
+- **Verification 4 (CI), done.** All three are pull-request runs. The push run on
+  `eafdd02` was the red one: the race, as above.
+  - Run 37149287717 (`eafdd02`): the cache missed, ingest downloaded the embedder, and the
+    save step stored it under `hf-Linux-sentence-transformers--all-MiniLM-L6-v2`. The table
+    matched the local one exactly.
+  - Run 37161168026 (`5d04f1e`): an exact cache hit. Ingest ran with `HF_HUB_OFFLINE=1`, the
+    save was skipped, and the same table came out. No manual re-run was needed: PR #9's
+    cache is scoped to the PR, so its next run was the re-run.
+  - Run 37161736020 (`be52bce`), after `gh pr update-branch 9` brought in PR #10's race
+    fix: green. Both PRs were rebase-merged on 2026-10-04, #10 first.
