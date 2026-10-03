@@ -5,10 +5,11 @@
 
 ## Now
 
-**Next action: merge PR #7 ([S2-1](phase-2/S2-1-answer-stream.md), done 2026-10-03, CI
-green), then [S2-2](phase-2/S2-2-golden-dataset.md)**: the golden dataset, seeded with
-GLIDER. Model opus-fast, not plan-first, on branch `feat/s2-2-golden-dataset`. S2-1's
-Discovered section has an input for S2-7, also in the Backlog. The order of the Phase 2
+**Next action: sign off [S2-2](phase-2/S2-2-golden-dataset.md)'s 25 golden records**, one
+by one against the PDFs (the table in its Deviation section), then push
+`feat/s2-2-golden-dataset` for CI. Implemented 2026-10-03 and green locally. PR #7 (S2-1)
+is merged. Next after S2-2 is [S2-3](phase-2/S2-3-retrieval-eval.md); S2-2's Discovered
+section has an input for it (which pages a record lists). The order of the Phase 2
 stories, and what each depends on, are in the Phase 2 table below.
 
 **The Phase 2 architecture pass is done** (2026-10-02).
@@ -378,7 +379,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
 | [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Done 2026-10-03 (PR #7) |
-| [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Todo |
+| [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Implemented 2026-10-03; awaiting record sign-off and CI |
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Todo |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Todo |
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Todo |
