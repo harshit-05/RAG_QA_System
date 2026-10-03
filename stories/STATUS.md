@@ -8,8 +8,9 @@
 **Next action: [S2-4](phase-2/S2-4-reranker.md)**: our own cross-encoder reranker, switched
 on or off by tier-1 numbers. Model fable, not plan-first, on branch `feat/s2-4-reranker`
 (risky: it changes the retrieval every answer depends on, and shrinks the `_target_`
-allowlist). Its inputs from S2-3 are in the backlog, under "S2-4 — two inputs". The order
-of the Phase 2 stories, and what each depends on, are in the Phase 2 table below.
+allowlist). Its inputs from S2-3 are in the backlog, under "S2-4 — inputs from S2-3",
+including a CI step-order trap for the cross-encoder warm-up. The order of the Phase 2
+stories, and what each depends on, are in the Phase 2 table below.
 
 **S2-3 is done** (2026-10-04, PR #9). Tier 1 runs in CI's `eval-retrieval` job. Its
 baseline is hit rate 0.800, MRR 0.5875 and recall 0.7167, against floors of 0.75, 0.537
@@ -623,8 +624,7 @@ leads with one of two things:
 
 - **S2-6 —** chunk metadata: content hash of the source file + ingestion timestamp
   (SRS §7.3), with the manifest that needs them (DEC-17).
-- **S2-4 — two inputs from S2-3's baseline (found in S2-3).** Detail in S2-3's
-  Discovered section.
+- **S2-4 — inputs from S2-3 (found in S2-3).** Detail in S2-3's Discovered section.
   - **What a reranker can reach.** At k=20, three of tier 1's four misses have their page
     in the candidates (ranks 10, 10 and 11). So the reranker can at best lift the hit rate
     from 0.80 to 0.95. `glider-slm`'s p. 2 is not in the top 20 at all, so no reranker can
@@ -635,6 +635,14 @@ leads with one of two things:
     step 3, with the flags spelled out: zsh does not word-split an unquoted `$VAR`.
   - **"S2-3's scratch index" was in a session scratchpad under `/tmp`.** Build a fresh
     one with `RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-ingest` (about 2 min).
+  - **CI: the cross-encoder warm-up goes between "Ingest the corpus" and "Save the HF
+    models"** (found at S2-3's close-out). S2-3 saves the cache right after ingest, so a
+    warm-up placed after the save is never cached. The next exact-key hit then runs
+    offline without the cross-encoder and fails, or downloads it on every run if left
+    online. The warm-up also takes ingest's
+    `HF_HUB_OFFLINE: ${{ steps.hf-models.outputs.cache-hit == 'true' && '1' || '0' }}`, so
+    an exact hit stays offline (S2-3's second review). The first run after the key change
+    is a prefix hit: MiniLM is restored, and only the cross-encoder downloads.
 - **S2-4, closes as not needed —** `langchain-classic` is referenced by the (disabled)
   reranker component but is only a transitive dependency via `langchain-community`.
   The question was whether to declare it in `pyproject.toml`. DEC-16 hand-rolls the
