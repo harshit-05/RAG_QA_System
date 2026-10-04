@@ -26,7 +26,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
-from rag_qa.registry import allowlist_hint, is_allowed
+from rag_qa.registry import allowlist_hint, is_allowed, removed_prefix_hint
 
 #: Fallbacks used only when the config file omits a ``paths`` entry.
 PATH_DEFAULTS = {
@@ -105,13 +105,16 @@ class ComponentSpec(BaseModel):
         including where the object is defined, happen in ``registry.import_from_string``.
         """
         blocked = [
-            f"{where} {target!r}" for where, target in iter_targets(self.spec())
+            (where, target) for where, target in iter_targets(self.spec())
             if not is_allowed(target)
         ]
         if blocked:
+            # A v0.2 reranker entry also gets the way to migrate (S2-4's second review).
+            migration = removed_prefix_hint(target for _, target in blocked)
             raise ValueError(
-                f"{'; '.join(blocked)}: outside the import allowlist (ISS-04). "
-                f"{allowlist_hint()}"
+                f"{'; '.join(f'{where} {target!r}' for where, target in blocked)}: outside "
+                f"the import allowlist (ISS-04). {allowlist_hint()}"
+                + (f". {migration}" if migration else "")
             )
         return self
 
