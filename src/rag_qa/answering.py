@@ -133,7 +133,8 @@ async def stream_answer(pipeline: QueryPipeline, question: str) -> AsyncIterator
 
     # Retrieval is awaited, not streamed. It runs in an executor thread that a cancel
     # cannot stop: the awaiting task returns at once and the thread finishes on its own
-    # (measured, S2-1 review). It takes milliseconds, so that is not worth machinery (DEC-14).
+    # (measured, S2-1 review). With the reranker that is up to about 2 s of CPU, which
+    # front ends that limit concurrency must count (DEC-14; the API's slot, S2-7).
     docs = await pipeline.retrieve.ainvoke(question)
     yield Sources(source_refs(docs, pipeline.corpus_root))
 

@@ -728,8 +728,19 @@ Consequences:
   alike. It is the data the Phase 3 NFR-2 decision needs (ADR-016).
 - **Retrieval cannot be cancelled while it runs.** The FAISS search, the query embedding
   and the cross-encoder run in executor threads. A cancel returns the awaiting task at
-  once (measured in the S2-1 review) and the thread finishes on its own. Each takes
-  milliseconds to a few hundred milliseconds, so this is not worth more machinery.
+  once (measured in the S2-1 review) and the thread finishes on its own.
+  - The search and the embedding take milliseconds.
+  - Since S2-4, the rerank takes a median of 1.4 s on this CPU (up to 2 s), on torch's
+    10 threads. So a cancelled answer can leave its thread busy for a second or two.
+    Running two reranks at once is safe: 40 concurrent reranks from 8 threads matched
+    sequential results exactly (S2-4's second review). The cost is CPU, not correctness.
+  - Still not worth cancelling the thread. In the CLI the user is typing the next
+    question meanwhile.
+  - In the API it does matter: a disconnected request frees its slot while its rerank
+    runs on. So S2-7 must keep that rerank from overlapping the next request's: two
+    reranks would compete for the same 10 threads. Its plan picks how. Either hold the
+    slot until the retrieval thread finishes, or serialize retrieval with a lock in the
+    retrieval half, which also covers `RAG_API_MAX_CONCURRENT` above 1.
 
 Rejected:
 
