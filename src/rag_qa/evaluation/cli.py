@@ -80,7 +80,7 @@ def _shown(path: Path) -> Path:
 def _file_keys(items: Sequence[GoldenItem], scores: Sequence[ItemScore]) -> dict[str, str]:
     """A short key for every file the table names (A, B, …), in path order.
 
-    Corpus paths are long (one is 88 characters), so the rows name files by key and a
+    Corpus paths are long (one is 90 characters), so the rows name files by key and a
     legend above the table spells each one out.
     """
     files = {s.source for item in items for s in item.expected_sources}

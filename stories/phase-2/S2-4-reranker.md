@@ -217,6 +217,10 @@ gh run list --limit 2  # check and eval-retrieval green; the warm-up step fetche
 
 - **Model:** this session ran on Opus 5.5 at max effort, not Fable, which the story
   names: Fable is unavailable from 2026-10-04 (CLAUDE.md, "Model routing").
+- **A typo carried over from S2-3, fixed here (found after S2-3 merged).**
+  `_file_keys`'s docstring in `evaluation/cli.py` said the longest corpus path is 88
+  characters. The Batch22 PDF's name is 90, measured. The change is docstring-only, so no
+  test changes.
 - **Small additions the decision made necessary, outside the Scope list:**
   - **`rag-eval retrieval`'s header and `--json` name the candidates.** With a reranker
     they still showed the retriever's `k` of 5 while 20 were fetched, so a recorded run
