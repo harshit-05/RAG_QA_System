@@ -5,14 +5,27 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
-from conftest import MakeConfig
+from conftest import (
+    RERANK_TOP_N,
+    MakeConfig,
+    StubCrossEncoder,
+    use_fakes,
+    use_fakes_and_reranker,
+)
 from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_ollama import ChatOllama
 
-from rag_qa.components import aclose_llm, build_embedder, build_loader, build_splitter
+from rag_qa.components import (
+    aclose_llm,
+    build_embedder,
+    build_loader,
+    build_reranker,
+    build_splitter,
+)
 from rag_qa.config import load_config
 from rag_qa.loaders import DocxLoader, PdfLoader, TextLoader
+from rag_qa.rerankers import CrossEncoderReranker
 
 
 @pytest.mark.parametrize(
@@ -78,6 +91,22 @@ def test_build_splitter_uses_the_configured_splitter(make_config: MakeConfig) ->
     for left, right in pairwise(chunks):
         shared = max((n for n in range(1, len(right) + 1) if left.endswith(right[:n])), default=0)
         assert 100 < shared <= 150
+
+
+def test_build_reranker_is_none_without_a_reranker(make_config: MakeConfig) -> None:
+    assert build_reranker(load_config(make_config(use_fakes))) is None
+
+
+def test_build_reranker_builds_the_configured_entry(
+    make_config: MakeConfig, stub_cross_encoder: type[StubCrossEncoder]
+) -> None:
+    # Through build_object, like every component: the settings come from the config entry.
+    reranker = build_reranker(load_config(make_config(use_fakes_and_reranker)))
+    assert isinstance(reranker, CrossEncoderReranker)
+    assert (reranker.top_n, reranker.device, reranker.min_score) == (RERANK_TOP_N, "cpu", None)
+    assert [(m.model_name_or_path, m.device) for m in stub_cross_encoder.built] == [
+        ("cross-encoder/ms-marco-MiniLM-L-6-v2", "cpu")
+    ]
 
 
 def test_aclose_llm_closes_chat_ollamas_http_clients() -> None:

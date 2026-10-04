@@ -8,7 +8,17 @@ from langchain_core.documents import Document
 
 from rag_qa import registry
 from rag_qa.config import ConfigError, check_imports, load_config
-from rag_qa.registry import ALLOWED_PREFIXES, build_object, import_from_string
+from rag_qa.registry import ALLOWED_PREFIXES, allowlist_hint, build_object, import_from_string
+from rag_qa.schema import Components
+
+#: Targets under the two prefixes S2-4 removed: the old reranker entry's three classes,
+#: and FAISS, which vectorstore.py still imports from langchain_community in source.
+DROPPED = [
+    "langchain_classic.retrievers.ContextualCompressionRetriever",
+    "langchain_classic.retrievers.document_compressors.CrossEncoderReranker",
+    "langchain_community.cross_encoders.HuggingFaceCrossEncoder",
+    "langchain_community.vectorstores.FAISS",
+]
 
 # --- import_from_string ----------------------------------------------------------------
 
@@ -41,6 +51,7 @@ def test_unimportable_path_names_the_cause(path: str, cause: str) -> None:
         "langchain_core_evil.Payload",
         "rag_qa",                        # no attribute part
         "",
+        *DROPPED,                        # allowed until S2-4
     ],
 )
 def test_path_outside_the_allowlist_is_refused_before_import(path: str) -> None:
@@ -63,6 +74,24 @@ def test_path_outside_the_allowlist_is_refused_before_import(path: str) -> None:
 def test_reexported_name_under_an_allowed_prefix_is_refused(path: str) -> None:
     with pytest.raises(ImportError, match="re-exports does not count"):
         import_from_string(path)
+
+
+@pytest.mark.parametrize(
+    ("path", "defined_in"),
+    [
+        # vectorstore.py imports FAISS, so our own module re-exports a langchain_community
+        # class. The prefix check passes it; only the defining-module check stops it.
+        pytest.param("rag_qa.vectorstore.FAISS", "langchain_community", id="FAISS"),
+        # rerankers.py imports the model class, from a package never on the list.
+        pytest.param("rag_qa.rerankers.CrossEncoder", "sentence_transformers", id="CrossEncoder"),
+    ],
+)
+def test_a_package_off_the_list_cannot_come_back_through_our_own_modules(
+    path: str, defined_in: str
+) -> None:
+    with pytest.raises(ImportError, match="re-exports does not count") as exc:
+        import_from_string(path)
+    assert f"defined in '{defined_in}." in str(exc.value)
 
 
 @pytest.mark.parametrize(
@@ -148,8 +177,9 @@ def _set_llm_target(target: str) -> Any:
 
 def _set_nested_reranker_target(target: str) -> Any:
     def edit(c: dict[str, Any]) -> None:
-        reranker = c["components"]["rerankers"]["cross_encoder"]
-        reranker["base_compressor"]["model"]["_target_"] = target
+        # The _cuda entry: never referenced on this host, whatever the pipeline uses.
+        reranker = c["components"]["rerankers"]["ms_marco_minilm_cuda"]
+        reranker["wrapper"] = {"model": {"_target_": target}}
 
     return edit
 
@@ -162,8 +192,14 @@ def _set_nested_reranker_target(target: str) -> Any:
         ),
         pytest.param(
             _set_nested_reranker_target("subprocess.Popen"),
-            "base_compressor.model._target_",
+            "wrapper.model._target_",
             id="nested, in an unreferenced component",
+        ),
+        # The old reranker entry's own shape: a dropped prefix, two levels down.
+        pytest.param(
+            _set_nested_reranker_target(DROPPED[2]),
+            "wrapper.model._target_",
+            id="nested, a dropped prefix",
         ),
     ],
 )
@@ -175,6 +211,20 @@ def test_blocked_target_fails_at_load(make_config: MakeConfig, edit: Any, locati
     assert location in message
     assert "outside the import allowlist" in message
     assert "rag_qa/registry.py" in message  # where to change the list, and that it's fixed
+
+
+@pytest.mark.parametrize("target", DROPPED)
+def test_a_dropped_prefix_fails_at_load_with_the_hint(make_config: MakeConfig, target: str) -> None:
+    with pytest.raises(ConfigError) as exc:
+        load_config(make_config(_set_llm_target(target)))
+    message = str(exc.value)
+    assert "outside the import allowlist" in message
+    assert allowlist_hint() in message  # what is allowed, and where the fixed list lives
+
+
+def test_the_hint_no_longer_offers_the_dropped_prefixes() -> None:
+    assert "langchain_classic" not in allowlist_hint()
+    assert "langchain_community" not in allowlist_hint()
 
 
 def test_load_never_imports(make_config: MakeConfig) -> None:
@@ -191,6 +241,19 @@ def test_load_never_imports(make_config: MakeConfig) -> None:
 def test_every_referenced_target_in_the_real_config_imports() -> None:
     config = load_config(REAL_CONFIG)
     check_imports(config, config.references().values())  # raises on any failure
+
+
+def test_every_target_in_the_real_config_imports_used_or_not() -> None:
+    # The allowlist shrank (S2-4), so every entry must still build, unreferenced ones too:
+    # the _cuda devices and the spare LLMs. Before S2-4 the reranker entry was left out,
+    # so that langchain_classic was never imported (ADR-007); nothing needs that now.
+    config = load_config(REAL_CONFIG)
+    every_entry = [
+        f"components.{kind}.{name}"
+        for kind in Components.model_fields
+        for name in getattr(config.components, kind)
+    ]
+    check_imports(config, every_entry)  # retrievers have no _target_, so add nothing
 
 
 def test_check_imports_reports_a_nested_missing_class_with_its_location(
@@ -217,6 +280,10 @@ def test_check_imports_reports_a_nested_missing_class_with_its_location(
     [
         pytest.param("rag_qa.registry.import_module", "re-exports does not count", id="re-export"),
         pytest.param("langchain_core.utils.utils.guard_import", "is not a class", id="function"),
+        # Loads, since rag_qa. is allowed: a dropped package reached through our own module.
+        pytest.param(
+            "rag_qa.vectorstore.FAISS", "re-exports does not count", id="re-export of FAISS"
+        ),
     ],
 )
 def test_check_imports_catches_what_the_load_check_cannot(

@@ -43,15 +43,18 @@ from typing import Any
 
 #: Module prefixes a ``_target_`` may import from. Each ends in "." so a prefix
 #: cannot match a longer package name (``rag_qa_evil`` is not ``rag_qa``).
-#: ``langchain_classic.`` is here for the disabled reranker config entry (Phase 2);
-#: ADR-007 still forbids importing it from source under ``src/rag_qa/``.
+#:
+#: Only packages a ``_target_`` actually uses: an allowlist allows what is used, not
+#: what might be (ADR-020). S2-4 removed ``langchain_classic.`` and
+#: ``langchain_community.``. The old reranker entry was the only ``_target_`` under
+#: either, and our own reranker (:mod:`rag_qa.rerankers`, DEC-16) replaced it.
+#: ``vectorstore.py`` still imports FAISS from ``langchain_community`` in source until
+#: Phase 3; no config builds from that package.
 ALLOWED_PREFIXES = (
     "langchain_core.",
-    "langchain_community.",
     "langchain_huggingface.",
     "langchain_ollama.",
     "langchain_text_splitters.",
-    "langchain_classic.",
     "rag_qa.",
 )
 

@@ -74,6 +74,7 @@ def test_no_deprecated_api_across_imports_and_the_whole_pipeline(fake_rag: Path)
         """
         import asyncio
         import rag_qa.answering, rag_qa.cli, rag_qa.evaluate, rag_qa.evaluation.cli
+        import rag_qa.rerankers
         from rag_qa.config import load_config, check_imports
         from rag_qa.ingest import ingest
         from rag_qa.chain import build_query_pipeline, build_rag_chain

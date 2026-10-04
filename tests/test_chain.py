@@ -10,18 +10,29 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import FAKE_ANSWER, MakeConfig, StreamingFakeChatModel, use_fakes
+from conftest import (
+    FAKE_ANSWER,
+    RERANK_CANDIDATES,
+    RERANK_TOP_N,
+    MakeConfig,
+    StreamingFakeChatModel,
+    StubCrossEncoder,
+    use_fakes,
+    use_fakes_and_reranker,
+)
 from langchain_core.documents import Document
 
-from rag_qa.answering import stream_answer
+from rag_qa.answering import Sources, stream_answer
 from rag_qa.chain import (
     NoIndexError,
     QueryPipeline,
     build_query_pipeline,
     build_rag_chain,
+    build_retrieve,
     citation,
     format_docs,
 )
+from rag_qa.components import build_embedder
 from rag_qa.config import load_config
 from rag_qa.settings import ENV_VECTOR_STORE_PATH
 
@@ -137,3 +148,58 @@ def test_build_rag_chain_and_stream_answer_give_the_model_the_same_prompt(
     via_chain, via_stream = (model.prompts for model in models)
     assert len(via_chain) == 1
     assert via_chain == via_stream
+
+
+# --- the reranker in the retrieval half (S2-4, DEC-16) ------------------------------------
+
+
+def best_first(model: StubCrossEncoder, pairs: list[tuple[str, str]]) -> list[str]:
+    """The chunk texts the stub was given, by its scores, ties in the retriever's order."""
+    return [text for _, text in sorted(pairs, key=lambda p: model.score_of(p[1]), reverse=True)]
+
+
+def test_with_a_reranker_the_retriever_fetches_reranker_candidates(
+    fake_rag: Path, make_config: MakeConfig, stub_cross_encoder: type[StubCrossEncoder]
+) -> None:
+    config = load_config(make_config(use_fakes_and_reranker))
+    chunks = build_retrieve(config, build_embedder(config)).invoke("How many staff?")
+
+    (model,) = stub_cross_encoder.built
+    (pairs,) = model.seen
+    assert len(pairs) == RERANK_CANDIDATES  # not the retriever's own k of 5
+    assert {question for question, _ in pairs} == {"How many staff?"}
+    assert [chunk.page_content for chunk in chunks] == best_first(model, pairs)[:RERANK_TOP_N]
+    assert all(type(chunk.metadata["rerank_score"]) is float for chunk in chunks)
+    # The override went to a copy: the config still holds the retriever's own k.
+    retriever = config.retriever(config.pipeline.query.retriever)
+    assert retriever.kwargs()["search_kwargs"]["k"] == 5
+
+
+def test_without_a_reranker_the_retriever_keeps_its_own_k(
+    fake_rag: Path, stub_cross_encoder: type[StubCrossEncoder]
+) -> None:
+    config = load_config(fake_rag)  # use_fakes: no reranker
+    chunks = build_retrieve(config, build_embedder(config)).invoke("How many staff?")
+    assert len(chunks) == 5
+    assert stub_cross_encoder.built == []
+    assert not any("rerank_score" in chunk.metadata for chunk in chunks)
+
+
+def test_sources_carry_the_rerank_score_in_reranked_order(
+    fake_rag: Path, make_config: MakeConfig, stub_cross_encoder: type[StubCrossEncoder]
+) -> None:
+    # The async path every front end takes: stream_answer awaits retrieve.ainvoke.
+    pipeline = build_query_pipeline(load_config(make_config(use_fakes_and_reranker)))
+
+    async def first_event() -> Sources:
+        async for event in stream_answer(pipeline, "How many staff?"):
+            assert isinstance(event, Sources)
+            return event
+        raise AssertionError("no events")
+
+    sources = asyncio.run(first_event()).sources
+    (model,) = stub_cross_encoder.built
+    (pairs,) = model.seen
+    expected = best_first(model, pairs)[:RERANK_TOP_N]
+    assert [ref.n for ref in sources] == [1, 2]
+    assert [ref.score for ref in sources] == [model.score_of(text) for text in expected]

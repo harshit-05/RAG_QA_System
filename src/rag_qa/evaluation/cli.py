@@ -169,6 +169,8 @@ def report_json(
             "retriever": query.retriever,
             "retriever_kwargs": config.retriever(query.retriever).kwargs(),
             "reranker": query.reranker,
+            # With a reranker, the retriever fetches this many in place of its own k (S2-4).
+            "reranker_candidates": query.reranker_candidates,
         },
         "aggregate": asdict(means),
         "floors": floors.model_dump(),
@@ -216,9 +218,14 @@ def run_retrieval(args: argparse.Namespace) -> int:
         f"Tier 1: retrieval, over the {len(answerable)} answerable questions in "
         f"{_shown(dataset.resolve())}"
     )
+    reranking = (
+        f"{query.reranker}, over {query.reranker_candidates} candidates in place of k"
+        if query.reranker
+        else "none"
+    )
     print(
         f"Retriever: {query.retriever} {config.retriever(query.retriever).kwargs()}, "
-        f"reranker: {query.reranker or 'none'}"
+        f"reranker: {reranking}"
     )
     try:
         scores = evaluate_retrieval(config, answerable)

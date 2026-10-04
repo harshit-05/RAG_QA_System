@@ -24,15 +24,14 @@ from operator import itemgetter
 from pathlib import Path
 from typing import Any
 
-from langchain_core.documents import Document
+from langchain_core.documents import BaseDocumentCompressor, Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrough
 
-from rag_qa.components import aclose_llm, build_embedder, build_llm
-from rag_qa.registry import build_object
+from rag_qa.components import aclose_llm, build_embedder, build_llm, build_reranker
 from rag_qa.schema import RagConfig
 from rag_qa.vectorstore import open_store, store_exists
 
@@ -92,20 +91,41 @@ def format_docs(docs: Sequence[Document]) -> str:
 
 
 def build_retrieve(config: RagConfig, embeddings: Embeddings) -> Runnable[str, list[Document]]:
-    """The retrieval half: the configured retriever over the index, reranked if configured.
+    """The retrieval half: the configured retriever over the index, then the reranker if any.
 
     Needs no LLM, so tier-1 evaluation runs it without Ollama, and the API can swap it
     after an ingest. ``embeddings`` must be :func:`rag_qa.components.build_embedder`'s,
     the model the index was built with.
+
+    With a reranker, the retriever fetches ``pipeline.query.reranker_candidates`` chunks in
+    place of its own ``k``, and the reranker cuts them to its ``top_n`` (DEC-16). One switch
+    sets both, so the candidates never reach the prompt unreranked: 20 chunks would overflow
+    the model's context window silently (caveat 7).
     """
     query = config.pipeline.query
+    reranker = build_reranker(config)
+    kwargs = config.retriever(query.retriever).kwargs()  # a fresh copy, so safe to change
+    if reranker is not None:
+        kwargs["search_kwargs"]["k"] = query.reranker_candidates
     retriever: Runnable[str, list[Document]] = open_store(
         embeddings, config.paths.vector_store
-    ).as_retriever(**config.retriever(query.retriever).kwargs())
-    if query.reranker is not None:  # disabled until S2-4 replaces it (FR-4)
-        reranker_spec = {**config.component(query.reranker).spec(), "base_retriever": retriever}
-        retriever = build_object(reranker_spec)
-    return retriever
+    ).as_retriever(**kwargs)
+    return retriever if reranker is None else _rerank_after(retriever, reranker)
+
+
+def _rerank_after(
+    retriever: Runnable[str, list[Document]], reranker: BaseDocumentCompressor
+) -> Runnable[str, list[Document]]:
+    """``retriever``, then ``reranker`` over the chunks it found, as one Runnable.
+
+    One function rather than a sequence, because the reranker needs the question as well
+    as the chunks. Awaited, it runs in an executor thread, retrieval included (DEC-14).
+    """
+
+    def retrieve_and_rerank(question: str) -> list[Document]:
+        return list(reranker.compress_documents(retriever.invoke(question), question))
+
+    return RunnableLambda(retrieve_and_rerank)
 
 
 def build_prompt(config: RagConfig) -> ChatPromptTemplate:

@@ -17,6 +17,7 @@ import inspect
 from pathlib import Path
 from typing import Any
 
+from langchain_core.documents import BaseDocumentCompressor
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 
@@ -37,6 +38,16 @@ def build_splitter(config: RagConfig) -> Any:
 def build_llm(config: RagConfig) -> BaseChatModel:
     """The query-time chat model."""
     return build_object(config.component(config.pipeline.query.llm).spec())
+
+
+def build_reranker(config: RagConfig) -> BaseDocumentCompressor | None:
+    """The query-time reranker, or ``None`` when ``pipeline.query.reranker`` is unset.
+
+    Building one loads its model (DEC-16). CI's eval-retrieval job calls this to warm its
+    HF cache, so the cache holds exactly the files the offline eval step will open.
+    """
+    ref = config.pipeline.query.reranker
+    return None if ref is None else build_object(config.component(ref).spec())
 
 
 async def aclose_llm(llm: BaseChatModel) -> None:

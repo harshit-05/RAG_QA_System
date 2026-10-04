@@ -106,18 +106,24 @@ components:
       search_kwargs: {"k": 5}
 
   rerankers:
-    # ISS-03 fixed: the real class names, and the nested cross-encoder OBJECT the
-    # recursive builder expects where the old config passed a bare model string.
-    # Defined here so its _target_s are import-verified, but NOT referenced by
-    # pipeline.query below — the first live run is a Phase 2 story (FR-4).
-    cross_encoder:
-      _target_: langchain_classic.retrievers.ContextualCompressionRetriever
-      base_compressor:
-        _target_: langchain_classic.retrievers.document_compressors.CrossEncoderReranker
-        model:
-          _target_: langchain_community.cross_encoders.HuggingFaceCrossEncoder
-          model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
-        top_n: 3
+    # Our own cross-encoder (DEC-16, S2-4). It reads the question with each of the
+    # retriever's candidates, scores how well the chunk answers it, and keeps the best
+    # top_n. Named by model and device, like the embedders; pipeline.query.reranker
+    # below picks one. The first use downloads the model, about 90 MB.
+    # min_score (off unless set) drops chunks scoring below it, in the model's own
+    # units (logits for ms-marco). Tuning it waits for tier 2 (S2-5).
+    ms_marco_minilm_cpu:
+      _target_: rag_qa.rerankers.CrossEncoderReranker
+      model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+      top_n: 5
+      device: cpu
+    # Same model on a GPU, for Colab/Kaggle: needs the CUDA torch variant (see the
+    # embedders' note 2). On this host it fails fast, as the _cuda embedders do.
+    ms_marco_minilm_cuda:
+      _target_: rag_qa.rerankers.CrossEncoderReranker
+      model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+      top_n: 5
+      device: cuda
 
 # ----------------- 2. Pipeline assembly -----------------
 pipeline:
@@ -140,7 +146,20 @@ pipeline:
   query:
     llm: components.llms.mistral_ollama
     retriever: components.retrievers.vector_search
-    # reranker: components.rerankers.cross_encoder    # Phase 2 (FR-4)
+    # Reranking is on because tier 1 said so (S2-4, 2026-10-04). The retriever fetches
+    # reranker_candidates chunks in place of its own k, and the reranker keeps the best
+    # top_n (5). The two lines go together: comment out both to switch it off, and the
+    # retriever's k=5 applies again (20 chunks never reach the prompt unreranked).
+    # Measured on the 20 answerable golden questions:
+    #                                     hit rate      MRR     recall
+    #   (a) dense, k=5                    0.800     0.5875   0.7167
+    #   (b) 20 candidates, reranked to 5  0.950     0.7958   0.8583
+    #   Question by question, (b) wins 8 (three misses become hits), loses 4 (each
+    #   still a hit, ranked lower) and ties 8. The rerank takes 1.4 s per question on
+    #   this CPU (median), against minutes of generation; loading the model adds
+    #   about 2.5 s at startup. Detail in stories/phase-2/S2-4-reranker.md.
+    reranker: components.rerankers.ms_marco_minilm_cpu
+    reranker_candidates: 20
 
     # The query-time embedder is always pipeline.ingestion.embedder: an index and
     # the queries against it must share an embedding model or the vectors are
