@@ -101,8 +101,8 @@ class ComponentSpec(BaseModel):
         """Every ``_target_`` here, nested ones too, is under an allowed prefix (ISS-04).
 
         A string check only: loading never imports (DEC-7), so a defined-but-unused
-        component (the disabled reranker) costs nothing. Import-time checks, including
-        where the object is defined, happen in ``registry.import_from_string``.
+        component (a ``_cuda`` entry on this host) costs nothing. Import-time checks,
+        including where the object is defined, happen in ``registry.import_from_string``.
         """
         blocked = [
             f"{where} {target!r}" for where, target in iter_targets(self.spec())
@@ -206,6 +206,31 @@ class Query(_Strict):
     retriever: str
     prompt: Prompt
     reranker: str | None = None
+    #: How many chunks the retriever fetches for the reranker, in place of its own ``k``.
+    #: Only with a reranker, which cuts them down to its ``top_n`` (DEC-16).
+    reranker_candidates: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def check_reranker_candidates(self) -> "Query":
+        """``reranker_candidates`` comes with a reranker, and only with one.
+
+        Missing with a reranker, the reranker would only reorder the retriever's own few
+        chunks. Left behind without one, it would read as if more chunks were fetched,
+        while the retriever's own ``k`` decides.
+        """
+        if self.reranker is not None and self.reranker_candidates is None:
+            raise ValueError(
+                "'reranker_candidates' is required with a 'reranker': how many chunks the "
+                "retriever fetches for the reranker to cut down to its top_n, in place of "
+                "the retriever's own k (config.yaml uses 20)"
+            )
+        if self.reranker is None and self.reranker_candidates is not None:
+            raise ValueError(
+                "'reranker_candidates' is set but 'reranker' is not. It sizes the reranker's "
+                "candidates only; without a reranker, the retriever's own k decides how many "
+                "chunks reach the prompt. Remove it, or set 'reranker'"
+            )
+        return self
 
 
 class Pipeline(_Strict):
@@ -341,6 +366,34 @@ class RagConfig(_Strict):
                 problems.append(f"{location}: {problem}")
         if problems:
             raise ValueError("\n".join(problems))
+        return self
+
+    # After check_references on purpose: a failing after-validator stops the ones after
+    # it (verified, pydantic 2.13), so the reranker reference resolves here.
+    @model_validator(mode="after")
+    def check_reranker_top_n(self) -> "RagConfig":
+        """``reranker_candidates`` gives the reranker at least its ``top_n`` to choose from.
+
+        ``top_n`` is read from the reranker's entry, so the entry must state it: loading
+        never imports a component to learn its defaults (DEC-7).
+        """
+        query = self.pipeline.query
+        if query.reranker is None or query.reranker_candidates is None:
+            return self  # Query has refused a reranker without candidates already
+        top_n = self.component(query.reranker).spec().get("top_n")
+        if not isinstance(top_n, int) or isinstance(top_n, bool):
+            # ValueError, not TypeError, for the reason Paths.anchor gives (FR-8).
+            raise ValueError(  # noqa: TRY004
+                f"pipeline.query.reranker: {query.reranker!r} must state top_n as a whole "
+                f"number, so that reranker_candidates can be checked against it at load. "
+                f"Loading never imports the reranker to read its default (DEC-7)"
+            )
+        if query.reranker_candidates < top_n:
+            raise ValueError(
+                f"pipeline.query.reranker_candidates is {query.reranker_candidates}, below "
+                f"the reranker's top_n of {top_n}. The reranker keeps the best top_n of the "
+                f"candidates, so it needs at least that many"
+            )
         return self
 
     def _reference_problem(self, ref: str, expected_kind: str) -> str | None:

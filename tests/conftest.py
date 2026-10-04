@@ -8,8 +8,9 @@ import asyncio
 import zipfile
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
+import numpy as np
 import pytest
 import yaml
 from langchain_core.language_models import BaseChatModel
@@ -225,6 +226,42 @@ class StreamingFakeChatModel(BaseChatModel):
             self.log.append("closed")
 
 
+class StubCrossEncoder:
+    """``sentence_transformers.CrossEncoder`` without the download (S2-4).
+
+    ``predict`` scores each (question, text) pair as ``scores[text]``, or as the text's
+    length when the table does not name it, and returns them as float32, as the real model
+    does. Every stub built is kept in ``built``, and each one records in ``seen`` the pairs
+    it was asked to score. The ``stub_cross_encoder`` fixture resets both.
+    """
+
+    num_labels = 1
+    built: ClassVar[list["StubCrossEncoder"]] = []
+    scores: ClassVar[dict[str, float]] = {}
+
+    def __init__(self, model_name_or_path: str, *, device: str | None = None) -> None:
+        self.model_name_or_path = model_name_or_path
+        self.device = device
+        self.seen: list[list[tuple[str, str]]] = []
+        self.built.append(self)
+
+    def score_of(self, text: str) -> float:
+        return self.scores.get(text, float(len(text)))
+
+    def predict(self, inputs: list[tuple[str, str]], **kwargs: Any) -> np.ndarray:
+        self.seen.append(list(inputs))
+        return np.array([self.score_of(text) for _, text in inputs], dtype=np.float32)
+
+
+@pytest.fixture
+def stub_cross_encoder(monkeypatch: pytest.MonkeyPatch) -> type[StubCrossEncoder]:
+    """Build every reranker on :class:`StubCrossEncoder`, so none downloads its model."""
+    monkeypatch.setattr(StubCrossEncoder, "built", [])
+    monkeypatch.setattr(StubCrossEncoder, "scores", {})
+    monkeypatch.setattr("rag_qa.rerankers.CrossEncoder", StubCrossEncoder)
+    return StubCrossEncoder
+
+
 def use_fake_embedder(c: dict[str, Any]) -> None:
     """Config edit: a deterministic 8-dim embedder, so nothing downloads MiniLM."""
     c["components"]["embedders"]["fake"] = FAKE_EMBEDDER
@@ -232,10 +269,33 @@ def use_fake_embedder(c: dict[str, Any]) -> None:
 
 
 def use_fakes(c: dict[str, Any]) -> None:
-    """Config edit: fake embedder and a fake chat model, so nothing needs Ollama."""
+    """Config edit: fake embedder and a fake chat model, and no reranker.
+
+    So nothing needs Ollama or downloads a model: the reranker's cross-encoder is a
+    download too. Tests of the reranker switch it on with ``use_fakes_and_reranker``.
+    """
     use_fake_embedder(c)
     c["components"]["llms"]["fake"] = FAKE_LLM
     c["pipeline"]["query"]["llm"] = "components.llms.fake"
+    c["pipeline"]["query"].pop("reranker", None)
+    c["pipeline"]["query"].pop("reranker_candidates", None)
+
+
+#: ``use_fakes_and_reranker``'s settings. sample_corpus indexes as 7 chunks and the
+#: retriever's own k is 5, so a reranker seeing 6 and keeping 2 shows both settings at work.
+RERANK_CANDIDATES = 6
+RERANK_TOP_N = 2
+
+
+def use_fakes_and_reranker(c: dict[str, Any]) -> None:
+    """Config edit: ``use_fakes``, with the real config's CPU reranker switched on.
+
+    Build it only under ``stub_cross_encoder``, which stands in for its model.
+    """
+    use_fakes(c)
+    c["components"]["rerankers"]["ms_marco_minilm_cpu"]["top_n"] = RERANK_TOP_N
+    c["pipeline"]["query"]["reranker"] = "components.rerankers.ms_marco_minilm_cpu"
+    c["pipeline"]["query"]["reranker_candidates"] = RERANK_CANDIDATES
 
 
 @pytest.fixture

@@ -19,8 +19,8 @@ here; the rest are pinned elsewhere, or say why CI cannot check them:
 ISS-01  here (load)
 ISS-02  here (load)
 ISS-03  here: kind key and meta-package at load, class name by
-        ``check_imports``. Its bare model *string* is not caught before build
-        (leaf kwargs are open, ADR-010) → Phase 2's reranker story builds it
+        ``check_imports``. Its bare model *string* dissolved in S2-4: our own
+        reranker takes ``model_name: str`` by design, ``test_rerankers.py``
 ISS-04  here (prefix at load); ``test_registry.py`` (all three import checks)
 ISS-05  ``test_ingest.py`` (a bad document fails the run; so does a folder)
 ISS-06  ``test_cli.py`` (the REPL survives a failing chain)
@@ -121,36 +121,38 @@ def test_iss03_reranker_on_the_langchain_meta_package_fails_at_load(
     # v2 line 64 targeted `langchain.retrievers...`: the meta-package, which is not
     # a dependency (DEC-1) and is outside the import allowlist (ISS-04).
     def v2_target(c: dict[str, Any]) -> None:
-        c["components"]["rerankers"]["cross_encoder"]["_target_"] = (
+        c["components"]["rerankers"]["ms_marco_minilm_cpu"]["_target_"] = (
             "langchain.retrievers.ContextualCompressionRetriever"
         )
 
     message = _fails_at_load(make_config, v2_target)
-    assert "components.rerankers.cross_encoder" in message
+    assert "components.rerankers.ms_marco_minilm_cpu" in message
     assert "outside the import allowlist" in message
 
 
 def test_iss03_misspelled_reranker_class_is_caught_by_check_imports_not_load(
     make_config: MakeConfig,
 ) -> None:
-    # v2 line 66: `CrossEncoderRerank` (no such class; the real one ends in -er).
-    # The prefix is allowed, so a load-time string check cannot see it: by design
-    # (DEC-7, load never imports). check_imports, run over the referenced
-    # components, is what catches it.
+    # v2 line 66: `CrossEncoderRerank` (no such class; the real one ends in -er), now
+    # on our own reranker (S2-4). v2's langchain_classic. path would fail the prefix
+    # check at load first, since that prefix left the allowlist. Under rag_qa. the
+    # prefix is allowed, so a load-time string check cannot see the typo: by design
+    # (DEC-7, load never imports). check_imports, run over the referenced components,
+    # is what catches it.
     def referenced_typo(c: dict[str, Any]) -> None:
-        reranker = c["components"]["rerankers"]["cross_encoder"]
-        reranker["base_compressor"]["_target_"] = (
-            "langchain_classic.retrievers.document_compressors.CrossEncoderRerank"
+        c["components"]["rerankers"]["ms_marco_minilm_cpu"]["_target_"] = (
+            "rag_qa.rerankers.CrossEncoderRerank"
         )
-        c["pipeline"]["query"]["reranker"] = "components.rerankers.cross_encoder"
+        c["pipeline"]["query"]["reranker"] = "components.rerankers.ms_marco_minilm_cpu"
+        c["pipeline"]["query"]["reranker_candidates"] = 20
 
     config = load_config(make_config(referenced_typo))  # loads: a string check passes
     with pytest.raises(ConfigError) as exc:
         check_imports(config, config.references().values())
     message = str(exc.value)
     print(message)
-    assert "components.rerankers.cross_encoder.base_compressor._target_" in message
-    assert "CrossEncoderRerank" in message
+    assert "components.rerankers.ms_marco_minilm_cpu._target_" in message
+    assert "has no attribute 'CrossEncoderRerank'" in message
 
 
 # --- ISS-04: config as arbitrary code execution ------------------------------------------
@@ -206,11 +208,15 @@ def test_phase0_empty_yaml_was_an_attributeerror(make_config: MakeConfig) -> Non
 
 
 def test_the_real_config_loads_and_every_referenced_target_imports() -> None:
-    """SRS §10's config-resolution test. Referenced targets are import-checked;
-    unreferenced ones (the disabled reranker) are prefix-checked by loading only,
-    so ``langchain_classic`` is never imported here and ADR-007 holds."""
+    """SRS §10's config-resolution test. Referenced targets are import-checked,
+    unreferenced ones prefix-checked by loading. Since S2-4 the reranker is referenced,
+    and no target names ``langchain_classic`` (ADR-007), so ``test_registry`` also
+    import-checks every target, unreferenced ones included."""
     from conftest import REAL_CONFIG
 
     config = load_config(REAL_CONFIG)
     check_imports(config, config.references().values())
-    assert "pipeline.query.reranker" not in config.references()  # still disabled
+    # On by S2-4's tier-1 numbers; the reranker is what ISS-03 broke.
+    assert config.references()["pipeline.query.reranker"] == (
+        "components.rerankers.ms_marco_minilm_cpu"
+    )

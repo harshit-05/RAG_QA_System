@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import REPO_ROOT, MakeConfig
+from conftest import (
+    REPO_ROOT,
+    RERANK_CANDIDATES,
+    RERANK_TOP_N,
+    MakeConfig,
+    StubCrossEncoder,
+    use_fakes_and_reranker,
+)
 from langchain_core.documents import Document
 
 from rag_qa.evaluation import cli
@@ -294,10 +301,33 @@ def test_json_holds_every_question_in_golden_order(evals: Path, tmp_path: Path) 
     assert report["aggregate"] == pytest.approx({"hit_rate": 0.5, "mrr": 0.5, "recall": 5 / 14})
     assert report["below_floor"] == []
     assert report["retrieval"]["retriever_kwargs"] == {"search_kwargs": {"k": 5}}
+    assert report["retrieval"]["reranker_candidates"] is None
     every_file, no_such_page = report["items"]
     assert (every_file["id"], every_file["rank"], every_file["covered"]) == ("every-file", 1, 5)
     assert all(chunk["match"] == "page" for chunk in every_file["retrieved"])
     assert (no_such_page["hit"], no_such_page["rank"]) == (False, None)
+
+
+def test_a_reranked_run_says_how_many_candidates_it_fetched(
+    evals: Path,
+    make_config: MakeConfig,
+    stub_cross_encoder: type[StubCrossEncoder],
+    tmp_path: Path,
+    capsys: Any,
+) -> None:
+    # The retriever's own k still reads 5, while it fetched the reranker's candidates
+    # (S2-4): the header and the JSON must say so, or a recorded run misstates itself.
+    config = make_config(use_fakes_and_reranker)  # rewrites evals' config, beside eval/
+    out = tmp_path / "run.json"
+    floors = write_floors(tmp_path, "retrieval: {hit_rate: 0, mrr: 0, recall: 0}\n")
+    assert run(config, "--json", str(out), "--thresholds", str(floors)) == EXIT_OK
+    assert f"over {RERANK_CANDIDATES} candidates in place of k" in capsys.readouterr().out
+    report = json.loads(out.read_text())["retrieval"]
+    assert (report["reranker"], report["reranker_candidates"]) == (
+        "components.rerankers.ms_marco_minilm_cpu",
+        RERANK_CANDIDATES,
+    )
+    assert len(json.loads(out.read_text())["items"][0]["retrieved"]) == RERANK_TOP_N
 
 
 def test_no_index_exits_2_and_says_to_ingest(

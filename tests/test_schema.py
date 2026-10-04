@@ -107,6 +107,71 @@ def test_optional_parts_default(config: RagConfig) -> None:
     assert config.components.rerankers == {}
 
 
+RERANK = "components.rerankers.rerank"
+
+
+def with_reranker(entry: dict[str, Any] | None = None, **query: Any) -> dict[str, Any]:
+    """MINIMAL plus a reranker entry, ``top_n: 5`` unless ``entry`` replaces it, and these
+    ``pipeline.query`` keys."""
+    data = copy.deepcopy(MINIMAL)
+    data["components"]["rerankers"] = {
+        "rerank": entry if entry is not None else {"_target_": "rag_qa.stub.Reranker", "top_n": 5}
+    }
+    data["pipeline"]["query"].update(query)
+    return data
+
+
+@pytest.mark.parametrize("candidates", [5, 20])
+def test_reranker_candidates_of_at_least_top_n_load(candidates: int) -> None:
+    data = with_reranker(reranker=RERANK, reranker_candidates=candidates)
+    assert RagConfig.model_validate(data).pipeline.query.reranker_candidates == candidates
+
+
+@pytest.mark.parametrize(
+    ("query", "problem"),
+    [
+        pytest.param({"reranker": RERANK}, "'reranker_candidates' is required", id="missing"),
+        pytest.param(
+            {"reranker_candidates": 20}, "set but 'reranker' is not", id="without a reranker"
+        ),
+        pytest.param(
+            {"reranker": RERANK, "reranker_candidates": 4},
+            "reranker_candidates is 4, below the reranker's top_n of 5",
+            id="below top_n",
+        ),
+        pytest.param(
+            {"reranker": RERANK, "reranker_candidates": 0},
+            "greater than or equal to 1",
+            id="zero",
+        ),
+    ],
+)
+def test_reranker_candidates_rules(query: dict[str, Any], problem: str) -> None:
+    with pytest.raises(ValidationError, match=problem):
+        RagConfig.model_validate(with_reranker(**query))
+
+
+@pytest.mark.parametrize(
+    "top_n",
+    [pytest.param(None, id="left to the class default"), "5", True],
+)
+def test_the_reranker_entry_must_state_top_n_as_a_whole_number(top_n: Any) -> None:
+    # Loading never imports the reranker, so a default in its class cannot be read here.
+    entry: dict[str, Any] = {"_target_": "rag_qa.stub.Reranker"}
+    if top_n is not None:
+        entry["top_n"] = top_n
+    data = with_reranker(entry, reranker=RERANK, reranker_candidates=20)
+    with pytest.raises(ValidationError, match="must state top_n as a whole number"):
+        RagConfig.model_validate(data)
+
+
+def test_a_broken_reranker_reference_is_reported_as_one() -> None:
+    # Not a KeyError from the top_n check: that check runs only once references resolve.
+    data = with_reranker(reranker="components.rerankers.nope", reranker_candidates=20)
+    with pytest.raises(ValidationError, match="has no entry 'nope'"):
+        RagConfig.model_validate(data)
+
+
 def test_without_a_path_context_paths_are_taken_as_given(config: RagConfig) -> None:
     # Programmatic construction: no config file, so nothing to anchor to.
     assert str(config.paths.data) == "corpus"

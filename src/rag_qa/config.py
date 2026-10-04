@@ -90,9 +90,9 @@ def check_imports(config: RagConfig, refs: Iterable[str]) -> None:
     """Import every ``_target_`` the named components use, without building anything.
 
     Deliberately **not** called by :func:`load_config`: loading never imports (DEC-7),
-    so a component that is defined but unused (the disabled reranker) loads without
-    its package being imported. Tests and tooling call this for the references they
-    care about, typically ``config.references().values()``. Catches what a string
+    so a component that is defined but unused (a ``_cuda`` entry on this host) loads
+    without its package being imported. Tests and tooling call this for the references
+    they care about, typically ``config.references().values()``. Catches what a string
     check cannot: a class name that does not exist (ISS-03), a missing package, a
     re-exported name the allowlist refuses, or a target that is not a class.
 

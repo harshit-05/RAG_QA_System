@@ -5,12 +5,14 @@
 
 # Tier 1: retrieval, recomputed on every pull request and every push to main by CI's
 #   eval-retrieval job (S2-3).
-#   Measured 2026-10-03 on the 20 answerable golden questions, with this config: dense
-#   search, k=5, no reranker, all-MiniLM-L6-v2 over 1,708 chunks.
-#   Baseline: hit_rate 0.800 (16 of 20), mrr 0.5875, recall 0.7167.
+#   Measured 2026-10-04 on the 20 answerable golden questions, with this config:
+#   all-MiniLM-L6-v2 over 1,708 chunks, 20 candidates reranked to 5 by
+#   ms-marco-MiniLM-L-6-v2 (S2-4 turned the reranker on by these numbers).
+#   Baseline: hit_rate 0.950 (19 of 20), mrr 0.7958, recall 0.8583.
 #   Floors: the baseline minus 0.05, one question in 20, rounded down to 3 decimals.
-#   S2-4 re-baselines them for the retrieval config it chooses.
+#   History: S2-3's dense baseline (k=5, no reranker) was 0.800, 0.5875 and 0.7167,
+#   with floors 0.75, 0.537 and 0.666.
 retrieval:
-  hit_rate: 0.75
-  mrr: 0.537
-  recall: 0.666
+  hit_rate: 0.9
+  mrr: 0.745
+  recall: 0.808
