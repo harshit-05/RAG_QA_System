@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | In review 2026-10-04: committed on `feat/s2-4-reranker` for side-by-side review in its PR. Verification 1–4 run and shown; 5 (CI) runs on the PR, since CI runs on pull requests only |
 | **Closes** | FR-4, ISS-03 (both halves), DEC-5 step 2; backlog: declaring `langchain-classic` (closes as not needed), Sources relevance (adds the knob) |
 | **Depends on** | S2-1 (`build_retrieve`), S2-3 (the metrics that decide) |
 | **Model** | fable |
@@ -134,8 +134,113 @@ gh run list --limit 2  # check and eval-retrieval green; the warm-up step fetche
 
 ## Discovered
 
-(Filled during implementation.)
+- **The decision: on.** Verification 3 ran both configs on a fresh scratch index (1,708
+  chunks, built offline from the cached MiniLM, as S2-3 did). (a) reproduced S2-3's
+  baseline exactly, question by question.
+
+  | | Retrieval | Hit rate | MRR | Recall |
+  | --- | --- | --- | --- | --- |
+  | (a) | dense, k=5 | 0.800 (16 of 20) | 0.5875 | 0.7167 |
+  | (b) | 20 candidates → reranker → top 5 | **0.950** (19 of 20) | **0.7958** | **0.8583** |
+
+  Question by question, by the rank of the first hit:
+
+  | (b) against (a) | Questions |
+  | --- | --- |
+  | wins, 8 | `glider-name` (miss → 2), `glider-training-data` (miss → 1), `ohlbach-wrightson-mkrp` (miss → 1), `glider-human-study` (4 → 1), `lusk-overbeek-itp` (3 → 1), `stickel-ring-commutativity` (3 → 1), `wos-linked-inference` (3 → 1), `yolo-objectives` (2 → 1) |
+  | losses, 4 | `glider-data-filtering` (2 → 4), `yolo-anomaly-model` (2 → 3), `siekmann-unification-hierarchy` (1 → 3), `yolo-acronym` (1 → 2): each still a hit |
+  | ties, 8 | seven at rank 1 in both, and `glider-slm`, a miss in both |
+
+  - **Every condition holds.** (b) wins 8 and loses 4. It loses no hit (a) had. Mean
+    recall rises from 0.717 to 0.858. And its latency is seconds against minutes of
+    generation (below).
+  - **One question's recall fell.** `yolo-objectives` went from 2/2 to 1/2: its p. 4
+    dropped out of the top 5, while its first hit rose to rank 1. The rule is on mean
+    recall, which rose, but the drop is recorded here.
+  - **0.95 is the ceiling S2-3 predicted.** `glider-slm`'s p. 2 is not among the 20
+    candidates, so no reranker over them can recover it.
+  - **Deterministic here.** A second reranked run gave identical items and aggregates.
+- **Rerank latency on this CPU** (i7-1255U, torch on 10 threads, Ollama idle): over the 20
+  questions × 3 rounds, reranking 20 candidates takes a median of **1.44 s** (min 0.72 s,
+  max 2.01 s; round medians 1.34, 1.53 and 1.44 s). Fetching the 20 candidates takes
+  19 ms. Loading the model adds 2.5 s once, at startup.
+  - **For Phase 3's NFR-2 decision:** the rerank now sits before the first token of
+    every answer, so it adds about 1.4 s to `ttft_ms` on this CPU.
+  - Not tuned here: torch's thread count (10 includes the efficiency cores) and the
+    batch size are the obvious levers.
+- **Score units, for the `min_score` follow-up.** ms-marco-MiniLM-L-6-v2 loads with an
+  `Identity` activation, so `rerank_score` is a raw logit. The kept chunks scored from
+  -6.42 to 8.38 over the golden questions.
+- **API facts, verified against the installed versions before writing code**
+  (langchain-core 1.6.3, sentence-transformers 6.1.0, pydantic 2.13.5):
+  - **`BaseDocumentCompressor`** has an empty `model_config`, so pydantic ignores unknown
+    keys, and a misspelled `topn: 3` would be dropped silently. Our class sets
+    `extra="forbid"`.
+  - **`CrossEncoder(model_name_or_path, *, device=…)`.** The old spellings (`model_name=`,
+    a positional `device`) are still accepted, but reported only by
+    `logger.warning_once`, never as a warning. So the deprecation gate would not see
+    them. We pass the name positionally and the device by keyword.
+  - **`predict` reads a list of `(question, text)` tuples as a batch**, a one-candidate
+    list included: a list counts as one pair only when its first element is not a list
+    or tuple. `rank()` would sort internally and needs `num_labels == 1`. We call
+    `predict`, so the ordering is our code and the stub tests it, and we check
+    `num_labels` at construction.
+  - **FAISS hands back the docstore's own `Document` objects** (`InMemoryDocstore.search`
+    returns `self._dict[id]`). Writing `rerank_score` into them would change the loaded
+    index; the reranker returns copies.
+  - **A sync `RunnableLambda` runs in an executor thread** on `ainvoke`. So the reranker
+    inside `retrieve` stays off the event loop, as DEC-14 assumes.
+  - **A failing pydantic `mode="after"` validator stops the ones after it.** So the
+    `top_n` check, defined after `check_references`, always finds the reference resolved.
+- **The download and the cache.** The first build fetched the model under its configured
+  repo id, `models--cross-encoder--ms-marco-MiniLM-L-6-v2`: 88 MB, as large as MiniLM. The
+  warm-up command CI now runs did the download here. The offline eval runs after it
+  passed with `HF_HUB_OFFLINE=1`.
+- **Hermeticity can no longer be checked with the local cache.** The cross-encoder is
+  now in this host's HF cache, so a test that loaded the real model would pass here and
+  fail only in CI. CI's `check` job sees the world as
+  `HF_HOME=<empty dir> HF_HUB_OFFLINE=1`: the suite passed that way (350 passed, 4
+  xfailed), and the folder stayed empty. Added as STATUS.md caveat 23.
+- **For S2-8: one more way for `rag-query` to fail at startup.** With the reranker on,
+  startup also loads the cross-encoder, so a machine that is offline before its first
+  query fails with a traceback, as S2-8's backlog line already describes for Ollama. The
+  startup guard planned there should name this case as well: "the reranker's model is
+  not in the HF cache; run once with network".
+- **Verification 4's transcript** (2026-10-04, phi3, by caveat 8: 5.4 GiB available,
+  1.9 GiB already in swap; a scratch copy differing only in `pipeline.query.llm`, against
+  the real index, read-only). Asked "How many domains and how many evaluation criteria
+  was GLIDER trained on?", one that dense retrieval missed: 685 domains and 183
+  criteria, right. Sources came back in reranked order, p. 1, 12, 3, 7, 5, which is
+  tier 1's (b) row for `glider-training-data`. 3 min 45 s in all, exit 0.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **Model:** this session ran on Opus 5.5 at max effort, not Fable, which the story
+  names: Fable is unavailable from 2026-10-04 (CLAUDE.md, "Model routing").
+- **Small additions the decision made necessary, outside the Scope list:**
+  - **`rag-eval retrieval`'s header and `--json` name the candidates.** With a reranker
+    they still showed the retriever's `k` of 5 while 20 were fetched, so a recorded run
+    would misstate itself. Now: "reranker: …, over 20 candidates in place of k", and
+    `reranker_candidates` in the JSON.
+  - **`README.md`, three lines that turning the reranker on made false:** the pipeline
+    diagram's "top 5 chunks", the stack table (a Reranker row), and the first-run
+    download (two models of about 90 MB each). S2-9's README scope does not cover them.
+- **The schema rule needs `top_n` stated in the reranker's entry.** Loading never
+  imports the class to read its default (DEC-7), so the "at least `top_n`" check reads the
+  entry. `reranker_candidates` must also be at least 1.
+- **The reranker refuses what it cannot use, at construction:** unknown keys
+  (`extra="forbid"`), `top_n` below 1, and a model with more than one score per pair. A
+  classification cross-encoder would otherwise fail obscurely at the first question.
+- **Tests:**
+  - `use_fakes` switches the reranker off, so the hermetic fixtures never load its model.
+  - Reranker tests switch it on with `use_fakes_and_reranker`, under
+    `stub_cross_encoder`.
+  - `test_registry` now import-checks every `_target_` in the real config, used or not.
+    That makes the review note "every `_target_` still loads" executable.
+  - The allowlist attack tests show that a dropped package cannot come back through our
+    own modules' re-exports (`rag_qa.vectorstore.FAISS`, `rag_qa.rerankers.CrossEncoder`).
+- **Verification commands:**
+  - Step 3 ran with `--json`, for the comparison, and offline after the warm-up, as CI
+    does.
+  - Step 4 used phi3, by caveat 8.
+  - Step 5 is pending: CI runs on pull requests only, so it waits for the PR.
