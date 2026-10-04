@@ -227,6 +227,60 @@ def test_the_hint_no_longer_offers_the_dropped_prefixes() -> None:
     assert "langchain_community" not in allowlist_hint()
 
 
+#: v0.2's reranker entry, as its config.yaml shipped it (disabled, but defined).
+V02_RERANKER = {
+    "_target_": "langchain_classic.retrievers.ContextualCompressionRetriever",
+    "base_compressor": {
+        "_target_": "langchain_classic.retrievers.document_compressors.CrossEncoderReranker",
+        "model": {
+            "_target_": "langchain_community.cross_encoders.HuggingFaceCrossEncoder",
+            "model_name": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        },
+        "top_n": 3,
+    },
+}
+
+#: What a refusal under a removed prefix adds: the way to migrate, not to widen the list.
+MIGRATION = "left the allowlist in 0.3.0 (S2-4)"
+
+
+def test_a_v02_config_is_refused_with_the_way_to_migrate(make_config: MakeConfig) -> None:
+    # Upgrading from v0.2 meets this first. "Deliberately not configurable" alone could
+    # read as an invitation to add the prefixes back (S2-4's second review).
+    def v02(c: dict[str, Any]) -> None:
+        c["components"]["rerankers"]["cross_encoder"] = V02_RERANKER
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(make_config(v02))
+    message = str(exc.value)
+    print(message)
+    assert "components.rerankers.cross_encoder" in message
+    assert MIGRATION in message
+    assert "delete it" in message
+    assert "rag_qa.rerankers.CrossEncoderReranker" in message
+    assert "Adding a prefix back is not the fix" in message
+    assert message.count(MIGRATION) == 1  # once for the entry, not once per nested target
+
+
+@pytest.mark.parametrize("target", DROPPED)
+def test_an_import_time_refusal_under_a_removed_prefix_names_the_migration(target: str) -> None:
+    # build_object and check_imports reach import_from_string without a load.
+    with pytest.raises(ImportError, match=r"left the allowlist in 0\.3\.0 \(S2-4\)"):
+        import_from_string(target)
+
+
+@pytest.mark.parametrize(
+    "target", ["subprocess.Popen", "builtins.eval", "langchain.chains.LLMChain"]
+)
+def test_other_refusals_carry_no_migration_note(make_config: MakeConfig, target: str) -> None:
+    with pytest.raises(ConfigError) as exc:
+        load_config(make_config(_set_llm_target(target)))
+    assert MIGRATION not in str(exc.value)
+    with pytest.raises(ImportError) as imp:
+        import_from_string(target)
+    assert MIGRATION not in str(imp.value)
+
+
 def test_load_never_imports(make_config: MakeConfig) -> None:
     # Allowed prefix, nonexistent module: a string check passes it, so load succeeds.
     # Only check_imports (or building the component) finds out.

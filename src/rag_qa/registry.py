@@ -38,6 +38,7 @@ request supply or override components (a constraint on the Phase 2 API). ISS-16
 draws the same line for the FAISS index.
 """
 
+from collections.abc import Iterable
 from importlib import import_module
 from typing import Any
 
@@ -58,6 +59,11 @@ ALLOWED_PREFIXES = (
     "rag_qa.",
 )
 
+#: Prefixes 0.3.0 removed from :data:`ALLOWED_PREFIXES` (S2-4). A ``_target_`` under one
+#: is almost certainly v0.2's disabled reranker entry, so its refusal also says how to
+#: migrate: see :func:`removed_prefix_hint`. They stay refused; this only names them.
+REMOVED_PREFIXES = ("langchain_classic.", "langchain_community.")
+
 
 def is_allowed(dotted_path: object) -> bool:
     """Whether a ``_target_`` string is under one of :data:`ALLOWED_PREFIXES`."""
@@ -72,6 +78,26 @@ def allowlist_hint() -> str:
     )
 
 
+def removed_prefix_hint(targets: Iterable[object]) -> str:
+    """The migration note for refused ``targets`` under a prefix 0.3.0 removed, or ``""``.
+
+    A v0.2 ``config.yaml`` still carries the old reranker entry under both prefixes, and
+    upgrading turns its load into an allowlist error. Without this note, that error's
+    "deliberately not configurable" could read as an invitation to add the prefixes back,
+    re-opening what S2-4 closed. The note says what to do instead (S2-4's second review).
+    """
+    if not any(isinstance(t, str) and t.startswith(REMOVED_PREFIXES) for t in targets):
+        return ""
+    return (
+        f"{' and '.join(map(repr, REMOVED_PREFIXES))} left the allowlist in 0.3.0 (S2-4). "
+        f"If this is v0.2's components.rerankers.cross_encoder entry, delete it, then copy "
+        f"the rerankers block, and pipeline.query's reranker and reranker_candidates lines, "
+        f"from the repository's config.yaml: the reranker is now "
+        f"rag_qa.rerankers.CrossEncoderReranker (DEC-16). Adding a prefix back is not the "
+        f"fix: the allowlist allows only what is used (ADR-020)"
+    )
+
+
 def import_from_string(dotted_path: str) -> Any:
     """Import a dotted path and return the attribute it names, if the allowlist permits.
 
@@ -79,9 +105,10 @@ def import_from_string(dotted_path: str) -> Any:
     imported, resolves to something defined outside them, or is not a class.
     """
     if not is_allowed(dotted_path):
+        migration = removed_prefix_hint([dotted_path])
         raise ImportError(
             f"_target_ {dotted_path!r} is outside the import allowlist (ISS-04). "
-            f"{allowlist_hint()}."
+            f"{allowlist_hint()}." + (f" {migration}." if migration else "")
         )
 
     try:
