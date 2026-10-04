@@ -45,10 +45,18 @@ Exit ⇒ version 0.3.0, tag `v0.3`.
 - **Docs.**
   - `README.md`: the HTTP API (`rag-serve`, the token, the endpoints, curl); evaluation
     (`rag-eval`, the two tiers, the Colab/Kaggle scoring recipe); incremental ingestion
-    and `--rebuild`; the one-time re-ingest for v0.2 users.
+    and `--rebuild`; the one-time re-ingest for v0.2 users; and the v0.2 config migration
+    (S2-4): a config that still has the old `components.rerankers.cross_encoder` entry no
+    longer loads, so delete it, and the reranker is `ms_marco_minilm_cpu`.
   - `docs/ARCHITECTURE.md` §2.8, "As delivered": every place the code differs from
     §2.1–§2.7, with the story that records why. As in §1.8, earlier sections are
-    annotated, not rewritten.
+    annotated, not rewritten. Two annotations S2-4 owes:
+    - §1.1's DEC-7 paragraph lists `langchain_community.` and `langchain_classic.` as
+      allowed prefixes and calls the reranker entry disabled. Both prefixes left the
+      allowlist in S2-4.
+    - ADR-007's "Phase 2 may use a narrow named exception for `langchain_classic`'s
+      `CrossEncoderReranker`" is moot: DEC-16 hand-rolled the reranker, so no exception
+      was used.
   - `docs/ADR.md`: entries for the decisions that generalize. They are indexed and not
     renumbered. Candidates:
     - cancelling an async stream means owning the task, not going async;

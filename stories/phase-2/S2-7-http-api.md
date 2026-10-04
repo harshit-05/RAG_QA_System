@@ -76,6 +76,19 @@ Design: ARCHITECTURE.md §2.1 DEC-18, interfaces and SSE protocol in §2.4.
     generator's `finally` releases it, and so does the dependency's teardown. The
     teardown covers a client that leaves before the generator's body ever runs. A
     leaked slot would mean a permanent 503.
+    - **A freed slot is not a free CPU** (S2-4's second review). Retrieval runs in an
+      executor thread that a cancel cannot stop. With the reranker on, that thread keeps
+      going for up to about 2 s after its client disconnects (median 1.4 s, on torch's 10
+      threads). The next request would then rerank alongside it.
+    - Two reranks at once are safe (verified: 40 concurrent reranks matched sequential
+      results), but they compete for the same CPU. The plan picks one of two ways to keep
+      them apart:
+      - hold the slot until the retrieval thread finishes;
+      - serialize retrieval with a lock in the retrieval half, which also covers
+        `RAG_API_MAX_CONCURRENT` above 1.
+
+      Test it with a slow fake reranker: a request that disconnects mid-retrieval, then
+      a second request, whose retrieval must not start until the first one's has ended.
   - **`POST /v1/ingest` and `GET /v1/ingest/{job_id}`:**
     - the body `{"rebuild": bool}` is required JSON, not defaulted;
     - one job at a time (409 while one runs);
@@ -84,7 +97,10 @@ Design: ARCHITECTURE.md §2.1 DEC-18, interfaces and SSE protocol in §2.4.
     - the job keeps its ingest log lines as `log`. S2-6 already makes them, and the
       report's errors, path-free;
     - on success, only the retrieval half of the pipeline is swapped
-      (`dataclasses.replace` with a fresh `build_retrieve`).
+      (`dataclasses.replace` with a fresh `build_retrieve`). `build_retrieve` builds a new
+      reranker on every call (S2-4: 2.3 s and about 90 MB), and the reranker's model is not
+      tied to the index. So build it once, in the lifespan, and pass it in, rather than
+      reloading it on each swap or manifest-triggered reopen.
   - **Picking up an ingest run outside the server.** Each query first compares
     `os.readlink` of the store path with the generation being served, and reopens the
     retrieval half when they differ. That is one syscall, and the flip is atomic

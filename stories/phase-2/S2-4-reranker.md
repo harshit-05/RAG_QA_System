@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review 2026-10-04: committed on `feat/s2-4-reranker` for side-by-side review in its PR. Verification 1–4 run and shown; 5 (CI) runs on the PR, since CI runs on pull requests only |
+| **Status** | In review 2026-10-04: committed on `feat/s2-4-reranker` (PR #11); two reviews done, their follow-ups ready to commit. Verification 1–5 run and shown. CI's first run reproduced the baseline; its re-run restored the exact cache key, with ingest, warm-up and eval all offline. CI on the follow-up commits closes it |
 | **Closes** | FR-4, ISS-03 (both halves), DEC-5 step 2; backlog: declaring `langchain-classic` (closes as not needed), Sources relevance (adds the knob) |
 | **Depends on** | S2-1 (`build_retrieve`), S2-3 (the metrics that decide) |
 | **Model** | fable |
@@ -244,3 +244,49 @@ gh run list --limit 2  # check and eval-retrieval green; the warm-up step fetche
     does.
   - Step 4 used phi3, by caveat 8.
   - Step 5 is pending: CI runs on pull requests only, so it waits for the PR.
+- **First review (2026-10-04).**
+  - STATUS.md's DEC-7 row records that S2-4 removed the two prefixes, and that a v0.2
+    config no longer loads until its old entry is deleted.
+  - S2-7 is told to build the reranker once, in its lifespan, rather than on every swap
+    of the retrieval half (`build_retrieve` builds one on each call: about 2.5 s and
+    90 MB).
+  - S2-9 owes three things: the README's v0.2 config migration, an annotation on §1.1's
+    DEC-7 paragraph, and ADR-007's now-moot `langchain_classic` exception.
+- **Second review (2026-10-04).**
+  - **Verified:**
+    - **CI's first PR run reproduced the reranked baseline** (0.950, 0.796, 0.858), with
+      per-question tables identical to this host's, reranked order included. So the
+      floors rest on numbers that hold across CPUs.
+    - **Hermetic as CI runs it:** the suite passed with an empty HF cache and offline,
+      and the cache folder stayed empty.
+    - **Concurrent reranks are safe:** 40 concurrent reranks from 8 threads on one
+      `CrossEncoderReranker` raised nothing, and matched sequential results exactly.
+    - **No config mutation:** the `k` override edits a fresh copy (`model_dump`), and
+      `search_kwargs` always exists.
+    - **The allowlist holds:** beyond the committed tests, names `rerankers.py` imports
+      (`CrossEncoder`, `Field`, `ConfigDict`, `PrivateAttr`) and model loading options
+      are all refused.
+    - **The CI cache** restored the old embedder-only cache by prefix, fetched the
+      cross-encoder in the warm-up, and saved under the new key.
+    - **Verification 5's re-run** (attempt 2 of run 37180934412) restored that exact key.
+      Ingest, warm-up and eval all ran with `HF_HUB_OFFLINE: 1`, the save step was
+      skipped, and the aggregates were identical.
+  - **Changed:**
+    - **A v0.2 config now says how to migrate.** v0.2's own `config.yaml` failed with
+      "outside the import allowlist… deliberately not configurable" and no way forward,
+      which could read as an invitation to add the prefixes back.
+      - A refused `_target_` under `langchain_classic.` or `langchain_community.` now
+        adds: delete the old entry, copy the `rerankers` block and the two
+        `pipeline.query` lines from `config.yaml`; adding a prefix back is not the fix.
+      - It does so at load (`schema.py`) and at import (`registry.py`), via
+        `registry.removed_prefix_hint`.
+      - Tests cover the v0.2 entry, each dropped target at import time, and other
+        refusals, which stay without the note. The real v0.2 file still exits 2, now with
+        the note.
+    - **"Retrieval takes milliseconds" was stale** (DEC-14 in ARCHITECTURE.md, and a
+      comment in `answering.py`): the rerank takes 1.4 s (up to 2 s). The wording is
+      corrected. S2-7's scope gains the consequence: a disconnected request's rerank must
+      not overlap the next request's. The plan picks whether to hold the slot until the
+      thread ends, or to serialize retrieval with a lock.
+  - **Not changed here:** PR #11's title lost its `!:` to shell history expansion. The
+    commits keep it, and the PRs are rebase-merged; the recipe fixes the title.
