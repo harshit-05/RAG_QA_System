@@ -5,22 +5,27 @@
 
 ## Now
 
-**Next action: review [S2-4](phase-2/S2-4-reranker.md)** in its PR. It was implemented
-and committed on 2026-10-04, on `feat/s2-4-reranker`. It ran on Opus 5.5 at max effort while Fable is
-unavailable (CLAUDE.md, "Model routing"). Our own cross-encoder reranker is in, and tier 1
-switched it **on**: 20 candidates reranked to 5. It lifts hit rate from 0.800 to 0.950, MRR
-from 0.5875 to 0.7958, and recall from 0.7167 to 0.8583, at 1.4 s per answer on this CPU.
+**Next action: [S2-6](phase-2/S2-6-ingest-manifest.md)**: incremental ingestion with a
+hash manifest, published by an atomic symlink flip (DEC-17). Plan-first, on branch
+`feat/s2-6-ingest-manifest`. Risky and **breaking**: every existing index is rebuilt once
+(caveat 20). Routed to fable, so it runs on Opus 5.5 at max effort while Fable is
+unavailable (CLAUDE.md, "Model routing"). It runs before S2-5, because S2-5's fingerprint
+reuses `manifest.py`'s identity functions (the Phase 2 order below).
 
-- The floors are re-baselined to 0.9, 0.745 and 0.808.
-- The allowlist lost `langchain_classic.` and `langchain_community.`.
-- Verification 5 (CI, with the new cross-encoder warm-up) is done. The first PR run is
-  green and matches this host question by question. The re-run restored the exact cache
-  key, with every model load offline. The close-out follows CI on the review commits.
-- Two reviews done. The second made a v0.2 config's refusal say how to migrate, rather
-  than leave widening the allowlist as the apparent fix. It also gave S2-7 a new
-  requirement: a disconnected request's 1.4 s rerank must not overlap the next one's.
+**S2-4 is done** (2026-10-05, PR #11). Our own cross-encoder reranker is in, and tier 1
+switched it **on**: 20 candidates reranked to 5.
 
-After S2-4 comes S2-6, in the Phase 2 order below.
+- It lifts hit rate from 0.800 to 0.950, MRR from 0.5875 to 0.7958, and recall from
+  0.7167 to 0.8583, at 1.4 s per answer on this CPU.
+- The floors are re-baselined to 0.9, 0.745 and 0.808. GitHub's runner reproduced the
+  reranked baseline question by question.
+- The allowlist lost `langchain_classic.` and `langchain_community.`. A v0.2 config's
+  refusal now says how to migrate, rather than leaving a wider allowlist as the apparent
+  fix.
+- CI's `eval-retrieval` job warms the cross-encoder up before saving the HF cache. Its
+  cache key names both models, and an exact hit runs every model load offline.
+- The second review gave S2-7 a requirement: a disconnected request's 1.4 s rerank must
+  not overlap the next request's.
 
 **S2-3 is done** (2026-10-04, PR #9). Tier 1 runs in CI's `eval-retrieval` job. Its
 baseline is hit rate 0.800, MRR 0.5875 and recall 0.7167, against floors of 0.75, 0.537
@@ -413,7 +418,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-1](phase-2/S2-1-answer-stream.md) | Stream answers as events; Ctrl-C cancels generation | FR-5 (structured sources), backlog: Ctrl-C | — | Done 2026-10-03 (PR #7); cancel-race fix 2026-10-04 (PR #10) |
 | [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Done 2026-10-03 (PR #8) |
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Done 2026-10-04 (PR #9) |
-| [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | In review 2026-10-04 (PR #11); two reviews done; reranker on; verification 1–5 done |
+| [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Done 2026-10-05 (PR #11); reranker on |
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Todo |
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Todo |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Todo |
@@ -492,6 +497,14 @@ leads with one of two things:
   and every push to `main`, against the floors in `eval/thresholds.yaml`. It is CI's only
   job with network access: the model weights are cached, and on a cache hit nothing
   reaches the network. Exit 1 means a floor was missed; exit 2 means it could not run.
+- **S2-4:** the reranker (FR-4, ISS-03, DEC-5 step 2). `rag_qa.rerankers` holds our own
+  `CrossEncoderReranker` on `sentence-transformers`, and tier 1's numbers switched it on.
+  - S2-3's inputs were all used: the reach at k=20, the scratch configs' flags, a fresh
+    scratch index, and the warm-up between ingest and the cache save.
+  - Declaring `langchain-classic` closes as not needed: no `_target_` names it, and the
+    allowlist refuses it.
+  - The Sources-relevance line gets its knob, `min_score`, off by default. Its tuning
+    stays below, after S2-5.
 
 ### Closed in Phase 1
 
@@ -544,7 +557,9 @@ leads with one of two things:
   batched as S2-8. It runs after S2-6, which rewrites `ingest.py`:
   - `rag-query` startup is unguarded: Ollama being down
     (`validate_model_on_init`) and Ctrl-C while models load both print a
-    traceback. One startup try/except with a clean message.
+    traceback. One startup try/except with a clean message. Since S2-4 it also
+    covers the reranker's model missing from the HF cache on an offline machine:
+    "run once with network" (S2-4, Discovered).
   - The connection error doesn't name Ollama (`ConnectError: [Errno 111]`). Add
     the hint "Is Ollama running? `systemctl status ollama`", and stop the empty
     `Answer:` header printing before the error.
@@ -641,30 +656,6 @@ leads with one of two things:
 
 - **S2-6 —** chunk metadata: content hash of the source file + ingestion timestamp
   (SRS §7.3), with the manifest that needs them (DEC-17).
-- **S2-4 — inputs from S2-3 (found in S2-3).** Detail in S2-3's Discovered section.
-  - **What a reranker can reach.** At k=20, three of tier 1's four misses have their page
-    in the candidates (ranks 10, 10 and 11). So the reranker can at best lift the hit rate
-    from 0.80 to 0.95. `glider-slm`'s p. 2 is not in the top 20 at all, so no reranker can
-    recover it.
-  - **Step 3's scratch configs need `--dataset` and `--thresholds`.** The eval files are
-    anchored beside the config file, as `paths` are, so without the flags a scratch copy
-    of `config.yaml` exits 2: "cannot read the golden set". Already written into S2-4's
-    step 3, with the flags spelled out: zsh does not word-split an unquoted `$VAR`.
-  - **"S2-3's scratch index" was in a session scratchpad under `/tmp`.** Build a fresh
-    one with `RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-ingest` (about 2 min).
-  - **CI: the cross-encoder warm-up goes between "Ingest the corpus" and "Save the HF
-    models"** (found at S2-3's close-out). S2-3 saves the cache right after ingest, so a
-    warm-up placed after the save is never cached. The next exact-key hit then runs
-    offline without the cross-encoder and fails, or downloads it on every run if left
-    online. The warm-up also takes ingest's
-    `HF_HUB_OFFLINE: ${{ steps.hf-models.outputs.cache-hit == 'true' && '1' || '0' }}`, so
-    an exact hit stays offline (S2-3's second review). The first run after the key change
-    is a prefix hit: MiniLM is restored, and only the cross-encoder downloads.
-- **S2-4, closes as not needed —** `langchain-classic` is referenced by the (disabled)
-  reranker component but is only a transitive dependency via `langchain-community`.
-  The question was whether to declare it in `pyproject.toml`. DEC-16 hand-rolls the
-  reranker instead, and `langchain_classic.` leaves the allowlist, so there is
-  nothing to declare.
 - **S2-5 —** the RAGAs judge must be pointed at local Ollama explicitly (its default
   is OpenAI). DEC-15 settles both halves: the judge is `gemma2:9b` through Ollama's
   OpenAI endpoint, and a full sweep on CPU takes hours, so scoring offloads to
@@ -688,17 +679,20 @@ leads with one of two things:
   refuse to open an index built with a different embedder (DEC-17).
 - **Phase 3 —** NFR-2 (<2 s first token) is unachievable CPU-only: revise the SLO
   or plan GPU serving in the Phase 3 arch pass. Phase 2 measures it: `ttft_ms` on
-  every answer (DEC-14) and in every tier-2 run.
-- **S2-4, then a follow-up after S2-5 —** CLI "Sources" lists what was retrieved, not
-  what the answer used, so a refusal still shows a source. S2-4 adds the reranker's
-  `min_score` knob (DEC-16), defaulting to off. Tuning it with the eval harness comes
-  after the tier-2 baseline exists.
+  every answer (DEC-14) and in every tier-2 run. Since S2-4 the rerank sits before the
+  first token: about 1.4 s of every `ttft_ms` on this CPU, plus 2.5 s of model loading
+  at startup.
+- **After S2-5 — tune the reranker's `min_score`.** CLI "Sources" lists what was
+  retrieved, not what the answer used, so a refusal still shows a source. S2-4 added the
+  knob (DEC-16), off by default. It is in the model's own units: logits, from -6.42 to
+  8.38 over the kept chunks of the golden questions. Tuning it with the eval harness
+  comes after the tier-2 baseline exists.
 - **S2-7 —** `ChatOllama` leaves its HTTP client open
   (`ResourceWarning: unclosed socket` at exit). S2-1 closed the CLI half: `aclose_llm`,
   called at exit. S2-7's API lifespan owns the client and closes it at shutdown.
 - **DEC-5 exit tasks, one per phase:**
   - own loaders (**Phase 1 → S1-3**);
-  - the cross-encoder via `sentence-transformers` (**Phase 2 → S2-4**);
+  - the cross-encoder via `sentence-transformers` (**Phase 2 → S2-4**, done 2026-10-05);
   - dropping `langchain-community` and `langchain-classic` from `pyproject.toml`
     after the Qdrant move (Phase 3).
 
