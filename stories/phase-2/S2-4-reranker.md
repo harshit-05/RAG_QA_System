@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review 2026-10-04: committed on `feat/s2-4-reranker` (PR #11); two reviews done, their follow-ups ready to commit. Verification 1–5 run and shown. CI's first run reproduced the baseline; its re-run restored the exact cache key, with ingest, warm-up and eval all offline. CI on the follow-up commits closes it |
+| **Status** | Done 2026-10-05 (PR #11). Verification 1–5 run and shown: CI reproduced the reranked baseline question by question, and its later runs hit the exact cache key with every model load offline. Reviewed twice; the follow-ups are `2f17e6c` and `739bf34`. Deviation in one line: the decision forced small changes outside the Scope list (the eval CLI names the candidates, three README lines), and the migration note was added in review |
 | **Closes** | FR-4, ISS-03 (both halves), DEC-5 step 2; backlog: declaring `langchain-classic` (closes as not needed), Sources relevance (adds the knob) |
 | **Depends on** | S2-1 (`build_retrieve`), S2-3 (the metrics that decide) |
 | **Model** | fable |
@@ -243,7 +243,12 @@ gh run list --limit 2  # check and eval-retrieval green; the warm-up step fetche
   - Step 3 ran with `--json`, for the comparison, and offline after the warm-up, as CI
     does.
   - Step 4 used phi3, by caveat 8.
-  - Step 5 is pending: CI runs on pull requests only, so it waits for the PR.
+  - Step 5 ran on the PR, since CI runs on pull requests only. Three runs, all green with
+    the same aggregates (0.950, 0.796, 0.858):
+    - run 37180934412 on `1c38a09`: a prefix restore of the embedder-only cache, the
+      cross-encoder downloaded by the warm-up, and both models saved under the new key;
+    - its re-run (attempt 2): an exact hit, with ingest, warm-up and eval all offline;
+    - run 37226206144 on the review commits (`739bf34`): an exact hit, all offline.
 - **First review (2026-10-04).**
   - STATUS.md's DEC-7 row records that S2-4 removed the two prefixes, and that a v0.2
     config no longer loads until its old entry is deleted.
