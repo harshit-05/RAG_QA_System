@@ -79,9 +79,10 @@ prototype to production via a spec-driven story loop.
   what a run will have: check `ollama ps` and `ollama stop <model>` first.
 
 - The stack runs on LangChain 1.x (DEC-1, migrated in S0-5); app code never
-  imports `langchain_classic`, which arrives only transitively. The disabled
-  reranker entry in `config.yaml` and the `registry.py` allowlist still name it
-  until Phase 2, so do not drop either.
+  imports `langchain_classic`, which arrives only transitively. Since S2-4 no
+  `_target_` names it or `langchain_community`, and the `registry.py` allowlist
+  refuses both: the reranker is our own (`rag_qa.rerankers`, DEC-16).
+  `vectorstore.py` still imports FAISS from `langchain_community` until Phase 3.
 
 - Docker 29.8.1 installed. `gh` 2.101.0, authenticated as `harshit-05`; the
   token needs the `workflow` scope to push changes to `.github/workflows/`, so

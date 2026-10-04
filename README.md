@@ -17,7 +17,7 @@ ingestion are planned; see the [roadmap](#roadmap).
 
 ```text
 corpus/   --rag-ingest-->  chunks --MiniLM embeddings-->  FAISS index (vectorstore/)
-question  --rag-query--->  top 5 chunks --> local LLM via Ollama --> streamed answer + sources
+question  --rag-query--->  20 nearest chunks --reranker--> best 5 --> local LLM via Ollama --> streamed answer + sources
 ```
 
 | Piece | Default | Alternatives in `config.yaml` |
@@ -26,6 +26,7 @@ question  --rag-query--->  top 5 chunks --> local LLM via Ollama --> streamed an
 | Chunking | 1,000 characters, 150 overlap | — |
 | Embeddings | `all-MiniLM-L6-v2` on CPU | multilingual model; GPU variants |
 | Vector store | FAISS on local disk | Qdrant or pgvector planned (Phase 3) |
+| Reranker | `ms-marco-MiniLM-L-6-v2` cross-encoder on CPU: rescores 20 candidates, keeps 5 | off (the 5 nearest chunks); GPU variant |
 | LLM | `mistral` via Ollama | `phi3` (low memory), `qwen2:7b` |
 
 ## Requirements
@@ -34,7 +35,8 @@ question  --rag-query--->  top 5 chunks --> local LLM via Ollama --> streamed an
 - [uv](https://docs.astral.sh/uv/), which also installs the pinned Python 3.12
 - [Ollama](https://ollama.com), running locally, with a model pulled
 - About 6 GB of free RAM for `mistral`, or about 3 GB for the `phi3` fallback
-- Network access on the first run, to download the embedding model (about 90 MB)
+- Network access on the first run, to download the embedding model and the reranker
+  (about 90 MB each)
 
 ## Quickstart
 
