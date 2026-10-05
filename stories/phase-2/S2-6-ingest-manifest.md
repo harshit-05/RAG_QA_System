@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Implemented 2026-10-05; Verification 1–5 run and shown, and two reviews (10 and 15 findings, all fixed). Waits on the commit and the PR, whose CI is Verification 6. Deviation in one line: two maintainer decisions (`multi_process` kept in the identity; a full rebuild leaves failed documents out), and the reviews tightened what counts as the index (below). |
+| **Status** | Done 2026-10-06 (PR #12). Verification 1–6 run and shown, and two reviews (10 and 15 findings, all fixed). CI's first `eval-retrieval` run stalled with no log; its re-run reproduced tier 1 question by question. Deviation in one line: two maintainer decisions (`multi_process` kept in the identity; a full rebuild leaves failed documents out), and the reviews tightened what counts as the index (below). |
 | **Closes** | FR-2 (the incremental SHOULD), ISS-14, NFR-4 (in-place update, still on FAISS), SRS §7.3; backlog: the embedder check on open, §7.3 metadata, walk pruning |
 | **Depends on** | S2-1 (`build_retrieve` is where the query-side check lands) |
 | **Model** | fable |
@@ -324,3 +324,16 @@ gh run list --limit 2                  # check and eval-retrieval green (CI inge
     `rag-ingest` forked to start 20 s in.
   - One shown exit code was wrong and was corrected: inside `time ( … )`, zsh's
     `pipestatus` reports the subshell.
+- **Verification 6, CI on PR #12 (run 37282757727).**
+  - **The first attempt stalled.** `check` passed, but `eval-retrieval` stalled in "Ingest
+    the corpus" until the job's 20-minute limit. GitHub kept no log at all
+    (`BlobNotFound`); a step that only hangs still uploads its log on timeout.
+  - **Not reproduced here.** A fresh clone of the pushed commit, with its own synced
+    environment and CI's exact command and variables, ingested in 122–136 s, peaking at
+    about 950 MB with 5 KB of log. The model cache had hit, and `check` ran at its usual
+    speed.
+  - **Re-run (maintainer's choice): green.** Ingest took 2m07s, everything ran offline on
+    an exact cache hit, and the runner's tier-1 table matched this host's question by
+    question (0.950, 0.796, 0.858).
+  - **Read as a runner fault, not a code fault.** If it recurs, the next step is a
+    step-level timeout and a faulthandler dump on the ingest step (backlog).

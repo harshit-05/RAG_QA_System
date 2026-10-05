@@ -5,12 +5,13 @@
 
 ## Now
 
-**Next action: commit [S2-6](phase-2/S2-6-ingest-manifest.md)**, open its PR, and see
-CI green (its Verification 6). Then [S2-5](phase-2/S2-5-ragas-gate.md), which reuses
+**Next action: merge PR #12, then [S2-5](phase-2/S2-5-ragas-gate.md)**, which reuses
 `manifest.py`'s identity functions unchanged.
 
-**S2-6 is implemented** (2026-10-05, branch `feat/s2-6-ingest-manifest`, on Opus 5.5 in
-place of Fable). Ingestion is incremental, tracked by a sha256 manifest, and published by
+**S2-6 is done** (2026-10-06, PR #12, on Opus 5.5 in place of Fable). CI is green: the
+runner reproduced tier 1 question by question. The first `eval-retrieval` attempt
+stalled in ingest with no log at all, and its re-run passed in the usual time; the story
+file has the detail. Ingestion is incremental, tracked by a sha256 manifest, and published by
 an atomic symlink flip between generation folders, under a one-writer `flock` (DEC-17).
 
 - **What it does:**
@@ -438,7 +439,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Done 2026-10-05 (PR #11); reranker on |
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Todo |
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Todo |
-| [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Implemented 2026-10-05; commit, PR and CI pending |
+| [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Todo |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
 | [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Todo |
@@ -652,6 +653,15 @@ leads with one of two things:
   - **Fix first, then re-measure:** make `stream_answer` close the model stream
     deterministically on cancel, then show the test passing in a few hundred one-core
     runs. Do not paper over it with a retry or a sleep in the test.
+- **If it recurs — make a stalled CI step diagnosable** (found in S2-6's CI).
+  - **The incident:** `eval-retrieval` stalled in "Ingest the corpus" until the job's
+    20-minute limit, and GitHub kept no log. It was not reproducible here, and the
+    re-run passed in the usual time.
+  - **The remedy, if it happens again:** a step-level `timeout-minutes` on the ingest
+    step, so the step fails and the job still uploads its log, and the ingest run as
+    `timeout -s ABRT 540 python -X faulthandler -m rag_qa.ingest`, so Python dumps
+    where every thread was.
+  - It needs gh's `workflow` scope to push (caveat 13).
 - **Phase 3 — the parity tests and the corpus PDF they read** (found in S1-3).
   They are accepted until `langchain-community` leaves. Removing that PDF before
   then fails them loudly, which is right.
