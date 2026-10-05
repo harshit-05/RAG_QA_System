@@ -52,9 +52,10 @@ uv run rag-query             # ask questions; Ctrl-C stops an answer, 'exit' qui
 ```
 
 Both commands take `--config PATH` to use another config file, and `--help`, which
-also lists their exit codes. `rag-ingest` exits 0 when every document was indexed, 1
-when something could not be read (it indexes the rest and names what it skipped), and 2
-when it cannot start, for example because the config is invalid.
+also lists their exit codes. `rag-ingest` exits 0 when the index matches the corpus, 1
+when something could not be read (it names what failed, and a document indexed before
+keeps its previous version), and 2 when it cannot start: for example, an invalid config,
+or another `rag-ingest` already running.
 
 A session looks like this. The answer streams in as it is generated:
 
@@ -76,6 +77,14 @@ about five minutes end to end, including loading the 4.4 GB model into memory; t
 answer then streams in as it is generated. `phi3` is much faster, answering in well
 under a minute, at some cost in answer quality.
 
+### Upgrading from v0.2
+
+An index now carries a manifest recording what is in it and which embedder made it.
+v0.2 indexes have none, so `rag-query` refuses them, exiting 2 with "re-run rag-ingest".
+Run `uv run rag-ingest` once: it rebuilds the index (about two minutes for the sample
+corpus) and keeps the old one beside it as `vectorstore/db_faiss.v02-<timestamp>`.
+Delete that folder once the new index works.
+
 ### GPU embeddings (Colab / Kaggle)
 
 A plain `uv sync` installs CPU-only PyTorch, and nothing here needs a GPU. For bulk
@@ -86,12 +95,13 @@ uv sync --no-group cpu --group cuda   # CUDA 13 build of torch; needs a recent N
 ```
 
 Then point `pipeline.ingestion.embedder` in `config.yaml` at a `_cuda` entry, for
-example `components.embedders.minilm_cuda`, and rebuild the index. A different
-embedder invalidates the existing one. From here on, run every command with
+example `components.embedders.minilm_cuda`, and re-embed everything on the GPU with
+`rag-ingest --rebuild`. A `_cuda` entry and its `_cpu` twin count as the same embedder,
+so the index works with either afterwards. From here on, run every command with
 `--no-sync`:
 
 ```bash
-uv run --no-sync rag-ingest
+uv run --no-sync rag-ingest --rebuild
 uv run --no-sync rag-query
 ```
 
@@ -131,8 +141,10 @@ The whole config is checked when it loads. A typo in a key, a reference to a com
 that does not exist, or a `_target_` outside the allowed packages stops the command
 with an error naming the problem, before any model loads.
 
-Changing the embedder invalidates the existing index, so always re-run `rag-ingest`
-afterwards.
+Changing the embedder invalidates the existing index. `rag-query` then refuses it,
+before loading any model, until `rag-ingest` has rebuilt it, which a changed embedder
+makes a full rebuild. Switching only between a `_cpu` entry and its `_cuda` twin keeps
+the index.
 
 Paths inside `config.yaml` are relative to the file itself, so the project runs from any
 directory. Environment variables override them:
@@ -145,10 +157,21 @@ directory. Environment variables override them:
 
 ## Adding documents
 
-Drop files into `corpus/` and run `uv run rag-ingest` again. Ingestion currently rebuilds
-the whole index each time. The sample three-PDF corpus, 561 pages, takes about two
-minutes on CPU. Incremental ingestion, which embeds only new or changed files, is planned
-for Phase 2.
+Add, edit or delete files in `corpus/`, then run `uv run rag-ingest` again. Only new and
+changed files are loaded and embedded, and the chunks of deleted ones are removed, so a
+run where little changed takes seconds. Embedding the whole sample corpus (three PDFs,
+561 pages) takes about two minutes on CPU.
+
+- A file that fails to load keeps the chunks it had, and the run exits 1 naming it. The
+  next run tries it again.
+- `rag-ingest --rebuild` re-embeds everything into a fresh index. A changed embedder or
+  splitter does that by itself.
+- Each run that changes something publishes a new version of the index in one atomic
+  step, so a crash or an error never leaves a half-written index.
+  `vectorstore/db_faiss` is a link to the newer of the two versions kept beside it
+  (`db_faiss.gen-*`).
+- One `rag-ingest` runs at a time. A second one exits 2 at once, saying another is
+  running; the lock is `vectorstore/db_faiss.lock`.
 
 ## Known limitations
 
@@ -185,8 +208,10 @@ src/rag_qa/
   registry.py      builds objects from `_target_` entries, within an import allowlist
   components.py    builds the pipeline's loaders, splitter, embedder and LLM
   loaders.py       PDF, DOCX and text loaders
-  vectorstore.py   the only FAISS code, and the swap point for Phase 3
-  ingest.py        the rag-ingest command
+  manifest.py      what each index version holds: file hashes, the embedder, chunk IDs
+  vectorstore.py   the only FAISS code: index versions and their atomic switch; the
+                   swap point for Phase 3
+  ingest.py        the rag-ingest command: updates the index with what changed
   chain.py         the retrieval and answer chain (LangChain LCEL)
   cli.py           the rag-query command
   evaluate.py      RAGAs evaluation (Phase 2)

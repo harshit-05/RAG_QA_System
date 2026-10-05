@@ -5,12 +5,29 @@
 
 ## Now
 
-**Next action: [S2-6](phase-2/S2-6-ingest-manifest.md)**: incremental ingestion with a
-hash manifest, published by an atomic symlink flip (DEC-17). Plan-first, on branch
-`feat/s2-6-ingest-manifest`. Risky and **breaking**: every existing index is rebuilt once
-(caveat 20). Routed to fable, so it runs on Opus 5.5 at max effort while Fable is
-unavailable (CLAUDE.md, "Model routing"). It runs before S2-5, because S2-5's fingerprint
-reuses `manifest.py`'s identity functions (the Phase 2 order below).
+**Next action: commit [S2-6](phase-2/S2-6-ingest-manifest.md)**, open its PR, and see
+CI green (its Verification 6). Then [S2-5](phase-2/S2-5-ragas-gate.md), which reuses
+`manifest.py`'s identity functions unchanged.
+
+**S2-6 is implemented** (2026-10-05, branch `feat/s2-6-ingest-manifest`, on Opus 5.5 in
+place of Fable). Ingestion is incremental, tracked by a sha256 manifest, and published by
+an atomic symlink flip between generation folders, under a one-writer `flock` (DEC-17).
+
+- **What it does:**
+  - re-running embeds only what changed, and a run that changes nothing takes under a
+    second;
+  - a failed document keeps its chunks;
+  - `rag-query` and `rag-eval` refuse a v0.2 index, or one from another embedder,
+    before loading any model.
+- **Tier 1 did not move:** 0.950, 0.7958 and 0.8583, question by question.
+  `index.faiss` is byte-identical to v0.2's.
+- **Breaking (caveat 20).** The real index was migrated here; the old one is kept as
+  `vectorstore/db_faiss.v02-*`.
+- **Maintainer decisions:** `multi_process` stays in the embedder identity, and a full
+  rebuild leaves failed documents out.
+- **Two reviews, 10 and 15 findings, all fixed.** Two of them could lose data: any
+  folder at the store path was renamed aside, and recovery misread a link written as
+  an absolute path. Detail in the story file.
 
 **S2-4 is done** (2026-10-05, PR #11). Our own cross-encoder reranker is in, and tier 1
 switched it **on**: 20 candidates reranked to 5.
@@ -421,7 +438,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Done 2026-10-05 (PR #11); reranker on |
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Todo |
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Todo |
-| [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Todo |
+| [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Implemented 2026-10-05; commit, PR and CI pending |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Todo |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
 | [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Todo |
@@ -462,11 +479,11 @@ from the numbering in one place, and the Depends column is satisfied throughout:
 | DEC-10 | Device selection: collapse the `_cpu`/`_cuda` embedder entries into one env-driven setting | **Resolved 2026-09-25: no — the entries stay explicit** | The backlog item assumed pydantic-settings interpolates `device: ${RAG_EMBED_DEVICE:-cpu}` inside YAML values. **It does not** — there is no `${VAR:-default}` expansion for arbitrary values. With the CUDA torch variant (DEC-12), one sync command plus repointing `pipeline.ingestion.embedder` is already a one-line switch, so the four entries restored in `ebcfc2e` stay as FR-1 axes. |
 | DEC-11 | CI: host, hermeticity and how hard the gates bite | **Resolved 2026-09-25: GitHub Actions, hermetic suite, blocking gates** | No Ollama, no model download, no network in tests: `DeterministicFakeEmbedding` (verified present in core 1.6.3) + a fake chat model. Gate order: `ruff check` → `mypy` (`disallow_untyped_defs` on `src/rag_qa`) → `pytest --cov-fail-under=80` (omitting `evaluate.py`, Phase 2 + `eval` extra) → `pip-audit`. Each gate blocks from the story that adds it. **No `ruff format --check` in Phase 1** — the tree is unformatted and a whole-tree reformat is the diff that gets rubber-stamped → backlog. |
 | DEC-12 | Making the declared GPU embedder entries actually installable | **Resolved 2026-09-25: uv-conflicting CPU/CUDA torch variants; plain `uv sync` stays CPU** | Each variant routed to its own index, `explicit = true` on both. **Mechanism chosen by S1-7's spike**: extras have no default, so torch-only-in-extras would make a plain sync pull PyPI CUDA torch via `sentence-transformers`. Preferred: dependency groups + `default-groups = ["dev", "cpu"]`; fallback: extras with `--extra cpu` on every install path. S1-7 re-runs the S0-2 smoke test on the **installed env** (the lock legitimately holds both variants): core 1.x, `torch 2.14.0+cpu`, zero `nvidia-*`. CUDA is verifiable here as a **resolve only** — this host is CPU-only. |
-| DEC-13 | Partial ingestion failure: replace the index with what loaded, or keep the previous one | **Resolved 2026-10-01: replace, exit 1** | Maintainer's call, raised by S1-4's third review. Some documents or folders unreadable → index the rest, save over the old index, exit 1 ("rebuilt without them"). Keeping the old index is safer when unattended, but one persistently bad file would block every update. Phase 1 ingests are hand-run and watched. Phase 2's hash manifest dissolves it: a failed document keeps its previously indexed chunks. Exit codes: 0 all indexed · 1 document/folder unreadable, nothing indexed, or unexpected error (traceback) · 2 cannot start. ARCHITECTURE.md §1.1. |
+| DEC-13 | Partial ingestion failure: replace the index with what loaded, or keep the previous one | **Resolved 2026-10-01: replace, exit 1** | Maintainer's call, raised by S1-4's third review. Some documents or folders unreadable → index the rest, save over the old index, exit 1 ("rebuilt without them"). Keeping the old index is safer when unattended, but one persistently bad file would block every update. Phase 1 ingests are hand-run and watched. Phase 2's hash manifest dissolves it: a failed document keeps its previously indexed chunks. Exit codes: 0 all indexed · 1 document/folder unreadable, nothing indexed, or unexpected error (traceback) · 2 cannot start. ARCHITECTURE.md §1.1. **Superseded in part by DEC-17 (S2-6, 2026-10-05):** in an update a failed document keeps its chunks, and exit 1 reads "The index was updated; the failed documents kept their previous chunks, if they had any"; a full rebuild still leaves them out ("rebuilt without them", maintainer). Exit 2 also covers another ingestion holding the lock, or something at the index path that is not an index. |
 | DEC-14 | Cancelling an answer: how the CLI's Ctrl-C and the API's client disconnect stop generation | **Resolved 2026-10-02: one answer-event stream (`answering.stream_answer`); stopping it means cancelling the task that consumes it** | **Verified trap:** async alone does not fix it. Under `RunnablePassthrough.assign`, `RunnableParallel` waits on its step tasks with `asyncio.wait` and never cancels them. In the trial, a cancel at 0.5 s during a simulated prefill left the stream open until 2.0 s; streaming `prompt \| llm \| parser` directly closed it at 0.5 s. **Design:** the CLI uses one `asyncio.Runner` per session. `QueryPipeline` holds the parts, and `build_rag_chain` stays for `invoke`. `aclose_llm` closes ChatOllama's clients, and `ttft_ms` is measured for NFR-2. S2-1. ARCHITECTURE.md §2.1. |
 | DEC-15 | Phase 2 quality gate: what runs in CI when RAGAs on CPU takes hours | **Resolved 2026-10-02: two tiers** (maintainer) | **Tier 1:** retrieval hit rate, MRR and recall against `expected_sources`, recomputed on every pull request and every push to `main` by a CI job that caches the HF models. That job is CI's only network use. **Tier 2:** RAGAs with a `gemma2:9b` judge through Ollama's OpenAI endpoint, run offline (scoring can go to Colab/Kaggle) and committed with a fingerprint. `rag-eval check` fails CI on a floor breach **or a stale run** (maintainer: fail, not warn). Rejected: a hosted judge in CI; offline-only. **Second review:** the fingerprint has six parts (`query` with a rendered-prompt probe, `ingestion`, `corpus`, `questions`, `references`, `judge`) in `evaluation/fingerprint.py`; Ollama digests are recorded, not hashed; the judge is `rag-judge` from `eval/judge.Modelfile` (8k context, caveat 22); the tier-2 tolerance comes from two scorings. S2-2, S2-3, S2-5, S2-5b. |
 | DEC-16 | Reranker: `langchain_classic`'s `ContextualCompressionRetriever`, or our own | **Resolved 2026-10-02: our own `CrossEncoderReranker` on `sentence-transformers`** (DEC-5 step 2) | A `langchain_core` `BaseDocumentCompressor` that writes `rerank_score` into metadata. k=20 candidates are cut to `top_n` 5, and tier-1 numbers decide whether it is on. `langchain_classic.` and `langchain_community.` leave `ALLOWED_PREFIXES`. The `min_score` knob is for the Sources-relevance backlog line. S2-4. **Outcome (S2-4, 2026-10-04): on.** Hit rate 0.950, MRR 0.7958, recall 0.8583, against dense 0.800, 0.5875, 0.7167; 8 questions won, 4 lost (still hits), 1.4 s per answer on CPU. |
-| DEC-17 | Incremental ingestion: change detection, failure handling, write safety | **Resolved 2026-10-02: a sha256 manifest beside the index, generation directories published by an atomic symlink flip, one writer** (the flip replaced a two-rename swap in the second review) | **Updates:** only added and changed documents are re-embedded. A failed document keeps its chunks, which dissolves DEC-13. **Full rebuild** when the embedder identity or the splitter changes. Device keys are left out of the identity, so Colab's `_cuda` equals local `_cpu`. **IDs and metadata:** uuid5 chunk IDs, ready for Qdrant (DEC-3). `source` becomes corpus-relative, plus `source_sha256` and `ingested_at` (SRS §7.3). **Query side:** `rag-query` refuses a mismatched index. **Breaking:** re-ingest once. S2-6. |
+| DEC-17 | Incremental ingestion: change detection, failure handling, write safety | **Resolved 2026-10-02: a sha256 manifest beside the index, generation directories published by an atomic symlink flip, one writer** (the flip replaced a two-rename swap in the second review) | **Updates:** only added and changed documents are re-embedded. A failed document keeps its chunks, which dissolves DEC-13. **Full rebuild** when the embedder identity or the splitter changes. Device keys are left out of the identity, so Colab's `_cuda` equals local `_cpu`. **IDs and metadata:** uuid5 chunk IDs, ready for Qdrant (DEC-3). `source` becomes corpus-relative, plus `source_sha256` and `ingested_at` (SRS §7.3). **Query side:** `rag-query` refuses a mismatched index. **Breaking:** re-ingest once. S2-6. **As implemented (2026-10-05):** `multi_process` stays in the identity, since langchain-huggingface 1.2.2's multi-process path drops `encode_kwargs` (maintainer). An empty `model_kwargs` counts as none. Generation stamps carry microseconds and always sort after the live one. Only a folder holding exactly `index.faiss` and `index.pkl` is migrated as v0.2, and anything else at the path exits 2. Every update opens the live index, and an update probes the embedder's dimension. ARCHITECTURE.md DEC-17 has the dated notes. |
 | DEC-18 | HTTP API shape: SSE library, auth, concurrency, ingest jobs | **Resolved 2026-10-02: FastAPI ≥ 0.135 native SSE; a token is required off localhost (maintainer); one generation at a time** | **Surface:** `rag-serve`. `QueryRequest` is `{question}` with `extra="forbid"`, so the API never supplies components, and a `trust_remote_code` load guard comes with it. **Load:** 503 with `Retry-After` when busy. A disconnect cancels generation: under uvicorn (ASGI 2.3) Starlette cancels the stream, and `stream_answer` runs inside it, with no producer task (second review). Requests with an `Origin` header are refused. **Ingest:** single-flight jobs in memory, which swap only the retrieval half. **Privacy:** no host paths over HTTP. S2-7. |
 
 ## Backlog
@@ -505,6 +522,14 @@ leads with one of two things:
     allowlist refuses it.
   - The Sources-relevance line gets its knob, `min_score`, off by default. Its tuning
     stays below, after S2-5.
+
+- **S2-6:** incremental ingestion (FR-2, ISS-14, NFR-4 in place, SRS §7.3, DEC-17).
+  - Three backlog lines close with it: walk pruning, the §7.3 chunk metadata, and the
+    embedder check on open.
+  - S2-8 gains two items: a text file's summary line reads "1 pages/sections", and the
+    summary now has more zero-count lines.
+  - S2-9 owes README's status line, which still lists incremental ingestion as
+    planned.
 
 ### Closed in Phase 1
 
@@ -577,8 +602,13 @@ leads with one of two things:
     editing and history.
   - **pypdf's own warnings leak** (v0.2 manual test). A corrupt PDF prints
     `invalid pdf header…` / `EOF marker not found` above the banner, before
-    the clean error. Quiet the `pypdf` logger to ERROR in `ingest.py`.
-- **S2-6 — the walk descends into ignored trees** (found in S1-3 and S1-4).
+    the clean error. Quiet the `pypdf` logger to ERROR in `ingest.py`. Still
+    seen in S2-6's Verification 3.
+  - **The summary after S2-6** (found in S2-6):
+    - a text file reads "1 pages/sections";
+    - an update prints a "Documents:" line with up to five zero counts. The
+      zero-count rule above covers it.
+- **Closed by S2-6 (2026-10-05) — the walk descends into ignored trees** (found in S1-3 and S1-4). Hidden folders are pruned in place now; the history below is kept.
   It walks all of `.git` before discarding it. Performance only. Phase 2's
   incremental ingestion rewrites discovery around the manifest, so prune there
   (`Path.walk` is top-down, and pruning `folders[:]` in place fixes it).
@@ -654,7 +684,7 @@ leads with one of two things:
 
 ### Later phases
 
-- **S2-6 —** chunk metadata: content hash of the source file + ingestion timestamp
+- **Closed by S2-6 (2026-10-05) —** chunk metadata: content hash of the source file + ingestion timestamp
   (SRS §7.3), with the manifest that needs them (DEC-17).
 - **S2-5 —** the RAGAs judge must be pointed at local Ollama explicitly (its default
   is OpenAI). DEC-15 settles both halves: the judge is `gemma2:9b` through Ollama's
@@ -675,7 +705,7 @@ leads with one of two things:
     floating-point sums, and so, rarely, an answer.
   - A small change on its own: config plus a measured comment. It can also ride S2-3. S2-2
     closed without it.
-- **S2-6 —** the ingestion manifest records the embedder's identity and dimension;
+- **Closed by S2-6 (2026-10-05) —** the ingestion manifest records the embedder's identity and dimension;
   refuse to open an index built with a different embedder (DEC-17).
 - **Phase 3 —** NFR-2 (<2 s first token) is unachievable CPU-only: revise the SLO
   or plan GPU serving in the Phase 3 arch pass. Phase 2 measures it: `ttft_ms` on

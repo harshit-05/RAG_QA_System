@@ -5,6 +5,9 @@ CLAUDE.md: never commit binaries — and the generators are small enough to read
 """
 
 import asyncio
+import copy
+import json
+import os
 import zipfile
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -263,8 +266,12 @@ def stub_cross_encoder(monkeypatch: pytest.MonkeyPatch) -> type[StubCrossEncoder
 
 
 def use_fake_embedder(c: dict[str, Any]) -> None:
-    """Config edit: a deterministic 8-dim embedder, so nothing downloads MiniLM."""
-    c["components"]["embedders"]["fake"] = FAKE_EMBEDDER
+    """Config edit: a deterministic 8-dim embedder, so nothing downloads MiniLM.
+
+    A copy each time: a later edit that changes the entry must not change it for every
+    test after it.
+    """
+    c["components"]["embedders"]["fake"] = copy.deepcopy(FAKE_EMBEDDER)
     c["pipeline"]["ingestion"]["embedder"] = "components.embedders.fake"
 
 
@@ -275,7 +282,7 @@ def use_fakes(c: dict[str, Any]) -> None:
     download too. Tests of the reranker switch it on with ``use_fakes_and_reranker``.
     """
     use_fake_embedder(c)
-    c["components"]["llms"]["fake"] = FAKE_LLM
+    c["components"]["llms"]["fake"] = copy.deepcopy(FAKE_LLM)
     c["pipeline"]["query"]["llm"] = "components.llms.fake"
     c["pipeline"]["query"].pop("reranker", None)
     c["pipeline"]["query"].pop("reranker_candidates", None)
@@ -296,6 +303,19 @@ def use_fakes_and_reranker(c: dict[str, Any]) -> None:
     c["components"]["rerankers"]["ms_marco_minilm_cpu"]["top_n"] = RERANK_TOP_N
     c["pipeline"]["query"]["reranker"] = "components.rerankers.ms_marco_minilm_cpu"
     c["pipeline"]["query"]["reranker_candidates"] = RERANK_CANDIDATES
+
+
+def live_generation(store: Path) -> Path:
+    """The generation folder an index's symlink points to (DEC-17)."""
+    return store.parent / os.readlink(store)
+
+
+def edit_manifest(store: Path, edit: Callable[[dict[str, Any]], None]) -> None:
+    """Rewrite the live generation's ``manifest.json`` through ``edit``, as tampering would."""
+    path = live_generation(store) / "manifest.json"
+    data = json.loads(path.read_text())
+    edit(data)
+    path.write_text(json.dumps(data))
 
 
 @pytest.fixture

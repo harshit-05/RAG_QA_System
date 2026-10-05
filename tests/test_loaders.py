@@ -8,7 +8,7 @@ from conftest import REPO_ROOT, MakeConfig, write_docx, write_pdf
 
 from rag_qa.chain import citation
 from rag_qa.config import load_config
-from rag_qa.ingest import IngestReport, discover_files, load_documents
+from rag_qa.ingest import IngestReport, discover_files, scan_corpus
 from rag_qa.loaders import DocxLoader, PdfLoader, TextLoader
 from rag_qa.registry import import_from_string
 
@@ -138,24 +138,19 @@ def test_missing_corpus_directory_is_named(tmp_path: Path) -> None:
         discover_files(tmp_path / "nope")
 
 
-def test_load_documents_walks_subdirectories_and_uses_the_map(
+def test_the_scan_walks_subdirectories_and_uses_the_map(
     sample_corpus: Path, make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("RAG_DATA_PATH", str(sample_corpus))
     report = IngestReport()
-    docs = load_documents(load_config(make_config()), report)
+    scan = scan_corpus(load_config(make_config()), report)
 
-    by_file = {}
-    for doc in docs:
-        by_file.setdefault(
-            Path(doc.metadata["source"]).relative_to(sample_corpus).as_posix(), []
-        ).append(doc.metadata["loader"])
-    assert by_file == {
-        "README.md": ["TextLoader"],                # .md maps to the txt loader
-        "guide.pdf": ["PdfLoader"] * 3,
-        "notes.txt": ["TextLoader"],
-        "sub/deeper/LOUD.TXT": ["TextLoader"],      # two levels down, uppercase suffix
-        "sub/report.docx": ["DocxLoader"],          # one level down
+    assert {file.name: file.state.loader for file in scan.files} == {
+        "README.md": "components.loaders.txt",        # .md maps to the txt loader
+        "guide.pdf": "components.loaders.pdf",
+        "notes.txt": "components.loaders.txt",
+        "sub/deeper/LOUD.TXT": "components.loaders.txt",  # two levels down, uppercase suffix
+        "sub/report.docx": "components.loaders.docx",     # one level down
     }
     assert report.skipped == ["diagram.png"]
     assert report.failed == []
@@ -170,9 +165,8 @@ def test_a_new_extension_is_one_config_line(
     path = make_config(
         lambda c: c["pipeline"]["ingestion"]["loaders"].update({".rst": "components.loaders.txt"})
     )
-    report = IngestReport()
-    docs = load_documents(load_config(path), report)
-    assert any(d.metadata["source"].endswith("notes.rst") for d in docs)
+    scan = scan_corpus(load_config(path), IngestReport())
+    assert "notes.rst" in {file.name for file in scan.files}
 
 
 def test_fixture_writers_round_trip(tmp_path: Path) -> None:

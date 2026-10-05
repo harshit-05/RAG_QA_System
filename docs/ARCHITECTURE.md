@@ -346,6 +346,13 @@ the choice: a document that fails keeps its previously indexed chunks, so the
 all indexed; 1 a document or folder unreadable, nothing indexed, or an unexpected
 error (traceback); 2 could not start.
 
+_Superseded in part by DEC-17 (S2-6, 2026-10-05)._ In an update, a document or folder that
+cannot be read keeps its previous chunks and manifest entry, and exit 1 reads "The index
+was updated; the failed documents kept their previous chunks". A full rebuild still leaves
+failed documents out and says "rebuilt without them" (maintainer, 2026-10-05). Its old
+chunks are unusable, or were asked away with `--rebuild`. Exit 2 also covers another
+ingestion holding the lock.
+
 ### 1.2 Layout at Phase 1 exit
 
 ```text
@@ -1037,6 +1044,13 @@ Python, with no LangChain.
     DEC-12 offload path keeps working.
   - A change to `model_name` or `encode_kwargs` is a different embedder.
   - The dimension is recorded too, as a backstop.
+  - _S2-6 (2026-10-05, maintainer): `multi_process` stays **in** the identity._
+    langchain-huggingface 1.2.2's multi-process path calls `encode_multi_process(texts,
+    pool)` without `encode_kwargs`. So `normalize_embeddings`, a prompt and the precision
+    are dropped, and switching it can change the vectors. The exclusions are `device`,
+    `model_kwargs.device`, `show_progress` and `cache_folder`. A `model_kwargs` left
+    empty is dropped as well, since `{}` is what leaving it out means (S2-6's first
+    review).
 - **Chunk IDs are `uuid5(namespace, f"{relative_path}:{sha256}:{index}")`.**
   - They are deterministic, so an unchanged document keeps its IDs.
   - The path is part of the key because two files with identical bytes (a copy in another
@@ -1066,6 +1080,25 @@ Python, with no LangChain.
 
   An unreferenced _newer_ generation is a crash before the flip, so it is incomplete by
   definition and goes too.
+
+  _S2-6 (2026-10-05): the stamp carries microseconds_, as in
+  `db_faiss.gen-20261005T120000.123456Z-1a2b3c4d`. Recovery orders generations by name,
+  and a second cannot order runs made within one. A new stamp also always sorts after the
+  live generation's, even if the clock has stepped back (S2-6's first review).
+
+  _S2-6's second review (2026-10-05) tightened what counts as ours:_
+  - **A real folder is a v0.2 index only if it holds exactly `index.faiss` and
+    `index.pkl`.** Before, any folder at the path was renamed aside, which with a mis-set
+    path could be the corpus.
+  - **Anything else at the path makes `rag-ingest` exit 2:** a file, another folder, or a
+    link to anything but one of the store's generations.
+  - **The link is read however it is written**, absolute, `./` or with a trailing slash,
+    so a hand-made rollback never reads as "nothing is live" to recovery.
+  - **Every update opens the live generation**, one that changes nothing included. A
+    corrupt index is rebuilt rather than reported up to date. This needs no model: writing
+    a generation never embeds.
+  - **An update probes the embedder's dimension before preparing anything**, and a
+    changed one rebuilds in full.
 
   - **Migration from v0.2.** If `db_faiss` is a real directory, the run is a full
     rebuild anyway (no manifest). It builds a generation, renames the old directory to

@@ -32,11 +32,10 @@ from typing import Literal
 from langchain_core.documents import Document
 
 from rag_qa.answering import source_refs
-from rag_qa.chain import NoIndexError, build_retrieve
+from rag_qa.chain import build_retrieve, check_index
 from rag_qa.components import build_embedder
 from rag_qa.evaluation.dataset import GoldenItem
 from rag_qa.schema import RagConfig
-from rag_qa.vectorstore import store_exists
 
 #: Why a chunk counts: it is on an expected page, or on an also-page.
 Match = Literal["page", "also"]
@@ -131,17 +130,14 @@ def evaluate_retrieval(config: RagConfig, items: Iterable[GoldenItem]) -> list[I
     """Retrieve for every answerable item and score it, in the golden set's order.
 
     Unanswerable items are skipped: they have no expected sources, and count only towards
-    tier 2's decline rate. Raises :class:`~rag_qa.chain.NoIndexError` before any model is
-    loaded when there is no index.
+    tier 2's decline rate. Raises :class:`~rag_qa.chain.NoIndexError` when there is no
+    index, and :class:`~rag_qa.chain.IncompatibleIndexError` when the config cannot use
+    it, both before any model is loaded.
     """
-    store = config.paths.vector_store
-    if not store_exists(store):
-        raise NoIndexError(
-            f"no index at '{store}'. Run rag-ingest first, with the same "
-            f"RAG_VECTOR_STORE_PATH when the index is a scratch one."
-        )
+    # Before the embedder is built: build_retrieve checks too, but only once it has one.
+    check_index(config)
     # The same embedder the index was built with: build_embedder is the one place that
-    # choice is made. No LLM is built.
+    # choice is made, and the manifest has just confirmed it. No LLM is built.
     retrieve = build_retrieve(config, build_embedder(config))
     return [
         score_item(item, retrieve.invoke(item.question), config.paths.data)

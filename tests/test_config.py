@@ -221,6 +221,33 @@ def test_absolute_env_override_is_accepted(
     assert load_config(make_config()).paths.vector_store == target
 
 
+def test_a_vector_store_symlink_is_kept_not_resolved(
+    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # From S2-6 the store is a symlink to the live index generation (DEC-17). Resolved at
+    # load, every caller would be pinned to one generation, and ingestion would take that
+    # real directory for a v0.2 index: found by the suite, the first time it met a symlink.
+    (tmp_path / "index.gen-1").mkdir()
+    link = tmp_path / "index"
+    link.symlink_to("index.gen-1")
+    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(link))
+    assert load_config(make_config()).paths.vector_store == link
+    monkeypatch.delenv("RAG_VECTOR_STORE_PATH")  # the same for a path in the file
+    path = make_config(lambda c: c["paths"].update(vector_store="index"))
+    assert load_config(path).paths.vector_store == link
+
+
+def test_the_folders_above_the_store_are_still_resolved_as_before(
+    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The link is followed before ".." applies, exactly as resolve() always did, so an
+    # existing store path keeps pointing where it did (first review).
+    (tmp_path / "deep" / "real").mkdir(parents=True)
+    (tmp_path / "linked").symlink_to(tmp_path / "deep" / "real")
+    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(tmp_path / "linked" / ".." / "index"))
+    assert load_config(make_config()).paths.vector_store == tmp_path / "deep" / "index"
+
+
 def test_absolute_path_in_the_file_is_fine_when_the_env_overrides_it(
     make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

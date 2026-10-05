@@ -17,6 +17,8 @@ from conftest import (
     MakeConfig,
     StreamingFakeChatModel,
     StubCrossEncoder,
+    edit_manifest,
+    live_generation,
     use_fakes,
     use_fakes_and_reranker,
 )
@@ -24,6 +26,7 @@ from langchain_core.documents import Document
 
 from rag_qa.answering import Sources, stream_answer
 from rag_qa.chain import (
+    IncompatibleIndexError,
     NoIndexError,
     QueryPipeline,
     build_query_pipeline,
@@ -123,6 +126,132 @@ def test_with_an_index_both_halves_are_built(fake_rag: Path, require_index: bool
     assert pipeline.retrieve is not None
     assert 0 < len(pipeline.retrieve.invoke("How many staff?")) <= 5  # retriever k
     assert answer_from(pipeline) == FAKE_ANSWER
+
+
+# --- an index the config cannot use (S2-6, DEC-17) ---------------------------------------
+
+
+@pytest.fixture
+def no_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Building any model fails the test: refusals must come first. The mpnet download, or
+    Ollama for Verification 4, would otherwise come before the error."""
+
+    def no_model(*args: Any) -> None:
+        raise AssertionError("a model was built for an index the config cannot use")
+
+    for name in ("build_llm", "build_embedder", "build_reranker"):
+        monkeypatch.setattr(f"rag_qa.chain.{name}", no_model)
+
+
+def other_embedder(c: dict[str, Any]) -> None:
+    """Config edit: the fakes, with an embedder whose vectors the fake_rag index lacks."""
+    use_fakes(c)
+    c["components"]["embedders"]["fake"]["size"] = 16
+
+
+def test_a_v02_index_is_refused_before_any_model_is_built(
+    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_models: None
+) -> None:
+    store = tmp_path / "index"  # v0.2's layout: a real folder, no manifest
+    store.mkdir()
+    (store / "index.faiss").write_bytes(b"")
+    (store / "index.pkl").write_bytes(b"")
+    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(store))
+    with pytest.raises(IncompatibleIndexError, match=r"built by v0\.2.*Re-run rag-ingest"):
+        build_query_pipeline(load_config(make_config(use_fakes)))
+
+
+def test_an_index_without_a_manifest_is_refused(fake_rag: Path, no_models: None) -> None:
+    config = load_config(fake_rag)
+    (live_generation(config.paths.vector_store) / "manifest.json").unlink()
+    with pytest.raises(IncompatibleIndexError, match="has no manifest"):
+        build_query_pipeline(config)
+
+
+def test_an_index_with_an_unusable_manifest_is_refused(fake_rag: Path, no_models: None) -> None:
+    config = load_config(fake_rag)
+    (live_generation(config.paths.vector_store) / "manifest.json").write_text("{oops")
+    with pytest.raises(IncompatibleIndexError, match="cannot be used: it is not valid JSON"):
+        build_query_pipeline(config)
+
+
+def test_an_index_from_another_embedder_is_refused_before_any_model_is_built(
+    fake_rag: Path, make_config: MakeConfig, no_models: None
+) -> None:
+    with pytest.raises(IncompatibleIndexError, match=r"different embedder.*--rebuild"):
+        build_query_pipeline(load_config(make_config(other_embedder)))
+
+
+def test_without_require_index_an_unusable_index_counts_as_none(
+    fake_rag: Path, make_config: MakeConfig
+) -> None:
+    # The API starts anyway, and reports not-ready (DEC-18).
+    pipeline = build_query_pipeline(load_config(make_config(other_embedder)), require_index=False)
+    assert pipeline.retrieve is None
+
+
+def test_build_rag_chain_refuses_an_unusable_index_before_any_model_is_built(
+    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_models: None
+) -> None:
+    # The invoke path (the RAGAs harness) built the LLM and the embedder first (second
+    # review): with Ollama down, the Ollama error hid the real one.
+    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "no-index"))
+    with pytest.raises(NoIndexError, match="Run rag-ingest first"):
+        build_rag_chain(load_config(make_config(use_fakes)))
+
+
+@pytest.fixture
+def no_llm_or_reranker(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_model(*args: Any) -> None:
+        raise AssertionError("built the LLM or the reranker before refusing the index")
+
+    monkeypatch.setattr("rag_qa.chain.build_llm", no_model)
+    monkeypatch.setattr("rag_qa.chain.build_reranker", no_model)
+
+
+def test_a_dimension_mismatch_is_refused_before_the_llm(
+    fake_rag: Path, no_llm_or_reranker: None
+) -> None:
+    # It needs the embedder, but not Ollama: retrieval is built before the LLM.
+    config = load_config(fake_rag)
+    edit_manifest(config.paths.vector_store, lambda m: m["embedder"].update(dimension=9))
+    with pytest.raises(IncompatibleIndexError, match="9-dimension"):
+        build_query_pipeline(config)
+
+
+def test_an_index_that_will_not_open_is_refused_not_a_traceback(
+    fake_rag: Path, no_llm_or_reranker: None
+) -> None:
+    # A corrupt pickle crashed rag-query with UnpicklingError (second review).
+    config = load_config(fake_rag)
+    (live_generation(config.paths.vector_store) / "index.pkl").write_bytes(b"not a pickle")
+    with pytest.raises(IncompatibleIndexError, match=r"cannot open the index.*UnpicklingError"):
+        build_query_pipeline(config)
+
+
+def test_without_require_index_a_dimension_mismatch_counts_as_none(fake_rag: Path) -> None:
+    # The dimension is checked once the embedder is built, after the LLM: without
+    # require_index, that refusal must still leave retrieve as None (first review).
+    config = load_config(fake_rag)
+    edit_manifest(config.paths.vector_store, lambda m: m["embedder"].update(dimension=9))
+    pipeline = build_query_pipeline(config, require_index=False)
+    assert pipeline.retrieve is None
+    assert answer_from(pipeline) == FAKE_ANSWER
+
+
+def test_a_dimension_the_index_does_not_hold_is_refused_before_the_reranker_loads(
+    fake_rag: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The identity's backstop: the same spec, but a model that now makes other vectors.
+    config = load_config(fake_rag)
+    edit_manifest(config.paths.vector_store, lambda m: m["embedder"].update(dimension=9))
+
+    def no_model(*args: Any) -> None:
+        raise AssertionError("the reranker loaded before the dimension was checked")
+
+    monkeypatch.setattr("rag_qa.chain.build_reranker", no_model)
+    with pytest.raises(IncompatibleIndexError, match="9-dimension vectors.*makes 8-dimension"):
+        build_retrieve(config, build_embedder(config))
 
 
 def test_build_rag_chain_and_stream_answer_give_the_model_the_same_prompt(
