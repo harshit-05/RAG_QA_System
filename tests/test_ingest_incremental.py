@@ -7,6 +7,7 @@ deterministic fake, so nothing downloads. Both RAG paths always point at scratch
 one chunk for each of the other 4 files.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -37,7 +38,7 @@ from rag_qa.ingest import (
     main,
 )
 from rag_qa.loaders import TextLoader
-from rag_qa.manifest import file_sha256
+from rag_qa.manifest import CHUNKING_VERSION, file_sha256
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_DATA_PATH, ENV_VECTOR_STORE_PATH
 from rag_qa.vectorstore import open_generation, open_store, store_exists
@@ -445,6 +446,33 @@ def test_a_damaged_index_rebuilds_in_full_even_when_the_corpus_is_unchanged(
     assert scratch.ids() == scratch.listed()
 
 
+def test_a_new_chunking_version_rebuilds_in_full(
+    scratch: Scratch, embedded: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The code that makes chunks changed, the config did not: without this, every
+    # unchanged file would keep its old chunks for good (second review).
+    scratch.ingest()
+    monkeypatch.setattr("rag_qa.ingest.CHUNKING_VERSION", 2)
+    embedded.clear()
+    report = scratch.ingest()
+    assert report.rebuild == (
+        "this version makes chunks differently (chunking version 1 then, 2 now)"
+    )
+    assert embedded == [7]
+    assert json.loads((scratch.live() / "manifest.json").read_text())["chunking"] == 2
+
+
+def test_an_index_from_before_the_chunking_version_is_kept_not_rebuilt(
+    scratch: Scratch, embedded: list[int]
+) -> None:
+    scratch.ingest()
+    edit_manifest(scratch.store, lambda m: m.pop("chunking"))
+    embedded.clear()
+    report = scratch.ingest()
+    assert (report.rebuild, report.published) == (None, None)
+    assert embedded == []
+
+
 def test_a_manifest_that_lists_an_id_its_index_lacks_rebuilds_in_full(
     scratch: Scratch, embedded: list[int]
 ) -> None:
@@ -596,6 +624,18 @@ def test_a_file_where_the_index_goes_exits_2_and_is_left_alone(
     assert scratch.store.read_text(encoding="utf-8") == "someone's file"
 
 
+def test_a_generation_named_as_the_index_exits_2_and_is_left_alone(
+    scratch: Scratch, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    scratch.ingest()
+    live = scratch.live()
+    before = contents(live)
+    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(live))
+    assert scratch.main() == EXIT_CANNOT_START
+    assert "is an index generation folder" in capsys.readouterr().err
+    assert contents(live) == before
+
+
 def test_an_empty_corpus_publishes_nothing_and_leaves_the_index(
     scratch: Scratch, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
@@ -690,6 +730,40 @@ def test_chunks_carry_the_section_7_3_metadata_with_a_corpus_relative_source(
         "LOUD.TXT", "README.md", "guide.pdf, p. 1", "guide.pdf, p. i", "guide.pdf, p. ii",
         "notes.txt", "report.docx",
     ]
+
+
+#: ``sample_corpus``'s chunks under each CHUNKING_VERSION, as :func:`chunks_digest` gives.
+SAMPLE_CORPUS_CHUNKS = {1: "556f8396d1dba0f5a1f48ff6a8075f78fa862cb5f84bc6c53117b7770b58162b"}
+
+
+def chunks_digest(generation: Path) -> str:
+    """The sha256 of a generation's chunks in index order: text and metadata, less the
+    file's hash and the run's time, which are not how chunks are made."""
+    db = open_generation(generation).db
+    chunks = []
+    for position in range(len(db.index_to_docstore_id)):
+        doc = db.docstore.search(db.index_to_docstore_id[position])
+        assert not isinstance(doc, str)
+        metadata = {
+            key: value
+            for key, value in doc.metadata.items()
+            if key not in ("source_sha256", "ingested_at")
+        }
+        chunks.append([doc.page_content, metadata])
+    return hashlib.sha256(json.dumps(chunks, sort_keys=True).encode()).hexdigest()
+
+
+def test_the_sample_corpus_chunks_as_the_chunking_version_says(scratch: Scratch) -> None:
+    # The tripwire for CHUNKING_VERSION (second review). If the chunks changed, whether
+    # by a change to the loaders or to ingest's metadata, or by a library upgrade, bump
+    # CHUNKING_VERSION and pin this digest under the new version: every index then
+    # rebuilds once, instead of keeping old chunks for every unchanged file.
+    scratch.ingest()
+    digest = chunks_digest(scratch.live())
+    assert SAMPLE_CORPUS_CHUNKS.get(CHUNKING_VERSION) == digest, (
+        f"the sample corpus no longer chunks as CHUNKING_VERSION {CHUNKING_VERSION} did: "
+        f"bump it in rag_qa/manifest.py, and pin {digest} under the new version"
+    )
 
 
 def test_the_walk_never_enters_an_ignored_folder(

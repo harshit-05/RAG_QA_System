@@ -161,6 +161,31 @@ def test_a_v02_index_is_refused_before_any_model_is_built(
         build_query_pipeline(load_config(make_config(use_fakes)))
 
 
+@pytest.mark.parametrize(
+    ("what", "says"),
+    [("generation", "is an index generation folder"), ("file", "is a file, not an index")],
+)
+def test_what_rag_ingest_will_not_replace_is_refused_without_sending_the_user_there(
+    fake_rag: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    no_models: None,
+    what: str,
+    says: str,
+) -> None:
+    # "Re-run rag-ingest" would only meet rag-ingest's own exit 2 here (second review).
+    if what == "generation":
+        target = live_generation(load_config(fake_rag).paths.vector_store)
+    else:
+        target = tmp_path / "a-file"
+        target.write_text("someone's file")
+    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(target))
+    with pytest.raises(IncompatibleIndexError, match=says) as refused:
+        build_query_pipeline(load_config(fake_rag))
+    assert "Point paths.vector_store or RAG_VECTOR_STORE_PATH" in str(refused.value)
+    assert "Re-run rag-ingest" not in str(refused.value)
+
+
 def test_an_index_without_a_manifest_is_refused(fake_rag: Path, no_models: None) -> None:
     config = load_config(fake_rag)
     (live_generation(config.paths.vector_store) / "manifest.json").unlink()

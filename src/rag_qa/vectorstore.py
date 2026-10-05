@@ -126,6 +126,13 @@ def in_the_way(store: Path) -> str | None:
     if store.is_dir():
         if is_legacy_store(store):
             return None
+        if all((store / name).is_file() for name in (*INDEX_FILES, MANIFEST_FILE)):
+            # One generation named directly, or a copy of one (`cp -rL`): an index, but the
+            # path must name the link to it, which the next flip moves (second review).
+            return (
+                "is an index generation folder, not the link that rag-ingest points at the "
+                "live generation"
+            )
         return "is a folder that is not an index (v0.2's held only index.faiss and index.pkl)"
     if store.exists():
         return "is a file, not an index"

@@ -1038,6 +1038,16 @@ Python, with no LangChain.
   - the manifest version is unknown;
   - the embedder identity or the splitter spec changed;
   - `rag-ingest --rebuild` asks for it.
+
+  _S2-6's third review (2026-10-06): the code that makes chunks is versioned too._ The
+  identities see the config only. A change to `rag_qa.loaders` or to the metadata
+  `ingest` adds, or a pypdf, docx2txt or text-splitters upgrade that changes their output,
+  would otherwise leave every unchanged file's old chunks in place for good. So
+  `manifest.CHUNKING_VERSION` is recorded as the manifest's `chunking`, and a different
+  one rebuilds in full. **Bump it whenever the same file and config would make other
+  chunks.** A test pins the sample corpus's chunks to it, and says to bump when they
+  change. A manifest without the key reads as version 1, so the indexes S2-6 built stay
+  as they are. The query side does not check it: old chunks still answer.
 - **The embedder identity is its spec minus the keys that do not change the vectors**:
   `device`, `model_kwargs.device`, `show_progress`, `cache_folder` and `multi_process`.
   - So `minilm_cuda` on Colab and `minilm_cpu` here count as the same embedder, and the
@@ -1051,6 +1061,12 @@ Python, with no LangChain.
     `model_kwargs.device`, `show_progress` and `cache_folder`. A `model_kwargs` left
     empty is dropped as well, since `{}` is what leaving it out means (S2-6's first
     review).
+  - _S2-6's third review (2026-10-06): a default spelled out is the same embedder._ For
+    `HuggingFaceEmbeddings`, `encode_kwargs: {}`, `query_encode_kwargs: {}` and
+    `multi_process: false` are dropped. That holds only for classes listed in
+    `manifest.EMBEDDER_DEFAULTS`, whose defaults a test checks against the installed
+    library. A blanket rule would be unsafe: in `HuggingFaceBgeEmbeddings`,
+    `encode_kwargs: {}` turns normalisation off. No existing identity changed.
 - **Chunk IDs are `uuid5(namespace, f"{relative_path}:{sha256}:{index}")`.**
   - They are deterministic, so an unchanged document keeps its IDs.
   - The path is part of the key because two files with identical bytes (a copy in another
@@ -1099,6 +1115,11 @@ Python, with no LangChain.
     a generation never embeds.
   - **An update probes the embedder's dimension before preparing anything**, and a
     changed one rebuilds in full.
+
+  _S2-6's third review (2026-10-06):_ a generation folder named as the index path, or a
+  copy of one, is in the way too, and is named as such. The query side checks for anything
+  in the way first, and says to point the path at the index, not to re-run `rag-ingest`,
+  which would refuse it.
 
   - **Migration from v0.2.** If `db_faiss` is a real directory, the run is a full
     rebuild anyway (no manifest). It builds a generation, renames the old directory to
@@ -1467,6 +1488,7 @@ the front end, which renders them.
 {
   "version": 1,
   "generation": "db_faiss.gen-20261002T120000Z-1a2b3c4d",
+  "chunking": 1,
   "embedder": {"ref": "components.embedders.minilm_cpu", "identity": "<sha256>", "dimension": 384},
   "splitter": {"ref": "components.splitters.english_recursive", "identity": "<sha256>"},
   "documents": {

@@ -34,7 +34,7 @@ from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrou
 from rag_qa.components import aclose_llm, build_embedder, build_llm, build_reranker
 from rag_qa.manifest import Manifest, embedder_identity
 from rag_qa.schema import RagConfig
-from rag_qa.vectorstore import NO_INDEX, live_index, open_store
+from rag_qa.vectorstore import NO_INDEX, in_the_way, live_index, open_store
 
 
 class NoIndexError(Exception):
@@ -59,11 +59,21 @@ def check_index(config: RagConfig) -> tuple[Path, Manifest]:
     Reads small files only and loads no model, so a front end refuses an unusable index
     before it builds the embedder, the reranker or the LLM. Raises :class:`NoIndexError`
     when there is no index, and :class:`IncompatibleIndexError` when there is one this
-    config cannot use: the rule :func:`rag_qa.vectorstore.live_index` shares with
-    ``rag-ingest``, then the embedder's identity. The dimension, the identity's backstop,
+    config cannot use: something ``rag-ingest`` will not write over
+    (:func:`rag_qa.vectorstore.in_the_way`), then the rule
+    :func:`rag_qa.vectorstore.live_index` shares with ``rag-ingest``, then the embedder's
+    identity. The dimension, the identity's backstop,
     needs the embedder, so :func:`build_retrieve` checks it.
     """
     store = config.paths.vector_store
+    blocked = in_the_way(store)
+    if blocked is not None:
+        # Not "re-run rag-ingest": it refuses to write over whatever this is (second review).
+        raise IncompatibleIndexError(
+            f"'{store}' {blocked}, so there is no index to use. Point paths.vector_store "
+            f"or RAG_VECTOR_STORE_PATH at the index rag-ingest wrote, or move this aside "
+            f"and run rag-ingest."
+        )
     found = live_index(store)
     if found == NO_INDEX:
         raise NoIndexError(

@@ -7,6 +7,7 @@ guard would then let incomparable vectors through.
 """
 
 import hashlib
+import importlib
 import json
 import os
 import uuid
@@ -19,6 +20,7 @@ from conftest import REAL_CONFIG
 from rag_qa.config import load_config
 from rag_qa.manifest import (
     CHUNK_NAMESPACE,
+    EMBEDDER_DEFAULTS,
     Changes,
     DocumentRecord,
     EmbedderRecord,
@@ -78,6 +80,32 @@ def test_model_kwargs_holding_only_a_device_is_the_same_as_none(left: Any) -> No
     without = {key: value for key, value in MINILM.items() if key != "model_kwargs"}
     assert embedder_identity(without) == embedder_identity(MINILM)
     assert embedder_identity({**without, "model_kwargs": left}) == embedder_identity(MINILM)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("encode_kwargs", {}), ("query_encode_kwargs", {}), ("multi_process", False)],
+)
+def test_a_default_spelled_out_is_the_same_embedder(key: str, value: Any) -> None:
+    # Before the second review each of these read as another embedder: a needless rebuild,
+    # a refused query, and a stale tier-2 fingerprint (S2-5).
+    assert embedder_identity({**MINILM, key: value}) == embedder_identity(MINILM)
+
+
+def test_a_default_counts_only_for_a_class_whose_defaults_are_listed() -> None:
+    # In HuggingFaceBgeEmbeddings, encode_kwargs defaults to normalising, and {} turns that
+    # off: an unlisted class keeps every key it is given.
+    bge = {**MINILM, "_target_": "langchain_community.embeddings.HuggingFaceBgeEmbeddings"}
+    assert embedder_identity({**bge, "encode_kwargs": {}}) != embedder_identity(bge)
+
+
+@pytest.mark.parametrize("target", sorted(EMBEDDER_DEFAULTS))
+def test_the_listed_defaults_are_the_installed_library_s(target: str) -> None:
+    # A library upgrade that changes a default would otherwise equate two embedders.
+    module, _, name = target.rpartition(".")
+    fields = getattr(importlib.import_module(module), name).model_fields
+    for key, value in EMBEDDER_DEFAULTS[target].items():
+        assert fields[key].get_default(call_default_factory=True) == value, key
 
 
 @pytest.mark.parametrize(
@@ -172,8 +200,11 @@ def test_a_manifest_round_trips_in_the_documented_shape(tmp_path: Path) -> None:
     save_manifest(original, path)
 
     data = json.loads(path.read_text())  # ARCHITECTURE.md §2.4, key for key
-    assert sorted(data) == ["documents", "embedder", "generation", "splitter", "version"]
+    assert sorted(data) == [
+        "chunking", "documents", "embedder", "generation", "splitter", "version",
+    ]
     assert data["version"] == 1
+    assert data["chunking"] == 1
     assert sorted(data["embedder"]) == ["dimension", "identity", "ref"]
     assert sorted(data["splitter"]) == ["identity", "ref"]
     assert sorted(data["documents"]["guide.pdf"]) == [
@@ -197,6 +228,18 @@ def test_a_save_interrupted_before_its_rename_leaves_the_old_manifest_whole(
     with pytest.raises(OSError, match="crashed"):
         save_manifest(manifest(**{"b.txt": record()}), path)
     assert load_manifest(path) == old
+
+
+def test_a_manifest_from_before_the_chunking_version_reads_as_version_1(tmp_path: Path) -> None:
+    # The first S2-6 indexes have no "chunking" key, and version 1 made them: they stay
+    # usable without a rebuild.
+    path = tmp_path / "manifest.json"
+    save_manifest(manifest(**{"a.txt": record()}), path)
+    data = json.loads(path.read_text())
+    del data["chunking"]
+    path.write_text(json.dumps(data))
+    loaded = load_manifest(path)
+    assert loaded is not None and loaded.chunking == 1
 
 
 def test_no_manifest_file_is_none_not_an_error(tmp_path: Path) -> None:

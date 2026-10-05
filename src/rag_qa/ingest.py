@@ -17,7 +17,8 @@ The live generation is never written to, so a crash or an exception publishes no
 
 A run rebuilds the index in full, and logs why, when there is no index or no usable
 manifest (every v0.2 index), when the embedder's identity or the splitter changed, when
-the manifest disagrees with its index, or with ``--rebuild``.
+this code makes chunks differently (:data:`rag_qa.manifest.CHUNKING_VERSION`), when the
+manifest disagrees with its index, or with ``--rebuild``.
 
 **One writer.** A run holds an advisory ``flock(2)`` on ``<store>.lock`` from start to
 finish. A second run, from the CLI or the API, exits 2: "another ingestion is running".
@@ -62,6 +63,7 @@ from langchain_core.embeddings import Embeddings
 from rag_qa.components import build_embedder, build_loader, build_splitter
 from rag_qa.config import ConfigError, load_config
 from rag_qa.manifest import (
+    CHUNKING_VERSION,
     DocumentRecord,
     EmbedderRecord,
     FileState,
@@ -384,6 +386,11 @@ class _Identities:
         if manifest.splitter.identity != self.splitter.identity:
             compared = _compared(manifest.splitter.ref, self.splitter.ref)
             return f"the splitter is not the one that built the index ({compared})"
+        if manifest.chunking != CHUNKING_VERSION:
+            return (
+                f"this version makes chunks differently (chunking version "
+                f"{manifest.chunking} then, {CHUNKING_VERSION} now)"
+            )
         return None
 
 
@@ -638,6 +645,7 @@ def _update(config: RagConfig, plan: _Plan, report: IngestReport) -> None:
     dimension = len(vectors[0]) if live is None else live.embedder.dimension
     manifest = Manifest(
         generation="",  # write_generation names it after the folder it writes
+        chunking=CHUNKING_VERSION,
         embedder=EmbedderRecord(
             ref=wanted.embedder_ref, identity=wanted.embedder, dimension=dimension
         ),

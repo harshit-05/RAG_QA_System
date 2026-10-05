@@ -26,6 +26,14 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 MANIFEST_FILE = "manifest.json"
 MANIFEST_VERSION: Final = 1
 
+#: How this code turns a file into chunks. The identities see the config only, never the
+#: code, so **bump it whenever the same file and config would make other chunks**: a change
+#: to ``rag_qa.loaders``, to the metadata ``rag_qa.ingest`` adds, or a pypdf, docx2txt or
+#: text-splitters upgrade that changes their output. Then every index rebuilds in full,
+#: rather than keeping the old chunks of every unchanged file for good.
+#: ``tests/test_ingest_incremental.py`` pins the sample corpus's chunks to it.
+CHUNKING_VERSION: Final = 1
+
 #: The namespace of every chunk ID. Changing it would change every ID, so it never changes.
 CHUNK_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "https://github.com/harshit-05/RAG_QA_System/chunk")
 
@@ -37,6 +45,20 @@ CHUNK_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "https://github.com/harshit-05/
 EMBEDDER_RUNTIME_KEYS = ("device", "show_progress", "cache_folder")
 #: The same, inside the embedder's ``model_kwargs``.
 EMBEDDER_RUNTIME_MODEL_KWARGS = ("device",)
+
+#: Per embedder class, keys whose value equals what leaving them out gives: dropped, so
+#: spelling a default out never reads as another embedder (S2-6's second review). Only for
+#: classes listed here, with defaults checked against the installed library
+#: (``tests/test_manifest.py``): in langchain-community's ``HuggingFaceBgeEmbeddings``, say,
+#: ``encode_kwargs: {}`` turns normalisation off, so a blanket rule would equate two
+#: embedders that differ.
+EMBEDDER_DEFAULTS: Final[Mapping[str, Mapping[str, Any]]] = {
+    "langchain_huggingface.HuggingFaceEmbeddings": {
+        "encode_kwargs": {},
+        "query_encode_kwargs": {},
+        "multi_process": False,
+    },
+}
 
 
 class ManifestError(Exception):
@@ -71,9 +93,16 @@ def embedder_identity(spec: Mapping[str, Any]) -> str:
     embedders that differ pass for one, and queries would compare incomparable vectors.
 
     A ``model_kwargs`` left empty goes too, since ``{}`` is what leaving it out means:
-    ``model_kwargs: {device: cpu}`` and no ``model_kwargs`` are the same embedder.
+    ``model_kwargs: {device: cpu}`` and no ``model_kwargs`` are the same embedder. So does
+    any key set to its default for a class in :data:`EMBEDDER_DEFAULTS`.
     """
-    kept = {key: value for key, value in spec.items() if key not in EMBEDDER_RUNTIME_KEYS}
+    target = spec.get("_target_")
+    defaults = EMBEDDER_DEFAULTS.get(target, {}) if isinstance(target, str) else {}
+    kept = {
+        key: value
+        for key, value in spec.items()
+        if key not in EMBEDDER_RUNTIME_KEYS and not (key in defaults and value == defaults[key])
+    }
     model_kwargs = kept.pop("model_kwargs", None)
     if isinstance(model_kwargs, Mapping):
         model_kwargs = {
@@ -127,6 +156,9 @@ class Manifest(_Record):
 
     version: Literal[1] = MANIFEST_VERSION
     generation: str  # the folder it sits in: what the symlink points to when it is live
+    # The CHUNKING_VERSION that made its chunks. Absent in the first S2-6 manifests, which
+    # version 1 made: so the default is 1, never the current version.
+    chunking: int = 1
     embedder: EmbedderRecord
     splitter: SplitterRecord
     documents: dict[str, DocumentRecord]
