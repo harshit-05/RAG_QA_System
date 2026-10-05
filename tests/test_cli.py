@@ -15,7 +15,7 @@ from typing import Any
 
 import httpx
 import pytest
-from conftest import MakeConfig, StreamingFakeChatModel
+from conftest import MakeConfig, StreamingFakeChatModel, use_fakes
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
@@ -283,6 +283,35 @@ def test_no_index_yet_says_to_run_rag_ingest(
     monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(tmp_path / "empty"))
     assert cli.main(["--config", str(make_config())]) == EXIT_CANNOT_START
     assert "Run rag-ingest first" in capsys.readouterr().err
+
+
+def test_a_v02_index_says_to_re_run_rag_ingest(
+    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    # Caveat 20: every index from before S2-6 has no manifest. The real build_query_pipeline
+    # refuses it before building any model, so no Ollama is needed for this.
+    store = tmp_path / "index"
+    store.mkdir()
+    (store / "index.faiss").write_bytes(b"")
+    (store / "index.pkl").write_bytes(b"")
+    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(store))
+    assert cli.main(["--config", str(make_config())]) == EXIT_CANNOT_START
+    err = capsys.readouterr().err
+    assert "no manifest" in err
+    assert "Re-run rag-ingest" in err
+
+
+def test_an_index_from_another_embedder_says_to_rebuild(
+    fake_rag: Path, make_config: MakeConfig, capsys: Any
+) -> None:
+    def other_embedder(c: dict[str, Any]) -> None:
+        use_fakes(c)
+        c["components"]["embedders"]["fake"]["size"] = 16
+
+    assert cli.main(["--config", str(make_config(other_embedder))]) == EXIT_CANNOT_START
+    err = capsys.readouterr().err
+    assert "different embedder" in err
+    assert "rag-ingest --rebuild" in err
 
 
 def test_invalid_config_exits_2(

@@ -2,7 +2,8 @@
 
 * ADR-009: ``rag_qa.ingest`` never imports ``rag_qa.chain``, and the config layer
   (``registry``, ``schema``, ``settings``, ``config``) imports no LangChain at all.
-  Nor does ``evaluation.dataset``, which CI's model-free eval gate imports (S2-2).
+  Nor does ``evaluation.dataset``, which CI's model-free eval gate imports (S2-2), nor
+  ``manifest``, whose identity functions S2-5's fingerprint reuses there (S2-6).
   Checked at **runtime in a fresh interpreter**, replacing the grep
   ``^(from|import) .*chain``, which false-positives on ``langchain_core`` (S1-3).
   A fresh process is required: inside pytest, other tests have already loaded
@@ -50,11 +51,13 @@ def test_ingest_never_loads_the_query_chain() -> None:
         "rag_qa.settings",
         "rag_qa.config",
         "rag_qa.evaluation.dataset",
+        "rag_qa.manifest",
     ],
 )
 def test_the_config_layer_loads_no_langchain(module: str) -> None:
     # What lets config validation (and its tests) run without the ML stack. The golden
-    # set's loader is held to the same rule: the tier-2 gate runs it with no models.
+    # set's loader is held to the same rule: the tier-2 gate runs it with no models. So
+    # is the manifest, whose identities S2-5's fingerprint computes in that same gate.
     langchain = sorted(m for m in modules_loaded_by(module) if m.startswith("langchain"))
     assert langchain == []
 

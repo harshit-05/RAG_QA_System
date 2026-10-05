@@ -29,9 +29,11 @@ components:
     #
     # Two things to know before switching:
     #
-    # 1. Changing embedder invalidates an existing index. A different model means
-    #    different vectors, and a different dimension (384 vs 768) means the
-    #    index will not even load. Switch, then re-run `rag-ingest`.
+    # 1. Changing embedder invalidates an existing index: a different model means
+    #    different vectors. rag-query refuses such an index before loading any
+    #    model, and `rag-ingest` rebuilds it in full (DEC-17). Moving between an
+    #    entry's _cpu and _cuda forms keeps the index: the device is not part of
+    #    the embedder's identity.
     # 2. A `_cuda` entry needs BOTH an NVIDIA GPU and the CUDA torch variant.
     #    A plain `uv sync` installs CPU torch on purpose (DEC-1 rule 2); on a GPU
     #    host (Colab/Kaggle) install the CUDA variant instead:
@@ -138,7 +140,7 @@ pipeline:
       ".md": components.loaders.txt
     splitter: components.splitters.english_recursive
     # Swap this line to change embedding model or device, then re-run
-    # `rag-ingest` (a new embedder invalidates the existing index):
+    # `rag-ingest`: a new model rebuilds the index in full, a new device keeps it.
     #   components.embedders.minilm_cuda              GPU: the CUDA variant (see note 2 above)
     #   components.embedders.multilingual_mpnet_cpu   non-English corpora
     embedder: components.embedders.minilm_cpu

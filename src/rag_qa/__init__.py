@@ -8,8 +8,9 @@ Module layout is fixed by ARCHITECTURE.md §0.2 and §1.2:
 - ``config``      reads the config file, returns a validated ``RagConfig``
 - ``loaders``     PDF / DOCX / text loaders on ``pypdf`` and ``docx2txt``
 - ``components``  builds the embedder, splitter, LLM and loaders from a ``RagConfig``
-- ``vectorstore`` the only FAISS touchpoints; the Phase 3 store-swap seam
-- ``ingest``      corpus walk, chunking, index build
+- ``manifest``    what each index generation holds: file hashes, identities, chunk IDs
+- ``vectorstore`` the only FAISS touchpoints, generations and their flip; the Phase 3 seam
+- ``ingest``      corpus walk, diff against the manifest, incremental index update
 - ``chain``       ``build_query_pipeline(cfg) -> QueryPipeline``; ``build_rag_chain`` for invoke
 - ``answering``   ``stream_answer``: one answer as typed events, for every front end
 - ``cli``         interactive REPL over that stream

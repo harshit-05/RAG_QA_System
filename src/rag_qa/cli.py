@@ -22,7 +22,9 @@ model error — prints the error and returns to the prompt instead of ending the
 session.
 
 ``rag-query`` exit codes: **0** the session ended normally; **2** it could not start
-(configuration problem, no index yet, or a command-line usage error).
+(configuration problem, no index yet, an index this config cannot use, or a command-line
+usage error). An index it cannot use is a v0.2 one, or one built with another embedder
+(DEC-17): it says to re-run ``rag-ingest``, before loading any model.
 """
 
 import argparse
@@ -195,7 +197,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="rag-query",
         description="Ask questions about the indexed corpus in an interactive session.",
         epilog="Exit status: 0 session ended normally; 2 could not start "
-        "(configuration error, no index yet, or usage error).",
+        "(configuration error, no index yet, an index this config cannot use, or usage "
+        "error).",
     )
     parser.add_argument(
         "--config",
@@ -218,8 +221,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print("Loading vector store and models...")
     try:
-        # Raises NoIndexError before any model is built; otherwise a missing index
-        # would surface as FAISS's "could not open ... for reading".
+        # Raises NoIndexError, or its IncompatibleIndexError, before any model is built:
+        # otherwise a missing index would surface as FAISS's "could not open ... for
+        # reading", and an index from another embedder would answer with wrong chunks.
         pipeline = build_query_pipeline(config)
     except NoIndexError as e:
         print(f"Error: {e}", file=sys.stderr)

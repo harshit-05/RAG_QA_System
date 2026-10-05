@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | Done 2026-10-06 (PR #12). Verification 1–6 run and shown, and three reviews (10, 15 and 3 findings, all fixed). CI's first `eval-retrieval` run stalled with no log; its re-run reproduced tier 1 question by question. Deviation in one line: two maintainer decisions (`multi_process` kept in the identity; a full rebuild leaves failed documents out), and the reviews tightened what counts as the index (below). |
 | **Closes** | FR-2 (the incremental SHOULD), ISS-14, NFR-4 (in-place update, still on FAISS), SRS §7.3; backlog: the embedder check on open, §7.3 metadata, walk pruning |
 | **Depends on** | S2-1 (`build_retrieve` is where the query-side check lands) |
 | **Model** | fable |
@@ -175,8 +175,194 @@ gh run list --limit 2                  # check and eval-retrieval green (CI inge
 
 ## Discovered
 
-(Filled during implementation.)
+- **API facts, checked against the installed versions before any code.** The versions:
+  langchain-core 1.6.3, langchain-community 0.4.2, text-splitters 1.1.2,
+  langchain-huggingface 1.2.2, faiss-cpu 1.15.1, sentence-transformers 6.1.0 and
+  Python 3.12.13.
+  - **FAISS's add is not atomic.** A duplicate within one batch is refused before
+    `index.add` (faiss.py:308). An ID that already exists is refused by the docstore
+    (in_memory.py:26) only after `index.add` (faiss.py:313). `delete` checks for
+    missing IDs before it changes anything, and keeps the rest in insertion order.
+    Exact ties come back in insertion order.
+  - **`from_embeddings` writes the same `index.faiss` as `from_documents`** for the
+    same vectors.
+  - **`SentenceTransformer.encode` sorts each call's inputs by length before
+    batching** (model.py:925). So the full rebuild embeds every chunk in one call, in
+    walk order, as v0.2 did.
+  - **The flip:** `os.replace` swaps one symlink for another, and refuses with EISDIR
+    over a real directory. `fsync` works on a read-only file descriptor and on a
+    directory.
+  - **`flock` refuses a second open in the same process and a second thread;
+    `lockf` does not.** A negative control swapped `flock` for `lockf` in-process,
+    and the thread test then failed.
+  - **`Path.walk` honours in-place pruning.** The root logger has no handlers once
+    the stack is loaded.
+- **`multi_process` can change the vectors** (huggingface.py:125–127):
+  `encode_multi_process(texts, pool)` is called without `encode_kwargs`. That makes the
+  story's exclusion unsafe; decided below.
+- **The config resolved the store's symlink at load.** `Paths.anchor` called
+  `.resolve()`, so once `db_faiss` was a link, every caller was handed the generation
+  folder. The query side read it as a v0.2 directory, and a second ingest would have
+  "migrated" the live generation. The existing suite caught it the first time it met a
+  link. Now the last part of `vector_store` is never resolved, and the folders above
+  it are, as before.
+- **A shared test fixture leaked between tests.** `use_fake_embedder` assigned
+  conftest's module-level `FAKE_EMBEDDER` dict itself, so an edit to `size` changed it
+  for every test after it. It now hands each config a copy.
+- **Tier 1 did not move.** Recorded before any code on the real v0.2 index, and after
+  each full S2-6 rebuild (twice, before and after the reviews):
+  - 0.950, 0.7958 and 0.8583, identical question by question, retrieved lists
+    included;
+  - `index.faiss` byte-identical to v0.2's;
+  - still byte-identical after a file was added and then deleted, since `delete`
+    compacts in order.
+- **Timings on this CPU, with HF offline:**
+  - a full ingest of the real corpus: 113–155 s;
+  - a run that changes nothing: under 1 s, including opening the live index;
+  - one file added or removed: a few seconds.
+- **Carry-over 3, CI.** `$RUNNER_TEMP/index` becomes a symlink beside `index.gen-*` and
+  `index.lock`. The cache steps and the warm-up never touch it, and the eval step follows
+  the link, so `ci.yml` is unchanged. Verification 2 runs exactly this shape locally;
+  Verification 6 runs it on the runner.
+- **For S2-7:**
+  - Its ingest job calls `ingest(config, rebuild=…)`. `IngestionRunningError` maps to
+    the 409, and `FileExistsError` is a misconfigured store path.
+  - `IncompatibleIndexError` subclasses `NoIndexError`, and
+    `build_query_pipeline(require_index=False)` turns either into `retrieve=None`.
+  - `check_index` returns the generation it checked; the API compares that with
+    `generation_path` to reload.
+  - The ingest log is the `rag_qa.ingest` logger, path-free. The report's new fields
+    are `found`, `added`, `changed`, `removed`, `unchanged`, `kept`, `rebuild` and
+    `published`.
+  - **Retry a failed open once before reporting it** (third review). Only the live and
+    the previous generation are kept. If two flips land between `check_index` and the
+    open, the checked generation is gone, and the refusal says "re-run rag-ingest", when
+    checking again would succeed. On this host the gap is milliseconds; an API that
+    reloads while ingest jobs run back to back widens it.
+- **For S2-5:** the tier-2 fingerprint hashes what changes answers, and
+  `CHUNKING_VERSION` does (third review). Include it beside the identities.
+- **For S2-8:**
+  - pypdf's own warnings still print above a failed PDF ("invalid pdf header"), seen
+    in Verification 3.
+  - The summary prints more zero-count lines now.
+  - "1 pages/sections" for a text file.
+- **For S2-9:** README's status line still lists incremental ingestion as planned. §2.8
+  should fold in the refinements under Deviation.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **Model:** Opus 5.5 at max effort, not Fable, which the story names. Fable is
+  unavailable from 2026-10-04 (CLAUDE.md, "Model routing"). The two reviews ran as
+  planned.
+- **Maintainer decisions (2026-10-05), recorded on DEC-17 in ARCHITECTURE.md:**
+  - **`multi_process` stays in the embedder identity.** The exclusions are `device`,
+    `model_kwargs.device`, `show_progress` and `cache_folder`.
+  - **A full rebuild leaves failed documents out** ("rebuilt without them"). In an
+    update they keep their chunks.
+- **Refinements the design left open:**
+  - **Generation stamps carry microseconds**, and a new stamp always sorts after the
+    live one's.
+  - **The manifest is checked against its index before anything is embedded.** That
+    is the case in which a `delete` would report missing IDs.
+  - **`IncompatibleIndexError` subclasses `NoIndexError`.**
+  - **What else is kept, and what publishes nothing:**
+    - documents under a folder that cannot be listed keep their chunks;
+    - a run that changes nothing publishes nothing;
+    - an empty corpus publishes nothing (v0.2's rule).
+  - **Writing a generation never embeds.** A placeholder stands in for the embedder,
+    so a run that only deletes never loads the model.
+- **Outside the Scope list, each needed by the above:**
+  - `schema.py`: the store symlink is no longer resolved at load.
+  - `evaluation/retrieval.py`: checks before building the embedder.
+  - `chain.build_rag_chain`: checks first.
+  - The `cli.py` docstring and epilog.
+  - Two `config.yaml` comments that became false.
+  - README lines beyond the two required: the Quickstart exit codes, the GPU section,
+    Configuration and the layout.
+  - The module map in `rag_qa/__init__.py`, the conftest copy, and dated
+    ARCHITECTURE.md notes on DEC-13 and DEC-17.
+- **First review (2026-10-05): 10 findings, fixed:**
+  - a damaged index (files missing) was reported up to date;
+  - `require_index=False` could still raise;
+  - the clock could reorder generations;
+  - an empty `model_kwargs` is now dropped from the identity, which changed
+    `minilm_cpu`'s, so every S2-6 index built before the fix rebuilt itself once;
+  - `normpath` folded `..` after a symlinked folder;
+  - "Updating" was logged before a rebuild;
+  - the live index was loaded twice, and the model even for deletes;
+  - one shared usable-index rule (`vectorstore.live_index`);
+  - one missing-corpus check.
+
+  The empty-corpus guard kept its behaviour; only its wording was corrected.
+- **Second review (2026-10-05): 15 findings, fixed:**
+  - **Two could lose data.**
+    - Any real folder at the store path was renamed aside as "v0.2", which could be
+      the corpus. Now only a folder holding exactly `index.faiss` and `index.pkl`
+      counts, and anything else in the way exits 2.
+    - Recovery compared the raw link text with folder names, so a link written as
+      `./name`, absolute or with a trailing slash deleted the live and previous
+      generations. The link is now read however it is written.
+  - **Also fixed:**
+    - a user's own symlink at the path was overwritten; now refused;
+    - a corrupt pickle was reported up to date, and crashed queries. Every update now
+      opens the live index, and the query side refuses instead of crashing;
+    - paths outside the two roots leaked, such as a pickled module's file;
+    - one non-UTF-8 file name aborted the run; now that file fails on its own;
+    - a model whose vectors changed size under the same spec failed on a bare assert.
+      A dimension probe now triggers a full rebuild;
+    - `build_rag_chain`, and the dimension refusal, came after the LLM;
+    - folders named `~$…` were pruned;
+    - an ID listed twice passed the consistency check;
+    - "Rebuilt the index in full" was printed when nothing was published;
+    - new failed files were said to have kept chunks;
+    - the parent was not fsynced before the flip;
+    - renaming a loader entry left stale references in the manifest;
+    - the crash test's query check could not fail.
+
+  Each has a regression test.
+- **Third review (2026-10-06, a second reviewer on the risky story): 3 findings, fixed.**
+  - **Chunking code was not versioned.** The identities see the config only. A change to
+    the loaders' code or to `ingest`'s metadata, or a library upgrade, would have left
+    every unchanged file's old chunks in place for good.
+    - `manifest.CHUNKING_VERSION` is now the manifest's `chunking`, and a different one
+      rebuilds in full.
+    - A manifest without it reads as 1, so S2-6's indexes stay.
+    - A test pins the sample corpus's chunks to it, and says to bump when they change.
+  - **A default spelled out was another embedder.** For `HuggingFaceEmbeddings`,
+    `encode_kwargs: {}`, `query_encode_kwargs: {}` and `multi_process: false` are now
+    dropped from the identity.
+    - Only for classes listed in `EMBEDDER_DEFAULTS`, which a test checks against the
+      installed library. A blanket "drop empty mappings" rule would be unsafe:
+      `HuggingFaceBgeEmbeddings` defaults to normalising, and `{}` there turns it off.
+    - `minilm_cpu`'s identity is unchanged.
+  - **`rag-query` sent the user to `rag-ingest` for things it refuses.** Examples are a
+    file, a foreign folder, or a generation folder named directly. `check_index` now
+    checks for these first and says to point the path at the index. A generation folder
+    is now named as such, on both sides.
+  - **Gates after the fixes:** 478 passed, 4 xfailed, 99% coverage. On the real index,
+    `rag-ingest` reported "nothing changed" (1 s, exit 0), and the query side accepted the
+    live generation.
+- **The verification commands:**
+  - Step 0 recorded the tier-1 baseline on the real v0.2 index before any code.
+  - Verifications 2–5 were run once, then again after the reviews, which changed the
+    identity. The second time, the real index refused queries as "minilm_cpu as it was
+    then", and `rag-ingest` rebuilt it by itself.
+  - The v0.2 refusal was shown the second time on a copy of the kept
+    `db_faiss.v02-*`, because the real index had been migrated in the first pass.
+  - Verification 5 ran as one command: the long run in the foreground, the second
+    `rag-ingest` forked to start 20 s in.
+  - One shown exit code was wrong and was corrected: inside `time ( … )`, zsh's
+    `pipestatus` reports the subshell.
+- **Verification 6, CI on PR #12 (run 37282757727).**
+  - **The first attempt stalled.** `check` passed, but `eval-retrieval` stalled in "Ingest
+    the corpus" until the job's 20-minute limit. GitHub kept no log at all
+    (`BlobNotFound`); a step that only hangs still uploads its log on timeout.
+  - **Not reproduced here.** A fresh clone of the pushed commit, with its own synced
+    environment and CI's exact command and variables, ingested in 122–136 s, peaking at
+    about 950 MB with 5 KB of log. The model cache had hit, and `check` ran at its usual
+    speed.
+  - **Re-run (maintainer's choice): green.** Ingest took 2m07s, everything ran offline on
+    an exact cache hit, and the runner's tier-1 table matched this host's question by
+    question (0.950, 0.796, 0.858).
+  - **Read as a runner fault, not a code fault.** If it recurs, the next step is a
+    step-level timeout and a faulthandler dump on the ingest step (backlog).

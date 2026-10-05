@@ -21,8 +21,9 @@ from rag_qa.ingest import (
     EXIT_RUN_FAILED,
     IngestReport,
     discover_files,
-    load_documents,
+    ingest,
     main,
+    scan_corpus,
 )
 from rag_qa.loaders import PdfLoader
 from rag_qa.vectorstore import store_exists
@@ -140,15 +141,17 @@ def test_config_flag_beats_rag_config(
 
 
 def test_ctrl_c_is_not_swallowed_as_a_document_failure(
-    sample_corpus: Path, make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
+    sample_corpus: Path, make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def interrupted(self: PdfLoader) -> list:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(PdfLoader, "load", interrupted)
     monkeypatch.setenv("RAG_DATA_PATH", str(sample_corpus))
+    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(tmp_path / "index"))
     with pytest.raises(KeyboardInterrupt):
-        load_documents(load_config(make_config()), IngestReport())
+        ingest(load_config(make_config(use_fake_embedder)))
+    assert not store_exists(tmp_path / "index")  # and nothing was published
 
 
 # --- what the walk passes over is reported, not silent ----------------------------------
@@ -240,11 +243,11 @@ def test_the_summary_accounts_for_everything_not_indexed(
     (sample_corpus / "link.md").symlink_to(sample_corpus / "README.md")
     monkeypatch.setenv("RAG_DATA_PATH", str(sample_corpus))
     report = IngestReport()
-    load_documents(load_config(make_config()), report)
+    scan_corpus(load_config(make_config()), report)
 
     assert report.skipped == ["diagram.png"]
     assert report.symlinks == ["link.md"]
-    assert report.ignored == 3
+    assert report.ignored == 3  # a checkpoint folder (counted once), a hidden file, a lock file
     summary = report.summary()
     assert "Skipped 1 symlink(s) (not followed)." in summary
-    assert "Ignored 3 hidden or lock file(s)." in summary
+    assert "Ignored 3 hidden or lock file(s) and folder(s)." in summary

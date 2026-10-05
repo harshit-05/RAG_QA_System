@@ -17,6 +17,7 @@ from conftest import (
     RERANK_TOP_N,
     MakeConfig,
     StubCrossEncoder,
+    use_fakes,
     use_fakes_and_reranker,
 )
 from langchain_core.documents import Document
@@ -336,6 +337,27 @@ def test_no_index_exits_2_and_says_to_ingest(
     monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "no-index"))
     assert run(evals) == EXIT_CANNOT_RUN
     assert "Run rag-ingest first" in capsys.readouterr().err
+
+
+def test_an_index_from_another_embedder_exits_2_before_the_embedder_is_built(
+    evals: Path, make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    # S2-6: refused on the manifest alone. Loading the configured embedder first would
+    # cost a model download in CI, for an index it cannot use anyway.
+    def no_embedder(config: Any) -> None:
+        raise AssertionError("tier 1 built the embedder before checking the index")
+
+    monkeypatch.setattr("rag_qa.evaluation.retrieval.build_embedder", no_embedder)
+
+    def other_embedder(c: dict[str, Any]) -> None:
+        use_fakes(c)
+        c["components"]["embedders"]["fake"]["size"] = 16
+
+    config = make_config(other_embedder)  # rewrites evals' config, beside eval/
+    assert run(config) == EXIT_CANNOT_RUN
+    err = capsys.readouterr().err
+    assert "different embedder" in err
+    assert "Traceback" not in err
 
 
 def test_an_error_while_retrieving_exits_2_with_its_traceback(

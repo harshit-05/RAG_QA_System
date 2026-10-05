@@ -270,10 +270,22 @@ class Paths(_Strict):
 
     Without a :class:`PathContext` (programmatic construction) values are taken as
     given.
+
+    Absolute means symlinks resolved, except in the last part of ``vector_store``: from
+    S2-6 that path is a symlink to the live index generation (DEC-17). Resolved at load,
+    it would freeze every caller on one generation, and ingestion would take that real
+    directory for a v0.2 index.
     """
 
     data: Path = Path(PATH_DEFAULTS["data"])
     vector_store: Path = Path(PATH_DEFAULTS["vector_store"])
+
+    @staticmethod
+    def _absolute(key: str, path: Path) -> Path:
+        # resolve() follows links before applying "..", as the parent must here too.
+        if key != "vector_store" or path.name in ("", ".", ".."):
+            return path.resolve()
+        return path.parent.resolve() / path.name
 
     @model_validator(mode="before")
     @classmethod
@@ -298,7 +310,7 @@ class Paths(_Strict):
             env_var = context.env_vars[key]
             override = context.overrides.get(key)
             if override:
-                resolved[key] = (Path.cwd() / Path(override).expanduser()).resolve()
+                resolved[key] = cls._absolute(key, Path.cwd() / Path(override).expanduser())
                 continue
 
             raw = data.get(key, default)
@@ -319,7 +331,7 @@ class Paths(_Strict):
                     f"{env_var} for a machine-specific location"
                 )
                 continue
-            resolved[key] = (context.base_dir / path).resolve()
+            resolved[key] = cls._absolute(key, context.base_dir / path)
 
         if problems:
             raise ValueError("\n".join(problems))

@@ -346,6 +346,13 @@ the choice: a document that fails keeps its previously indexed chunks, so the
 all indexed; 1 a document or folder unreadable, nothing indexed, or an unexpected
 error (traceback); 2 could not start.
 
+_Superseded in part by DEC-17 (S2-6, 2026-10-05)._ In an update, a document or folder that
+cannot be read keeps its previous chunks and manifest entry, and exit 1 reads "The index
+was updated; the failed documents kept their previous chunks". A full rebuild still leaves
+failed documents out and says "rebuilt without them" (maintainer, 2026-10-05). Its old
+chunks are unusable, or were asked away with `--rebuild`. Exit 2 also covers another
+ingestion holding the lock.
+
 ### 1.2 Layout at Phase 1 exit
 
 ```text
@@ -1031,12 +1038,35 @@ Python, with no LangChain.
   - the manifest version is unknown;
   - the embedder identity or the splitter spec changed;
   - `rag-ingest --rebuild` asks for it.
+
+  _S2-6's third review (2026-10-06): the code that makes chunks is versioned too._ The
+  identities see the config only. A change to `rag_qa.loaders` or to the metadata
+  `ingest` adds, or a pypdf, docx2txt or text-splitters upgrade that changes their output,
+  would otherwise leave every unchanged file's old chunks in place for good. So
+  `manifest.CHUNKING_VERSION` is recorded as the manifest's `chunking`, and a different
+  one rebuilds in full. **Bump it whenever the same file and config would make other
+  chunks.** A test pins the sample corpus's chunks to it, and says to bump when they
+  change. A manifest without the key reads as version 1, so the indexes S2-6 built stay
+  as they are. The query side does not check it: old chunks still answer.
 - **The embedder identity is its spec minus the keys that do not change the vectors**:
   `device`, `model_kwargs.device`, `show_progress`, `cache_folder` and `multi_process`.
   - So `minilm_cuda` on Colab and `minilm_cpu` here count as the same embedder, and the
     DEC-12 offload path keeps working.
   - A change to `model_name` or `encode_kwargs` is a different embedder.
   - The dimension is recorded too, as a backstop.
+  - _S2-6 (2026-10-05, maintainer): `multi_process` stays **in** the identity._
+    langchain-huggingface 1.2.2's multi-process path calls `encode_multi_process(texts,
+    pool)` without `encode_kwargs`. So `normalize_embeddings`, a prompt and the precision
+    are dropped, and switching it can change the vectors. The exclusions are `device`,
+    `model_kwargs.device`, `show_progress` and `cache_folder`. A `model_kwargs` left
+    empty is dropped as well, since `{}` is what leaving it out means (S2-6's first
+    review).
+  - _S2-6's third review (2026-10-06): a default spelled out is the same embedder._ For
+    `HuggingFaceEmbeddings`, `encode_kwargs: {}`, `query_encode_kwargs: {}` and
+    `multi_process: false` are dropped. That holds only for classes listed in
+    `manifest.EMBEDDER_DEFAULTS`, whose defaults a test checks against the installed
+    library. A blanket rule would be unsafe: in `HuggingFaceBgeEmbeddings`,
+    `encode_kwargs: {}` turns normalisation off. No existing identity changed.
 - **Chunk IDs are `uuid5(namespace, f"{relative_path}:{sha256}:{index}")`.**
   - They are deterministic, so an unchanged document keeps its IDs.
   - The path is part of the key because two files with identical bytes (a copy in another
@@ -1066,6 +1096,30 @@ Python, with no LangChain.
 
   An unreferenced _newer_ generation is a crash before the flip, so it is incomplete by
   definition and goes too.
+
+  _S2-6 (2026-10-05): the stamp carries microseconds_, as in
+  `db_faiss.gen-20261005T120000.123456Z-1a2b3c4d`. Recovery orders generations by name,
+  and a second cannot order runs made within one. A new stamp also always sorts after the
+  live generation's, even if the clock has stepped back (S2-6's first review).
+
+  _S2-6's second review (2026-10-05) tightened what counts as ours:_
+  - **A real folder is a v0.2 index only if it holds exactly `index.faiss` and
+    `index.pkl`.** Before, any folder at the path was renamed aside, which with a mis-set
+    path could be the corpus.
+  - **Anything else at the path makes `rag-ingest` exit 2:** a file, another folder, or a
+    link to anything but one of the store's generations.
+  - **The link is read however it is written**, absolute, `./` or with a trailing slash,
+    so a hand-made rollback never reads as "nothing is live" to recovery.
+  - **Every update opens the live generation**, one that changes nothing included. A
+    corrupt index is rebuilt rather than reported up to date. This needs no model: writing
+    a generation never embeds.
+  - **An update probes the embedder's dimension before preparing anything**, and a
+    changed one rebuilds in full.
+
+  _S2-6's third review (2026-10-06):_ a generation folder named as the index path, or a
+  copy of one, is in the way too, and is named as such. The query side checks for anything
+  in the way first, and says to point the path at the index, not to re-run `rag-ingest`,
+  which would refuse it.
 
   - **Migration from v0.2.** If `db_faiss` is a real directory, the run is a full
     rebuild anyway (no manifest). It builds a generation, renames the old directory to
@@ -1434,6 +1488,7 @@ the front end, which renders them.
 {
   "version": 1,
   "generation": "db_faiss.gen-20261002T120000Z-1a2b3c4d",
+  "chunking": 1,
   "embedder": {"ref": "components.embedders.minilm_cpu", "identity": "<sha256>", "dimension": 384},
   "splitter": {"ref": "components.splitters.english_recursive", "identity": "<sha256>"},
   "documents": {
