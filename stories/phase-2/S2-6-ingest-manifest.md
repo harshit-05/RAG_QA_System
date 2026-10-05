@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done 2026-10-06 (PR #12). Verification 1–6 run and shown, and two reviews (10 and 15 findings, all fixed). CI's first `eval-retrieval` run stalled with no log; its re-run reproduced tier 1 question by question. Deviation in one line: two maintainer decisions (`multi_process` kept in the identity; a full rebuild leaves failed documents out), and the reviews tightened what counts as the index (below). |
+| **Status** | Done 2026-10-06 (PR #12). Verification 1–6 run and shown, and three reviews (10, 15 and 3 findings, all fixed). CI's first `eval-retrieval` run stalled with no log; its re-run reproduced tier 1 question by question. Deviation in one line: two maintainer decisions (`multi_process` kept in the identity; a full rebuild leaves failed documents out), and the reviews tightened what counts as the index (below). |
 | **Closes** | FR-2 (the incremental SHOULD), ISS-14, NFR-4 (in-place update, still on FAISS), SRS §7.3; backlog: the embedder check on open, §7.3 metadata, walk pruning |
 | **Depends on** | S2-1 (`build_retrieve` is where the query-side check lands) |
 | **Model** | fable |
@@ -234,6 +234,13 @@ gh run list --limit 2                  # check and eval-retrieval green (CI inge
   - The ingest log is the `rag_qa.ingest` logger, path-free. The report's new fields
     are `found`, `added`, `changed`, `removed`, `unchanged`, `kept`, `rebuild` and
     `published`.
+  - **Retry a failed open once before reporting it** (third review). Only the live and
+    the previous generation are kept. If two flips land between `check_index` and the
+    open, the checked generation is gone, and the refusal says "re-run rag-ingest", when
+    checking again would succeed. On this host the gap is milliseconds; an API that
+    reloads while ingest jobs run back to back widens it.
+- **For S2-5:** the tier-2 fingerprint hashes what changes answers, and
+  `CHUNKING_VERSION` does (third review). Include it beside the identities.
 - **For S2-8:**
   - pypdf's own warnings still print above a failed PDF ("invalid pdf header"), seen
     in Verification 3.
@@ -313,6 +320,28 @@ gh run list --limit 2                  # check and eval-retrieval green (CI inge
     - the crash test's query check could not fail.
 
   Each has a regression test.
+- **Third review (2026-10-06, a second reviewer on the risky story): 3 findings, fixed.**
+  - **Chunking code was not versioned.** The identities see the config only. A change to
+    the loaders' code or to `ingest`'s metadata, or a library upgrade, would have left
+    every unchanged file's old chunks in place for good.
+    - `manifest.CHUNKING_VERSION` is now the manifest's `chunking`, and a different one
+      rebuilds in full.
+    - A manifest without it reads as 1, so S2-6's indexes stay.
+    - A test pins the sample corpus's chunks to it, and says to bump when they change.
+  - **A default spelled out was another embedder.** For `HuggingFaceEmbeddings`,
+    `encode_kwargs: {}`, `query_encode_kwargs: {}` and `multi_process: false` are now
+    dropped from the identity.
+    - Only for classes listed in `EMBEDDER_DEFAULTS`, which a test checks against the
+      installed library. A blanket "drop empty mappings" rule would be unsafe:
+      `HuggingFaceBgeEmbeddings` defaults to normalising, and `{}` there turns it off.
+    - `minilm_cpu`'s identity is unchanged.
+  - **`rag-query` sent the user to `rag-ingest` for things it refuses.** Examples are a
+    file, a foreign folder, or a generation folder named directly. `check_index` now
+    checks for these first and says to point the path at the index. A generation folder
+    is now named as such, on both sides.
+  - **Gates after the fixes:** 478 passed, 4 xfailed, 99% coverage. On the real index,
+    `rag-ingest` reported "nothing changed" (1 s, exit 0), and the query side accepted the
+    live generation.
 - **The verification commands:**
   - Step 0 recorded the tier-1 baseline on the real v0.2 index before any code.
   - Verifications 2–5 were run once, then again after the reviews, which changed the

@@ -29,6 +29,13 @@ an atomic symlink flip between generation folders, under a one-writer `flock` (D
 - **Two reviews, 10 and 15 findings, all fixed.** Two of them could lose data: any
   folder at the store path was renamed aside, and recovery misread a link written as
   an absolute path. Detail in the story file.
+- **A third review (2026-10-06, second reviewer): 3 findings, fixed on PR #12.**
+  - Code that makes chunks is now versioned (`CHUNKING_VERSION`, pinned by a test).
+  - A default spelled out in a `HuggingFaceEmbeddings` spec no longer counts as another
+    embedder.
+  - `rag-query` no longer says "re-run rag-ingest" for something `rag-ingest` refuses.
+
+  No existing index rebuilds: the real one still reads "nothing changed".
 
 **S2-4 is done** (2026-10-05, PR #11). Our own cross-encoder reranker is in, and tier 1
 switched it **on**: 20 candidates reranked to 5.
