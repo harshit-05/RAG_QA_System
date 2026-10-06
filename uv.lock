@@ -1830,8 +1830,8 @@ dependencies = [
 
 [package.optional-dependencies]
 eval = [
-    { name = "datasets" },
-    { name = "pandas" },
+    { name = "instructor" },
+    { name = "openai" },
     { name = "ragas" },
 ]
 
@@ -1854,15 +1854,15 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "datasets", marker = "extra == 'eval'", specifier = ">=3" },
     { name = "docx2txt", specifier = ">=0.9" },
     { name = "faiss-cpu", specifier = ">=1.15" },
+    { name = "instructor", marker = "extra == 'eval'", specifier = ">=1.17" },
     { name = "langchain-community", specifier = ">=0.4,<0.5" },
     { name = "langchain-core", specifier = ">=1,<2" },
     { name = "langchain-huggingface", specifier = ">=1,<2" },
     { name = "langchain-ollama", specifier = ">=1,<2" },
     { name = "langchain-text-splitters", specifier = ">=1,<2" },
-    { name = "pandas", marker = "extra == 'eval'", specifier = ">=2.2" },
+    { name = "openai", marker = "extra == 'eval'", specifier = ">=1" },
     { name = "pydantic", specifier = ">=2.11" },
     { name = "pydantic-settings", specifier = ">=2.10" },
     { name = "pypdf", specifier = ">=6" },

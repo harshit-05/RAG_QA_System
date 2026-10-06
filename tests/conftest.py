@@ -8,8 +8,11 @@ import asyncio
 import copy
 import json
 import os
+import threading
 import zipfile
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
+from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -332,3 +335,93 @@ def fake_rag(
     path = make_config(use_fakes)
     ingest(load_config(path))
     return path
+
+
+# --- a fake Ollama, for the tier-2 commands (S2-5) ----------------------------------------
+
+JUDGE_DIGEST = "a" * 64
+BASE_DIGEST = "b" * 64
+MISTRAL_DIGEST = "c" * 64
+
+
+@dataclass
+class FakeOllama:
+    """Ollama's native API as the tier-2 commands read it: ``/api/tags``, ``/api/show`` and
+    ``/api/ps``, served on a free local port so no test reaches the real daemon. Tests
+    change its tables to make a judge go missing, a context differ or a digest move."""
+
+    url: str = ""
+    digests: dict[str, str] = field(
+        default_factory=lambda: {
+            "rag-judge:latest": JUDGE_DIGEST,
+            "gemma2:9b": BASE_DIGEST,
+            "mistral:latest": MISTRAL_DIGEST,
+        }
+    )
+    #: /api/show's ``parameters`` per model, as Ollama formats them.
+    parameters: dict[str, str] = field(
+        default_factory=lambda: {
+            "rag-judge:latest": "\n".join(
+                f"{name:<30} {value}"
+                for name, value in [
+                    ("num_ctx", "8192"), ("num_predict", "2048"), ("seed", "42"),
+                    ("stop", '"<end>"'), ("temperature", "0"),
+                ]
+            )
+        }
+    )
+    #: /api/show's ``details.parent_model``: what each created model was built FROM.
+    parents: dict[str, str] = field(default_factory=lambda: {"rag-judge:latest": "gemma2:9b"})
+    loaded: list[dict[str, Any]] = field(default_factory=list)  # /api/ps
+    requests: list[str] = field(default_factory=list)
+
+
+def _tag(name: str) -> str:
+    return name if ":" in name else f"{name}:latest"
+
+
+@pytest.fixture
+def fake_ollama() -> Iterator[FakeOllama]:
+    state = FakeOllama()
+
+    class Handler(BaseHTTPRequestHandler):
+        def _reply(self, status: int, body: Any) -> None:
+            data = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:
+            state.requests.append(self.path)
+            if self.path == "/api/tags":
+                models = [{"name": n, "model": n, "digest": d} for n, d in state.digests.items()]
+                self._reply(200, {"models": models})
+            elif self.path == "/api/ps":
+                self._reply(200, {"models": state.loaded})
+            else:
+                self._reply(404, {"error": "not found"})
+
+        def do_POST(self) -> None:
+            state.requests.append(self.path)
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            name = _tag(body.get("model", ""))
+            if self.path == "/api/show" and name in state.parameters:
+                details = {"parent_model": state.parents.get(name, "")}
+                self._reply(200, {"parameters": state.parameters[name], "details": details})
+            else:
+                self._reply(404, {"error": f"model '{name}' not found"})
+
+        def log_message(self, *args: Any) -> None:  # keep the test output quiet
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    state.url = f"http://127.0.0.1:{server.server_address[1]}"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield state
+    finally:
+        server.shutdown()
+        server.server_close()
