@@ -176,3 +176,124 @@ def test_without_a_path_context_paths_are_taken_as_given(config: RagConfig) -> N
     # Programmatic construction: no config file, so nothing to anchor to.
     assert str(config.paths.data) == "corpus"
     assert str(config.paths.vector_store) == "vectorstore/db_faiss"
+
+
+# --- the prompt's placeholders (S2-5; the FR-8 follow-up found in S1-1) ------------------
+
+
+def with_prompt(system: str, human: str) -> dict[str, Any]:
+    data = copy.deepcopy(MINIMAL)
+    data["pipeline"]["query"]["prompt"] = {"system": system, "human": human}
+    return data
+
+
+@pytest.mark.parametrize(
+    ("system", "human", "problem"),
+    [
+        pytest.param("Be precise.", "{question}", "it has no {context}", id="no context"),
+        pytest.param("Be precise.", "{context}", "it has no {question}", id="no question"),
+        pytest.param(
+            "Use {context}.", "{context}\n{question}", "system must not contain {context}",
+            id="context in system",
+        ),
+        pytest.param(
+            "Be precise.", "{context} {question} {x}", r"unknown placeholder\(s\) \{x\}",
+            id="a stray placeholder",
+        ),
+        pytest.param(
+            "Answer as {persona}.", "{context} {question}", r"\{persona\}",
+            id="a stray placeholder in system",
+        ),
+        pytest.param(
+            "Be precise.", "{} {context} {question}", r"unknown placeholder\(s\) \{\}",
+            id="positional",
+        ),
+        pytest.param(
+            "Be precise.", "{context.text} {question}", r"\{context.text\}", id="attribute access"
+        ),
+        pytest.param(
+            "Be precise.", "{context:{width}} {question}", r"\{width\}", id="nested in a spec"
+        ),
+        pytest.param(
+            "Be precise.", "{context} {question} }", "human: Single '}'", id="unbalanced brace"
+        ),
+    ],
+)
+def test_prompt_placeholders_are_checked_at_load(system: str, human: str, problem: str) -> None:
+    with pytest.raises(ValidationError, match=problem):
+        RagConfig.model_validate(with_prompt(system, human))
+
+
+def test_escaped_braces_are_literal_text_and_load() -> None:
+    data = with_prompt('Reply as JSON, e.g. {{"answer": "..."}}.', "{context}\n{{x}}\n{question}")
+    assert RagConfig.model_validate(data).pipeline.query.prompt.human.count("{{x}}") == 1
+
+
+def test_question_may_also_appear_in_system() -> None:
+    # Only {context} is kept out of the system turn; the question is the user's own text.
+    RagConfig.model_validate(with_prompt("Answer: {question}", "{context}\n{question}"))
+
+
+# --- the evaluation section (S2-5) ---------------------------------------------------------
+
+EVALUATION: dict[str, Any] = {
+    "decline_marker": "could not find the answer",
+    "judge": {
+        "model": "rag-judge",
+        "modelfile": "judge.Modelfile",
+        "base_url": "http://localhost:11434/v1",
+        "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+        "timeout_s": 2400,
+    },
+}
+REFUSAL = 'Answer from the context. Otherwise say "I could not find the answer."'
+
+
+def with_evaluation(system: str = REFUSAL, **edits: Any) -> dict[str, Any]:
+    data = with_prompt(system, "{context}\n{question}")
+    evaluation = copy.deepcopy(EVALUATION)
+    for key, value in edits.items():
+        target = evaluation["judge"] if key in evaluation["judge"] else evaluation
+        target[key] = value
+    data["evaluation"] = evaluation
+    return data
+
+
+def test_evaluation_is_optional(config: RagConfig) -> None:
+    assert config.evaluation is None
+
+
+def test_the_evaluation_section_loads() -> None:
+    evaluation = RagConfig.model_validate(with_evaluation()).evaluation
+    assert evaluation is not None
+    assert evaluation.judge.modelfile == "judge.Modelfile"
+
+
+def test_the_marker_is_matched_in_any_case() -> None:
+    RagConfig.model_validate(with_evaluation(system=REFUSAL.upper()))
+
+
+def test_a_marker_missing_from_the_system_prompt_is_refused() -> None:
+    with pytest.raises(ValidationError, match="does not appear in pipeline.query.prompt.system"):
+        RagConfig.model_validate(with_evaluation(system="Be precise."))
+
+
+@pytest.mark.parametrize("marker", ["", "   ", " could not find the answer"])
+def test_a_blank_or_padded_marker_is_refused(marker: str) -> None:
+    with pytest.raises(ValidationError, match="non-empty phrase"):
+        RagConfig.model_validate(with_evaluation(decline_marker=marker))
+
+
+@pytest.mark.parametrize(
+    "modelfile", ["/etc/judge.Modelfile", "../judge.Modelfile", "~/judge.Modelfile", "", "a\\b"]
+)
+def test_the_modelfile_must_be_a_file_in_the_eval_folder(modelfile: str) -> None:
+    with pytest.raises(ValidationError, match="relative to the eval folder"):
+        RagConfig.model_validate(with_evaluation(modelfile=modelfile))
+
+
+def test_the_judge_section_is_closed() -> None:
+    data = with_evaluation()
+    data["evaluation"]["judge"]["num_ctx"] = 8192
+    with pytest.raises(ValidationError, match="unknown key 'num_ctx'"):
+        RagConfig.model_validate(data)

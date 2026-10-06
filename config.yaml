@@ -189,3 +189,25 @@ pipeline:
 paths:
   data: corpus
   vector_store: vectorstore/db_faiss
+
+# ----------------- 4. Evaluation -----------------
+# Read by rag-eval only: tier 2 of the quality bar (DEC-15, S2-5). rag-ingest, rag-query
+# and the API ignore it.
+evaluation:
+  # The core of the refusal sentence the system prompt asks for. An answer to a question
+  # the corpus cannot answer counts as a decline when it contains this (in any case) and
+  # none of that golden record's must_not_contain words. It must appear in
+  # pipeline.query.prompt.system: edit the refusal sentence, and the config says so.
+  decline_marker: "could not find the answer"
+  judge:
+    # Build it once per machine: ollama create rag-judge -f eval/judge.Modelfile
+    # The Modelfile sets the judge's context (8k) and sampling; Ollama's OpenAI endpoint
+    # cannot set the context per request, and its 4k default would truncate silently.
+    model: "rag-judge"
+    modelfile: "judge.Modelfile"                # in the eval folder, beside the golden set
+    base_url: "http://localhost:11434/v1"       # Ollama's OpenAI-compatible endpoint
+    # What answer relevancy compares questions with, on CPU: the ingestion embedder's
+    # model, so it is usually cached already (else one ~90 MB download).
+    embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+    # Per judge call. S2-5's spike measured up to 768 s for one call on this CPU.
+    timeout_s: 2400
