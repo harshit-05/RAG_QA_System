@@ -940,6 +940,59 @@ numbers become thresholds.
 - S2-5's spike settles the exact judge wiring for Ollama: the instructor mode, and the
   embedder that answer relevancy needs.
 
+_S2-5 (2026-10-06/07), on Opus 5.5 in place of Fable. The spike and the build settled
+these; the story file has the recipe and the measurements._
+
+- **ragas 0.4.3 resolves with the stack but does not import.** `ragas/llms/base.py`
+  imports `langchain_community.chat_models.vertexai`, which langchain-community 0.4.2
+  (the sunset release, our pin) removed (vibrantlabsai/ragas#2741, open, unreleased).
+  ragas uses the class only in an `isinstance()` list on its legacy LangChain path, which
+  the judge's `InstructorLLM` never takes. **Maintainer's call: a narrow import shim** in
+  `ragas_scoring.py`. Only when that one module is missing, a stand-in class nothing is
+  an instance of is registered. A test fails once a ragas release no longer needs it.
+- **The judge wiring.** `llm_factory("rag-judge", client=AsyncOpenAI(...))` patches the
+  client with instructor's JSON mode, which Ollama turns into grammar-constrained JSON;
+  gemma2 has no tool support, so the default TOOLS mode would fail. There were 0 parse
+  failures on the spike's 11 calls. Answer relevancy embeds with MiniLM on CPU, through
+  ragas's own `HuggingFaceEmbeddings` (maintainer).
+- **The Modelfile is what runs.** ragas sends `temperature 0.01, top_p 0.1, max_tokens
+  1024` with every call, and a request overrides the Modelfile. So `score` sends the
+  Modelfile's `temperature`, `seed` and `num_predict` (2048, set from the spike), and the
+  hashed text is what is used.
+- **Failures are classified by cause.** instructor wraps a connection error or a timeout
+  in the same `InstructorRetryException` as a parse failure that exhausted its retries.
+  Parse failures, truncated outputs and NaN scores are counted per metric; anything else
+  aborts the run, so a dead Ollama cannot pass as parse failures. The context guard also
+  fails a call whose prompt and answer together fill `num_ctx`, where Ollama would shift
+  the context silently. Ollama's `prompt_tokens` counts the whole prompt even on a KV-cache
+  hit (verified in 0.22.1's runners), so the 256-token check holds.
+- **What the fingerprint table did not say:**
+  - `manifest.CHUNKING_VERSION` (S2-6's third review) is in `ingestion`. A bump changes
+    the chunks, so the answers: re-run generate and score.
+  - `decline_marker` is in `judge`. It defines the decline rate, which `score` computes:
+    re-run score.
+  - The ragas version is `fingerprint.RAGAS_VERSION`, since CI has no ragas to ask. A
+    test holds it to `uv.lock`, and `score` refuses an installed ragas that differs.
+  - `judge` also hashes the answer-relevancy embedder, the instructor mode and the metric
+    settings. Answer relevancy asks one question, not three: under greedy decoding the
+    spike's three were identical, so the mean is the same at a third of the calls.
+- **`generate` refuses an index that lags the corpus or config** (maintainer). Otherwise
+  the answers would come from old chunks under a fingerprint that claims the new ones. So
+  a moved `corpus` or `ingestion` part says "re-run rag-ingest, then generate and score".
+- **The two reviews added three rules:**
+  - The scores file records the sha256 of the answers file it judged, and `check`
+    compares it. A re-generate with unchanged inputs (a re-pulled model, unhashed code)
+    moves no part, so without it `check` would pass scores of answers no longer
+    committed.
+  - `thresholds.yaml`'s `generation:` section has a required `max_unscored`: the largest
+    share of answerable items a gated metric may leave unscored (parse, truncated or no
+    number). A mean over the few items a misparsing judge did score would otherwise pass.
+  - `score` checks that `rag-judge` is served with **every** PARAMETER of its Modelfile,
+    and built on its FROM. An edited Modelfile that was never re-created would otherwise be
+    hashed while the old judge ran.
+- **Cost, for S2-5b:** one answerable item took 39 min to score on this CPU (2 Ollama
+  threads), so a full local scoring is about 13 h, not 3–4 h. Colab/Kaggle is the default.
+
 Rejected:
 
 - **RAGAs in CI with a hosted judge**: cost, a secret, network access and a non-local
@@ -1380,6 +1433,12 @@ evaluation:                                                # NEW, optional; only
     modelfile: "eval/judge.Modelfile"                      # hashed into `judge`; num_ctx checked at score time
     base_url: "http://localhost:11434/v1"                  # Ollama's OpenAI-compatible endpoint
 ```
+
+_S2-5 (2026-10-06, maintainer): `modelfile` names a file in the eval folder (`eval/`
+beside the config file, or `--eval-dir`), so the config holds `judge.Modelfile`, not
+`eval/judge.Modelfile`. The eval files then travel together, and S2-5b's stale check runs
+a scratch config against the repository's eval folder as written. The judge also gained
+`embedding_model` and `timeout_s` (per call; runtime only, never hashed)._
 
 `evaluation` and its `judge` are closed (`_Strict`) models.
 

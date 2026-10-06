@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | In review (2026-10-07): verifications 1–3 shown; 4 (CI) runs on the PR |
 | **Closes** | FR-7 (the harness; the baseline and the CI step are S2-5b), ISS-15; backlog: the prompt placeholder check (FR-8 follow-up), pointing the RAGAs judge at local Ollama |
 | **Depends on** | S2-2 (the golden set), S2-4 (the final retrieval config), S2-6 (`manifest.py`'s identity functions); S2-1 for `stream_answer` |
 | **Model** | fable |
@@ -191,10 +191,178 @@ gh run list --limit 2                            # check and eval-retrieval gree
 - **Check the import guard on `evaluation.gate`.** If ragas or torch ever leaks into it,
   CI's `check` job breaks.
 
+## Spike: the working recipe (2026-10-06/07)
+
+Plan mode could not install the `eval` extra, so the APIs were first read from the exact
+sources `uv.lock` pins (ragas 0.4.3, instructor 1.17.0, openai 3.3.0, and Ollama 0.22.1's
+server). After `uv sync --extra eval`, a script re-checked 35 of those facts against the
+installed packages, and all held, once one blocker was dealt with.
+
+**Blocker: ragas 0.4.3 does not import on this stack.** `ragas/llms/base.py` imports
+`langchain_community.chat_models.vertexai`, which langchain-community 0.4.2 (the sunset
+release, our pin) removed; 0.4 and 0.4.1 still had it. The lock resolves, but `import
+ragas` fails. Upstream issue vibrantlabsai/ragas#2741 has been open since 2026-05-24, and
+`main` still has the import. ragas uses the class only in an `isinstance()` list on its
+legacy LangChain-wrapper path, which `InstructorLLM` never reaches. **Maintainer's call
+(2026-10-06): a narrow import shim** in `ragas_scoring.py`. Only when that one module is
+missing, a stand-in whose `ChatVertexAI` is a never-instantiated placeholder is
+registered. A local test fails once a ragas release no longer needs it.
+
+**The recipe:**
+
+```python
+os.environ["RAGAS_DO_NOT_TRACK"] = "true"     # ragas posts usage to its maker otherwise
+client = AsyncOpenAI(base_url="http://localhost:11434/v1", api_key="ollama",
+                     max_retries=0, timeout=2400)
+llm = llm_factory("rag-judge", client=client, temperature=0, seed=42, max_tokens=2048)
+# ragas patches an openai client with instructor Mode.JSON (response_format json_object,
+# which Ollama turns into grammar-constrained format "json"). gemma2 has no tool support,
+# so instructor's default TOOLS mode would fail.
+embeddings = HuggingFaceEmbeddings(model="sentence-transformers/all-MiniLM-L6-v2", device="cpu")
+Faithfulness(llm=llm); AnswerRelevancy(llm=llm, embeddings=embeddings, strictness=1)
+ContextPrecision(llm=llm)  # the with-reference variant
+ContextRecall(llm=llm)
+# usage, parse errors: llm.client.on("completion:response" | "parse:error", handler)
+```
+
+- **The sampling comes from the Modelfile.** ragas sends `temperature 0.01, top_p 0.1,
+  max_tokens 1024` on every request, and a request overrides the Modelfile. So `score`
+  sends the Modelfile's `temperature`, `seed` and `num_predict` (as `max_tokens`).
+- **`max_retries=0`** on the client: openai's default of 2 would re-send a timed-out
+  10-minute call twice in silence.
+- **instructor wraps connection errors and timeouts in `InstructorRetryException`**, the
+  same class as a parse failure that exhausted its retries. So failures are classified
+  by cause, and a transport error aborts the run.
+
+**Measured on `yolo-anomaly-model`** (the answerable item with the longest contexts,
+4,893 characters over 5 chunks), with Ollama on 2 threads:
+
+| | |
+| --- | --- |
+| generate (mistral) | ttft 245 s, total 262 s; a 280-character answer |
+| judge calls | 11, **0 parse errors** in JSON mode |
+| largest prompt | 2,753 tokens (context recall); faithfulness 2,124, precision about 1,410 each |
+| largest completion | 258 tokens (faithfulness's verdicts); prompt + completion at most 2,908 |
+| `ollama ps` | `rag-judge` CONTEXT 8192, **8.26 GB** resident |
+| scores | faithfulness 1.0, answer relevancy 0.906, context precision 1.0, context recall 1.0 |
+| time | **2,358 s (39 min)** for the four metrics; slowest call 768 s (context recall) |
+
+Decisions it settled:
+
+- **The instructor mode is JSON**, as `llm_factory` makes it. JSON_SCHEMA is not needed.
+- **`strictness=1`.** Answer relevancy's three calls returned the identical question
+  under greedy decoding, so a mean over three equals one.
+- **`num_predict 2048`** goes into the Modelfile, and is sent as `max_tokens`. This answer
+  was short; a 512-token answer could yield many more statements to judge. 2,048 plus the
+  largest prompt stays under 5k tokens.
+- **`timeout_s: 2400`**, about 3× the slowest call.
+
+**For S2-5b:** at about 39 min per item on 2 threads, a full local scoring of the 20
+answerable items is **about 13 h**, not the 3–4 h estimated (caveat 16). Generating took
+4.4 min for this one answer. Colab/Kaggle is the clear default for scoring.
+
+## Verification record (2026-10-07)
+
+1. **Gates.** `ruff check`, `mypy` and `pytest --cov=rag_qa` passed with the eval extra
+   installed: **638 passed**, 4 xfailed, coverage 96.95%. Then the same on CI's install
+   (`uv sync --locked`, no extra): **634 passed, 4 skipped** (the four that need the extra),
+   and mypy clean both ways. `HF_HOME=<empty> HF_HUB_OFFLINE=1 uv run pytest` gave the same,
+   and the folder stayed empty (caveat 23).
+2. **Smoke run against real Ollama**, run by the maintainer in a terminal.
+   - `generate --limit 1`: `glider-purpose`, ttft 264 s, total 304 s, mistral's digest
+     recorded.
+   - `score --limit 1`: faithfulness 1.000, answer relevancy 0.828, context precision
+     1.000, context recall 1.000. 0 parse failures, 0 truncated, 0 retried.
+   - Largest prompt 3,017 tokens (below 7,936); largest judge answer 526 tokens.
+   - `ollama ps`: `rag-judge` CONTEXT 8192, 8.3 GB, 100% CPU.
+   - Scoring took about 54 min.
+
+   The run preceded the reviews' fixes. Of those, the check of the served judge against
+   every Modelfile PARAMETER was re-run against the real Ollama: the real `rag-judge`
+   passes, and a Modelfile edited without `ollama create` is refused.
+3. **`pytest tests/test_eval_gate.py -v`: 81 passed.** By hand, on a fixture run built
+   from this checkout (all 25 ids):
+   - `check` → exit 0;
+   - S2-5b's recipe (a scratch copy of `config.yaml`, "helpful and precise" → "helpful,
+     precise", `RAG_DATA_PATH=$PWD/corpus`, `--eval-dir`) → exit 1, "query changed: re-run
+     generate and score (…)";
+   - a ground-truth edit in a scratch golden copy → exit 1, "references changed: re-run
+     score (…)".
+4. **CI:** runs on the PR.
+
+## Reviews (Opus 5.5, two passes, as for every Fable-routed story)
+
+**First review: 10 findings; 9 fixed, 1 deferred.**
+
+- **Fixed:**
+  - Scores record the answers file's sha256. A re-generate with unchanged inputs moved no
+    part, so `check` would have passed scores of answers no longer committed.
+  - `classify` uses the final cause. instructor wraps a timeout on a retry with the
+    earlier failed parse attempt, which would have counted as a parse failure.
+  - `rag-eval` has an exit-2 backstop. An unforeseen error in `check` exited 1, which CI
+    reads as a verdict.
+  - The served judge is checked against every Modelfile PARAMETER and its FROM, not only
+    `num_ctx`.
+  - `retried` no longer counts a failed call's last attempt.
+  - `check --with-ollama` asks no Ollama about a generator that is not one.
+  - `/api/ps` is polled once.
+  - `run_retrieval` shares `_crashed`.
+  - `datasets` and `pandas` left the eval extra: nothing imports them now.
+- **Deferred: resumable runs.** See Discovered.
+
+**Second review: 10 findings, all fixed.**
+
+- **The first review's `retried` fix did not work.** instructor also passes
+  `attempt_number` and `max_attempts`, and falls back to calling a handler with the error
+  alone when its signature cannot take them. A test now goes through instructor's
+  `Hooks`.
+- **A judge that misparsed most items could pass on the mean of the rest.** A required
+  `max_unscored` in the `generation:` floors now fails a gated metric with more unscored
+  items than that.
+- **Other fixes:**
+  - `score --answers <scratch>` without `--out` is refused, so it can never overwrite the
+    committed scores;
+  - a base digest that was never recorded no longer fails `--with-ollama` for good;
+  - `top_p` is forwarded from the Modelfile;
+  - an `$OLLAMA_HOST` without a port means 11434;
+  - `write_run` uses a unique temporary file and removes it on failure;
+  - the `ollama create` hint names the real Modelfile path;
+  - a moved `corpus` or `ingestion` part says "re-run rag-ingest, then generate and
+    score";
+  - a test keeps the floors' keys in step with the metric set.
+
 ## Discovered
 
-(Filled during implementation.)
+- **ragas 0.4.3 does not import with langchain-community 0.4.2** (the spike section above).
+  The shim goes once a ragas release stops importing that module, and a test says when.
+- **Scoring is not resumable.** A transport error or a timeout on item 19 aborts a 13-hour
+  run with nothing written; so does a failure in `generate`. Backlog, for S2-5b to weigh
+  before its baseline: write progress as it goes, and skip ids already scored.
+- **Tier-2 cost on this CPU** is about 39–54 min per answerable item, so a full local
+  scoring is about 13–18 h, not caveat 16's 3–4 h. Colab/Kaggle is the default for S2-5b.
+- **The judge also runs on Ollama's 2 threads.** S2-5b's `num_thread` measurement could
+  give the judge Modelfile a `PARAMETER num_thread` too. That moves `judge`, which is
+  harmless before the first baseline.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **Model:** Opus 5.5 at max effort in place of Fable (CLAUDE.md, from 2026-10-04), with
+  two review passes.
+- **The spike ran after plan approval, not in plan mode.** Plan mode cannot install the
+  eval extra or create the judge. The APIs were first read from the pinned sources, then
+  re-checked against the installed packages (35 facts) before any code.
+- **The ragas import shim** (maintainer, 2026-10-06), above.
+- **Maintainer decisions taken during planning:** the Modelfile is resolved in the eval
+  folder, not beside the config (§2.3 note); answer relevancy uses MiniLM on CPU;
+  `generate` refuses an index that lags the corpus.
+- **Beyond the fingerprint table:**
+  - `CHUNKING_VERSION` is in `ingestion`;
+  - `decline_marker`, the embedder, the instructor mode, the metric settings
+    (`strictness=1`) and `RAGAS_VERSION` are in `judge`;
+  - `max_unscored` and the answers hash came from the reviews.
+
+  All are recorded as dated notes on DEC-15.
+- **`num_predict 2048`** is in the Modelfile beyond the story's four lines, from the
+  spike. The judge config gained `embedding_model` and `timeout_s`.
+- **Whole-word matching uses lookarounds** rather than `\b`. It gives the same result for
+  the golden set's words, and is right for an entry that ends in punctuation.

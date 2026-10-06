@@ -5,8 +5,25 @@
 
 ## Now
 
-**Next action: merge PR #12, then [S2-5](phase-2/S2-5-ragas-gate.md)**, which reuses
-`manifest.py`'s identity functions unchanged.
+**Next action: open the PR for [S2-5](phase-2/S2-5-ragas-gate.md)
+(`feat/s2-5-ragas-gate`), see CI green, merge; then [S2-5b](phase-2/S2-5b-tier2-baseline.md).**
+
+**S2-5 is in review** (2026-10-07, on Opus 5.5 in place of Fable). Tier 2's harness is
+code: `rag-eval generate`, `score` and `check`, the six-part fingerprint, and the prompt
+placeholder rules. Verifications 1–3 are shown in the story file; CI runs on the PR.
+
+- **ragas 0.4.3 does not import on our stack.** It imports a module langchain-community
+  0.4.2 removed (vibrantlabsai/ragas#2741). The maintainer chose a narrow import shim,
+  which a test says when to delete.
+- **The spike's recipe:** JSON mode, 0 parse failures; MiniLM for answer relevancy;
+  `num_predict 2048`; and `rag-judge` serves 8192 tokens in 8.3 GB.
+- **Tier 2 costs about 39–54 min per item on this CPU**, so a full local scoring is
+  13–18 h. S2-5b scores on Colab/Kaggle by default.
+- **Two reviews, 10 and 10 findings; 19 fixed, 1 deferred** (resumable runs, in the
+  backlog). They added `max_unscored` to the floors and an answers hash to the scores, and
+  `score` now checks the served judge against its whole Modelfile.
+- **Breaking:** a config whose prompt breaks the placeholder rules no longer loads (the
+  real one passes).
 
 **S2-6 is done** (2026-10-06, PR #12, on Opus 5.5 in place of Fable). CI is green: the
 runner reproduced tier 1 question by question. The first `eval-retrieval` attempt
@@ -229,9 +246,9 @@ The final story of each phase performs the tag + version bump at close-out.
 
 - [ ] **Phase 2 (S2-5b): somewhere to run tier-2 scoring.** It scores twice, to measure
   the judge's noise.
-  - **Locally:** about 3–4 h of CPU per scoring with `gemma2:9b`, which is already
-    pulled, so 6–8 h in all. The `rag-judge` variant (8k context) holds about 8 GB, an
-    estimate S2-5 measures.
+  - **Locally:** about 3–4 h of CPU per scoring was the estimate; S2-5 measured 39–54 min
+    per item, so 13–18 h per scoring and twice that in all. `rag-judge` (8k context) holds
+    8.3 GB (measured).
   - **On Colab/Kaggle:** needs an account, plus Ollama with the same `gemma2:9b` tag on
     the GPU runtime, and `ollama create rag-judge -f eval/judge.Modelfile`.
 
@@ -323,7 +340,8 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
     open until the loop runs again. Render the prompt and stream the model itself, as
     `stream_answer` does.
 16. **Tier-2 evaluation is hours-scale on CPU.** About 25 questions × 4 RAGAs metrics with
-    `gemma2:9b` take about 3–4 h to score.
+    `gemma2:9b` take about 3–4 h to score. **Measured in S2-5 (2026-10-07): 39–54 min per
+    answerable item** on Ollama's 2 threads, so 13–18 h for the 20; the judge holds 8.3 GB.
     - Generating takes about 40 min **if each answer takes ~1–2 min**. At S2-1's 254 s to
       first token, generating alone is about 1.8 h (25 × 254 s) before any decoding.
     - That figure ran on 2 threads with swapped weights (caveat 3). Re-measure after the
@@ -444,7 +462,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Done 2026-10-03 (PR #8) |
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Done 2026-10-04 (PR #9) |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Done 2026-10-05 (PR #11); reranker on |
-| [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Todo |
+| [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | In review 2026-10-07 (`feat/s2-5-ragas-gate`) |
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Todo |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Todo |
@@ -531,6 +549,9 @@ leads with one of two things:
   - The Sources-relevance line gets its knob, `min_score`, off by default. Its tuning
     stays below, after S2-5.
 
+- **S2-5 (in review, 2026-10-07):** tier 2's harness (FR-7, ISS-15): `rag-eval generate`,
+  `score` and `check`, the six-part fingerprint, and the prompt placeholder rules. It
+  closes two lines below: the placeholder check, and the judge pointed at local Ollama.
 - **S2-6:** incremental ingestion (FR-2, ISS-14, NFR-4 in place, SRS §7.3, DEC-17).
   - Three backlog lines close with it: walk pruning, the §7.3 chunk metadata, and the
     embedder check on open.
@@ -575,7 +596,9 @@ leads with one of two things:
   PR red, docs-only ones included. Decide an `--ignore-vuln` policy (ID + reason in
   `ci.yml`) or a scheduled audit beside a PR gate for new dependencies. Not needed
   until it first happens.
-- **S2-5 — prompt placeholder check (FR-8 follow-up, found in S1-1).** A
+- **Closed by S2-5 (2026-10-07) — prompt placeholder check (FR-8 follow-up, found in S1-1).**
+  `Prompt` now refuses a `human` turn without `{context}` or `{question}`, `{context}` in
+  `system`, and any other placeholder; the history below is kept. A
   `human` prompt missing `{context}` silently answers without retrieval. One
   validator on `Prompt`. S1-5 left it open, as the board allowed. It belongs with
   the Phase 2 evaluation harness, which is what would catch an ungrounded
@@ -660,6 +683,19 @@ leads with one of two things:
   - **Fix first, then re-measure:** make `stream_answer` close the model stream
     deterministically on cancel, then show the test passing in a few hundred one-core
     runs. Do not paper over it with a retry or a sleep in the test.
+- **S2-5b, before the baseline — make tier-2 runs resumable** (found in S2-5's first
+  review). A transport error or a timeout aborts `score` with nothing written, and with
+  13–18 h per local scoring that can cost a night's run. So can a failure in `generate`.
+  Write progress as it goes, and skip ids already done; or accept the risk on Colab's
+  faster judge. S2-5b decides.
+- **When a ragas release stops importing `langchain_community.chat_models.vertexai` —
+  delete the import shim** in `ragas_scoring.import_ragas` (S2-5,
+  vibrantlabsai/ragas#2741). `tests/test_eval_scoring.py` fails then and says so. A
+  ragas upgrade also means bumping `fingerprint.RAGAS_VERSION`, which `uv.lock`'s test
+  enforces, and re-scoring.
+- **S2-5b — the judge's `num_thread`.** The judge also runs on Ollama's 2 threads. Once
+  the generator's `num_thread` is measured, the same `PARAMETER` can go into
+  `eval/judge.Modelfile`, before the baseline: it moves `judge`.
 - **If it recurs — make a stalled CI step diagnosable** (found in S2-6's CI).
   - **The incident:** `eval-retrieval` stalled in "Ingest the corpus" until the job's
     20-minute limit, and GitHub kept no log. It was not reproducible here, and the
@@ -703,7 +739,9 @@ leads with one of two things:
 
 - **Closed by S2-6 (2026-10-05) —** chunk metadata: content hash of the source file + ingestion timestamp
   (SRS §7.3), with the manifest that needs them (DEC-17).
-- **S2-5 —** the RAGAs judge must be pointed at local Ollama explicitly (its default
+- **Closed by S2-5 (2026-10-07) —** `rag-eval score` judges with `rag-judge` through
+  Ollama's OpenAI endpoint (`evaluation.judge` in `config.yaml`). As found: the RAGAs
+  judge must be pointed at local Ollama explicitly (its default
   is OpenAI). DEC-15 settles both halves: the judge is `gemma2:9b` through Ollama's
   OpenAI endpoint, and a full sweep on CPU takes hours, so scoring offloads to
   Colab/Kaggle.
