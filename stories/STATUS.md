@@ -593,7 +593,9 @@ leads with one of two things:
   container story.
 - **Backlog — audit-gate policy (S1-8 review).** CI's Audit step does a live
   advisory lookup and blocks, so a new advisory with no fixed release turns every
-  PR red, docs-only ones included. Decide an `--ignore-vuln` policy (ID + reason in
+  PR red, docs-only ones included. **First seen 2026-10-07 on S2-5's PR:** multidict
+  6.9.0 (CVE-2026-104874). A fixed release existed, so a one-package lock bump was the
+  fix and no policy was needed; the question stays open for an advisory with no fix. Decide an `--ignore-vuln` policy (ID + reason in
   `ci.yml`) or a scheduled audit beside a PR gate for new dependencies. Not needed
   until it first happens.
 - **Closed by S2-5 (2026-10-07) — prompt placeholder check (FR-8 follow-up, found in S1-1).**

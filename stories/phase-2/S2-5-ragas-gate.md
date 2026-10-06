@@ -333,6 +333,13 @@ answerable items is **about 13 h**, not the 3–4 h estimated (caveat 16). Gener
 
 ## Discovered
 
+- **CI's Audit step went red on the PR (2026-10-07)** with a new advisory: multidict 6.9.0,
+  CVE-2026-104874, fixed in 6.9.1. It arrives through aiohttp and yarl
+  (langchain-community), and `main` locked the same version, so every PR would have been
+  red. It is unrelated to S2-5's code, and lint, types and tests had passed. The
+  maintainer chose a separate commit on this PR: `uv lock --upgrade-package multidict`
+  changes only that package. On CI's install, the Audit step now finds nothing, and the
+  suite passes.
 - **ragas 0.4.3 does not import with langchain-community 0.4.2** (the spike section above).
   The shim goes once a ragas release stops importing that module, and a test says when.
 - **Scoring is not resumable.** A transport error or a timeout on item 19 aborts a 13-hour
