@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-07): PR #13 open. The second reviewer found 3 more (2 low, 1 nit), all fixed on the PR; CI to re-run on the push, then merge |
+| **Status** | Approved (2026-10-07): PR #13, both reviews done, every finding fixed; CI green on `b6f4e74` (`check`, `eval-retrieval`). Next: merge |
 | **Closes** | FR-7 (the harness; the baseline and the CI step are S2-5b), ISS-15; backlog: the prompt placeholder check (FR-8 follow-up), pointing the RAGAs judge at local Ollama |
 | **Depends on** | S2-2 (the golden set), S2-4 (the final retrieval config), S2-6 (`manifest.py`'s identity functions); S2-1 for `stream_answer` |
 | **Model** | fable |
