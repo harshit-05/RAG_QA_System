@@ -5,8 +5,8 @@
 
 ## Now
 
-**Next action: open the PR for [S2-5](phase-2/S2-5-ragas-gate.md)
-(`feat/s2-5-ragas-gate`), see CI green, merge; then [S2-5b](phase-2/S2-5b-tier2-baseline.md).**
+**Next action: S2-5's second review on PR #13 (CI green), merge; then
+[S2-5b](phase-2/S2-5b-tier2-baseline.md).**
 
 **S2-5 is in review** (2026-10-07, on Opus 5.5 in place of Fable). Tier 2's harness is
 code: `rag-eval generate`, `score` and `check`, the six-part fingerprint, and the prompt
@@ -462,7 +462,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-2](phase-2/S2-2-golden-dataset.md) | Golden dataset, seeded with GLIDER | FR-7 (dataset), ISS-15 (part), SRS §7.4 | — | Done 2026-10-03 (PR #8) |
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Done 2026-10-04 (PR #9) |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Done 2026-10-05 (PR #11); reranker on |
-| [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | In review 2026-10-07 (`feat/s2-5-ragas-gate`) |
+| [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | In review 2026-10-07 (PR #13, CI green) |
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Todo |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Todo |

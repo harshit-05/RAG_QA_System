@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-07): verifications 1–3 shown; 4 (CI) runs on the PR |
+| **Status** | In review (2026-10-07): PR #13 open, CI green (`check`, `eval-retrieval`); first review passed, second reviewer next |
 | **Closes** | FR-7 (the harness; the baseline and the CI step are S2-5b), ISS-15; backlog: the prompt placeholder check (FR-8 follow-up), pointing the RAGAs judge at local Ollama |
 | **Depends on** | S2-2 (the golden set), S2-4 (the final retrieval config), S2-6 (`manifest.py`'s identity functions); S2-1 for `stream_answer` |
 | **Model** | fable |
@@ -288,7 +288,10 @@ answerable items is **about 13 h**, not the 3–4 h estimated (caveat 16). Gener
      generate and score (…)";
    - a ground-truth edit in a scratch golden copy → exit 1, "references changed: re-run
      score (…)".
-4. **CI:** runs on the PR.
+4. **CI on PR #13: green.** The first run failed only at the Audit step, on the
+   multidict advisory (Discovered). After the bump, `check` and `eval-retrieval` both
+   passed (run 37547537746). `check` runs without the eval extra, so the import guard
+   holds there too.
 
 ## Reviews (Opus 5.5, two passes, as for every Fable-routed story)
 
@@ -330,6 +333,26 @@ answerable items is **about 13 h**, not the 3–4 h estimated (caveat 16). Gener
   - a moved `corpus` or `ingestion` part says "re-run rag-ingest, then generate and
     score";
   - a test keeps the floors' keys in step with the metric set.
+
+**The maintainer's review (2026-10-07): no blockers, five low findings, and notes for the
+second reviewer.** CI and the gates were confirmed green on PR #13. Applied on the PR:
+
+- Runtime-only llm keys no longer move `query`: `validate_model_on_init`, `keep_alive`
+  and the HTTP clients' settings. Each would have forced a 13-hour re-score for an edit
+  that changes no answer. `num_thread` stays hashed, as the backlog intends.
+- `judge` hashes the Modelfile without its comment and blank lines. A SYSTEM or TEMPLATE
+  edit still moves it, and a test pins both.
+- `_Setup.config` is typed `RagConfig`; the stray `#:` comment above `metric_inputs` is a
+  docstring now.
+
+Recorded rather than changed:
+
+- whether a Colab `ollama create` gives the same digest as a local one: an input to S2-5b;
+- resumable runs: S2-5b's first backlog line;
+- answer relevancy's embedder pinned by name, not revision: accepted, as DEC-17 did.
+
+Left for the code-quality reviewer: splitting `score()`, and moving the Ollama client and
+the run files out of `gate.py`.
 
 ## Discovered
 

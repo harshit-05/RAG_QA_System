@@ -990,6 +990,14 @@ these; the story file has the recipe and the measurements._
   - `score` checks that `rag-judge` is served with **every** PARAMETER of its Modelfile,
     and built on its FROM. An edited Modelfile that was never re-created would otherwise be
     hashed while the old judge ran.
+- **The maintainer's review (2026-10-07) narrowed two hashes before any baseline exists:**
+  - Runtime-only llm keys no longer move `query`: `validate_model_on_init`,
+    `keep_alive` and the HTTP clients' settings, beside `base_url` and `device`.
+    `num_thread` stays hashed, since a thread count can change an answer.
+  - `judge` hashes the Modelfile without its comment and blank lines, so a comment edit
+    costs no re-score. A SYSTEM or TEMPLATE text is kept whole.
+  - Accepted, as DEC-17 accepted it for the retrieval embedder: answer relevancy's
+    embedder is pinned by name, not by revision.
 - **Cost, for S2-5b:** one answerable item took 39 min to score on this CPU (2 Ollama
   threads), so a full local scoring is about 13 h, not 3–4 h. Colab/Kaggle is the default.
 
