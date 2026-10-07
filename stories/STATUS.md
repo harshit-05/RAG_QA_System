@@ -5,7 +5,7 @@
 
 ## Now
 
-**Next action: S2-5's second review on PR #13 (CI green), merge; then
+**Next action: push the second reviewer's fixes to PR #13, see CI green, merge; then
 [S2-5b](phase-2/S2-5b-tier2-baseline.md).**
 
 **S2-5 is in review** (2026-10-07, on Opus 5.5 in place of Fable). Tier 2's harness is
@@ -22,6 +22,13 @@ placeholder rules. Verifications 1–3 are shown in the story file; CI runs on t
 - **Two reviews, 10 and 10 findings; 19 fixed, 1 deferred** (resumable runs, in the
   backlog). They added `max_unscored` to the floors and an answers hash to the scores, and
   `score` now checks the served judge against its whole Modelfile.
+- **The second reviewer (2026-10-07): no blockers, 3 findings, all fixed on the PR.**
+  - instructor's version is pinned and hashed into `judge`, as ragas's is: it writes
+    part of every judge prompt.
+  - The served judge is checked both ways against its Modelfile and base: a leftover
+    parameter, SYSTEM or TEMPLATE is refused.
+  - `--with-ollama` no longer skips a generator's missing digest when the generator is
+    the judge's base.
 - **Breaking:** a config whose prompt breaks the placeholder rules no longer loads (the
   real one passes).
 
@@ -698,6 +705,11 @@ leads with one of two things:
 - **S2-5b — the judge's `num_thread`.** The judge also runs on Ollama's 2 threads. Once
   the generator's `num_thread` is measured, the same `PARAMETER` can go into
   `eval/judge.Modelfile`, before the baseline: it moves `judge`.
+- **Flaky under load — two Ctrl-C tests in `tests/test_cli.py`** (found in S2-5's second
+  review). `test_ctrl_c_while_a_chunk_is_processed_leaves_no_stream_open_at_the_prompt`
+  and `test_two_ctrl_cs_during_an_answer_end_the_session` failed once in a full run
+  beside other `uv` commands, then passed in three full runs. They are timing-based. If
+  either fails on CI, widen its waits or switch to event-driven synchronisation.
 - **If it recurs — make a stalled CI step diagnosable** (found in S2-6's CI).
   - **The incident:** `eval-retrieval` stalled in "Ingest the corpus" until the job's
     20-minute limit, and GitHub kept no log. It was not reproducible here, and the

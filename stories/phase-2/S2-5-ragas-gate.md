@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-07): PR #13 open, CI green (`check`, `eval-retrieval`); first review passed, second reviewer next |
+| **Status** | In review (2026-10-07): PR #13 open. The second reviewer found 3 more (2 low, 1 nit), all fixed on the PR; CI to re-run on the push, then merge |
 | **Closes** | FR-7 (the harness; the baseline and the CI step are S2-5b), ISS-15; backlog: the prompt placeholder check (FR-8 follow-up), pointing the RAGAs judge at local Ollama |
 | **Depends on** | S2-2 (the golden set), S2-4 (the final retrieval config), S2-6 (`manifest.py`'s identity functions); S2-1 for `stream_answer` |
 | **Model** | fable |
@@ -354,6 +354,45 @@ Recorded rather than changed:
 Left for the code-quality reviewer: splitting `score()`, and moving the Ollama client and
 the run files out of `gate.py`.
 
+**The second reviewer (2026-10-07, on the risky story): no blockers; 3 findings, all
+fixed on the PR.**
+
+- **Checked and sound:**
+  - failure counting, against instructor 1.17's own retry code: the same exception
+    classes, a bare truncation, and a wrapped parse error with its cause;
+  - `max_unscored`, counted per item and metric;
+  - a NaN becomes no score;
+  - exit 2 for anything unforeseen;
+  - `rag_qa.evaluation.cli` imports no model stack;
+  - every Query field is hashed;
+  - the corpus part is the same in a clean clone, because the untracked `.parquet` files
+    have no loader.
+- **instructor's version moved no part (low).**
+  - In JSON mode instructor adds its own system message to every judge call
+    (`v2/providers/openai/handlers.py:871`), and writes the re-ask after a parse failure.
+  - So a `uv lock --upgrade` would change the judge's prompts while `check` still passed.
+  - `fingerprint.INSTRUCTOR_VERSION` (1.17.0) is now hashed into `judge` and held to
+    `uv.lock` by a test, and `score` refuses a mismatch.
+  - This moves `judge`, which costs nothing before the first baseline.
+- **The served judge was checked one way only (low).**
+  - The check covered the FROM and each PARAMETER the Modelfile sets. It missed a SYSTEM
+    or TEMPLATE, and a parameter left from an older Modelfile, each of which `judge`
+    hashes as the Modelfile has it.
+  - The real Ollama's `/api/show` shows that a created model serves its base's
+    parameters and TEMPLATE, with the Modelfile's in their place. So `check_judge` now
+    compares against both: the Modelfile, and the base for anything the Modelfile does
+    not set.
+  - Without the base in Ollama, only what the Modelfile sets is checked.
+  - `parse_modelfile` now reads SYSTEM and TEMPLATE, including `"""` blocks, and any
+    whitespace after a keyword.
+  - The real `rag-judge` still passes. A negative control that switched the new check off
+    failed all four of its refusal tests.
+- **`--with-ollama` skipped a generator digest (nit).** Its rule for skipping a missing
+  base digest matched by model name, so it also skipped the generator's when gemma2 both
+  answers and underlies the judge. The base entry is now flagged instead.
+- **Gates after the fixes:** ruff and mypy clean; 655 passed, 4 xfailed, 97% coverage,
+  with the eval extra installed. CI's install without the extra is next, on the push.
+
 ## Discovered
 
 - **CI's Audit step went red on the PR (2026-10-07)** with a new advisory: multidict 6.9.0,
@@ -370,6 +409,18 @@ the run files out of `gate.py`.
   before its baseline: write progress as it goes, and skip ids already scored.
 - **Tier-2 cost on this CPU** is about 39–54 min per answerable item, so a full local
   scoring is about 13–18 h, not caveat 16's 3–4 h. Colab/Kaggle is the default for S2-5b.
+- **Two Ctrl-C tests in `test_cli.py` flaked once under load** (the second reviewer).
+  In one full run, while other `uv` commands ran beside it, `test_ctrl_c_while_a_chunk_is_processed_leaves_no_stream_open_at_the_prompt`
+  and `test_two_ctrl_cs_during_an_answer_end_the_session` failed, along with one other
+  whose name the log cut off. Three full runs since passed, two with coverage. S2-5
+  touches none of their code. Backlog (STATUS.md).
+- **For S2-5b, from the second reviewer:**
+  - Run `rag-eval check` from a clean clone before committing the baseline. A file that
+    git ignores but a loader reads, such as a stray `.md` in `corpus/`, would make a
+    baseline taken here fail in CI.
+  - `generate` checks the index, then builds the pipeline seconds later. Only a
+    `rag-ingest` running at that moment could swap the generation in between, so do not
+    ingest while generating.
 - **The judge also runs on Ollama's 2 threads.** S2-5b's `num_thread` measurement could
   give the judge Modelfile a `PARAMETER num_thread` too. That moves `judge`, which is
   harmless before the first baseline.
