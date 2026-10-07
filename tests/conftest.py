@@ -342,6 +342,8 @@ def fake_rag(
 JUDGE_DIGEST = "a" * 64
 BASE_DIGEST = "b" * 64
 MISTRAL_DIGEST = "c" * 64
+#: The chat template the fake judge inherits from its base, as gemma2's real one is.
+FAKE_TEMPLATE = "<start_of_turn>user\n{{ .Prompt }}<end_of_turn>"
 
 
 @dataclass
@@ -358,7 +360,8 @@ class FakeOllama:
             "mistral:latest": MISTRAL_DIGEST,
         }
     )
-    #: /api/show's ``parameters`` per model, as Ollama formats them.
+    #: /api/show's ``parameters`` per model, as Ollama formats them. A created model serves
+    #: its base's (``stop``) with its Modelfile's added, as the real rag-judge does.
     parameters: dict[str, str] = field(
         default_factory=lambda: {
             "rag-judge:latest": "\n".join(
@@ -367,11 +370,17 @@ class FakeOllama:
                     ("num_ctx", "8192"), ("num_predict", "2048"), ("seed", "42"),
                     ("stop", '"<end>"'), ("temperature", "0"),
                 ]
-            )
+            ),
+            "gemma2:9b": f"{'stop':<30} \"<end>\"",
         }
     )
     #: /api/show's ``details.parent_model``: what each created model was built FROM.
     parents: dict[str, str] = field(default_factory=lambda: {"rag-judge:latest": "gemma2:9b"})
+    #: /api/show's ``system`` (absent when unset, as Ollama does) and ``template``.
+    systems: dict[str, str] = field(default_factory=dict)
+    templates: dict[str, str] = field(
+        default_factory=lambda: {"rag-judge:latest": FAKE_TEMPLATE, "gemma2:9b": FAKE_TEMPLATE}
+    )
     loaded: list[dict[str, Any]] = field(default_factory=list)  # /api/ps
     requests: list[str] = field(default_factory=list)
 
@@ -409,7 +418,12 @@ def fake_ollama() -> Iterator[FakeOllama]:
             name = _tag(body.get("model", ""))
             if self.path == "/api/show" and name in state.parameters:
                 details = {"parent_model": state.parents.get(name, "")}
-                self._reply(200, {"parameters": state.parameters[name], "details": details})
+                shown = {"parameters": state.parameters[name], "details": details}
+                if name in state.systems:
+                    shown["system"] = state.systems[name]
+                if name in state.templates:
+                    shown["template"] = state.templates[name]
+                self._reply(200, shown)
             else:
                 self._reply(404, {"error": f"model '{name}' not found"})
 

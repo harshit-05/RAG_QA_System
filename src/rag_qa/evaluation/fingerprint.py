@@ -17,8 +17,8 @@ part           hashes                                                           
                ``must_not_contain``
 ``references`` each golden record's ``ground_truth``                            score
 ``judge``      the judge model, its Modelfile (comments aside), the answer-     score
-               relevancy embedder, the metric set, the decline marker and the
-               ragas version
+               relevancy embedder, the metric set, the decline marker, and the
+               ragas and instructor versions
 =============  ===============================================================  ===============
 
 Each is canonical JSON (sorted keys) hashed with sha256, by
@@ -74,13 +74,18 @@ COVERS: Final[Mapping[str, str]] = {
     "questions": "a golden record's id, question, answerable flag or must_not_contain",
     "references": "a golden record's ground_truth",
     "judge": "the judge model, its Modelfile, the embedder, the metrics, the decline "
-    "marker, or the ragas version",
+    "marker, or the ragas or instructor version",
 }
 
 #: The ragas that scores. CI has no ragas to ask, so the version is pinned here, and a test
 #: holds it to ``uv.lock``: a lock bump fails CI until this follows, and then ``judge``
 #: moves. ``rag-eval score`` refuses an installed ragas that differs.
 RAGAS_VERSION: Final = "0.4.3"
+#: The instructor that parses the judge's answers, pinned and held to ``uv.lock`` as ragas
+#: is: in JSON mode it adds its own system message to every judge call, and writes the
+#: re-ask after a parse failure, so an upgrade changes the judge's prompts (S2-5's second
+#: reviewer). ``rag-eval score`` refuses an installed instructor that differs.
+INSTRUCTOR_VERSION: Final = "1.17.0"
 #: How the judge's answers are parsed: ragas patches an OpenAI client with instructor's
 #: JSON mode (S2-5's spike). ``rag-eval score`` checks that the judge it built uses it.
 JUDGE_MODE: Final = "json"
@@ -281,6 +286,7 @@ def judge_part(evaluation: Evaluation, modelfile_text: str) -> str:
             # It defines the decline rate, which score computes.
             "decline_marker": evaluation.decline_marker,
             "ragas": RAGAS_VERSION,
+            "instructor": INSTRUCTOR_VERSION,
         }
     )
 
@@ -328,32 +334,61 @@ class JudgeSettings:
     #: so an edited Modelfile that was never re-created cannot pass for the one it hashes.
     #: A repeated name (``stop``) keeps its last value.
     parameters: Mapping[str, str] = field(default_factory=dict)
+    #: The SYSTEM and TEMPLATE texts, when the Modelfile sets them: ``score`` checks the
+    #: served judge has them too, as it does each PARAMETER (S2-5's second reviewer).
+    system: str | None = None
+    template: str | None = None
+
+
+def modelfile_instructions(text: str) -> list[tuple[str, str]]:
+    """A Modelfile's instructions as ``(KEYWORD, argument)``, in order.
+
+    Keywords are upper-cased, as Ollama reads them case-insensitively; ``#`` and blank
+    lines are skipped. An argument in ``\"\"\"`` may span lines, and comes back without its
+    quotes; a single-line ``"argument"`` loses its quotes too.
+    """
+    lines = text.splitlines()
+    instructions = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
+        if not line or line.startswith("#"):
+            continue
+        keyword, *rest = line.split(None, 1)
+        argument = rest[0].strip() if rest else ""
+        if argument.startswith('"""'):
+            body = argument[3:]
+            while '"""' not in body and i < len(lines):
+                body += "\n" + lines[i]
+                i += 1
+            argument = body.split('"""', 1)[0]
+        elif len(argument) >= 2 and argument[0] == argument[-1] == '"':
+            argument = argument[1:-1]
+        instructions.append((keyword.upper(), argument))
+    return instructions
 
 
 def parse_modelfile(text: str) -> JudgeSettings:
-    """The FROM and PARAMETER lines of an Ollama Modelfile, as :class:`JudgeSettings`.
+    """The FROM, PARAMETER, SYSTEM and TEMPLATE instructions of an Ollama Modelfile, as
+    :class:`JudgeSettings` (:func:`modelfile_instructions`).
 
-    Instructions are case-insensitive; ``#`` lines and anything inside a ``\"\"\"`` block
-    (a TEMPLATE or SYSTEM) are skipped. Raises :class:`FingerprintError` when there is no
-    FROM or no ``num_ctx``: the context the judge is served with is what ``score`` checks,
-    and a Modelfile without one would get Ollama's 4k default (caveat 22).
+    Raises :class:`FingerprintError` when there is no FROM or no ``num_ctx``: the context
+    the judge is served with is what ``score`` checks, and a Modelfile without one would get
+    Ollama's 4k default (caveat 22).
     """
     base = None
     parameters: dict[str, str] = {}
-    in_block = False
-    for raw in text.splitlines():
-        line = raw.strip()
-        if line.count('"""') % 2:
-            in_block = not in_block
-            continue
-        if in_block or not line or line.startswith("#"):
-            continue
-        words = line.split(None, 2)
-        keyword = words[0].upper()
-        if keyword == "FROM" and len(words) >= 2:
-            base = words[1]
-        elif keyword == "PARAMETER" and len(words) == 3:
-            parameters[words[1].lower()] = words[2].strip().strip('"')
+    texts: dict[str, str] = {}
+    for keyword, argument in modelfile_instructions(text):
+        if keyword == "FROM" and argument:
+            base = argument.split()[0]
+        elif keyword == "PARAMETER":
+            words = argument.split(None, 1)
+            if len(words) == 2:
+                parameters[words[0].lower()] = words[1].strip().strip('"')
+        elif keyword in ("SYSTEM", "TEMPLATE"):
+            texts[keyword] = argument
     if base is None:
         raise FingerprintError("the judge's Modelfile has no FROM line")
     if "num_ctx" not in parameters:
@@ -380,4 +415,6 @@ def parse_modelfile(text: str) -> JudgeSettings:
         temperature=number("temperature", float),
         seed=number("seed", int),
         parameters=parameters,
+        system=texts.get("SYSTEM"),
+        template=texts.get("TEMPLATE"),
     )

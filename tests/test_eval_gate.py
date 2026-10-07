@@ -263,6 +263,9 @@ MOVES: list[Any] = [
                  "judge", id="the decline marker"),
     pytest.param(lambda w, mp: mp.setattr(fp, "RAGAS_VERSION", "0.4.4"), "judge",
                  id="the ragas version"),
+    # instructor writes part of every judge prompt in JSON mode (second reviewer).
+    pytest.param(lambda w, mp: mp.setattr(fp, "INSTRUCTOR_VERSION", "1.18.0"), "judge",
+                 id="the instructor version"),
     pytest.param(lambda w, mp: mp.setitem(fp.METRICS, "answer_relevancy",
                                           {"class": "AnswerRelevancy", "strictness": 3}),
                  "judge", id="a metric setting"),
@@ -360,6 +363,16 @@ def test_ragas_version_is_the_one_uv_lock_pins() -> None:
     assert fp.RAGAS_VERSION == locked["ragas"], "bump fingerprint.RAGAS_VERSION: a re-score follows"
 
 
+def test_instructor_version_is_the_one_uv_lock_pins() -> None:
+    # instructor adds its own system message to every judge call in JSON mode, so a lock
+    # bump changes the judge's prompts: it fails here until the pin follows (second reviewer).
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text())
+    locked = {p["name"]: p["version"] for p in lock["package"]}
+    assert fp.INSTRUCTOR_VERSION == locked["instructor"], (
+        "bump fingerprint.INSTRUCTOR_VERSION: a re-score follows"
+    )
+
+
 @pytest.mark.parametrize("part", fp.PARTS)
 def test_every_stale_message_names_its_rerun(part: str) -> None:
     message = fp.stale_message(part)
@@ -402,6 +415,34 @@ def test_a_modelfile_without_what_score_needs_is_refused(text: str, problem: str
 def test_modelfile_keywords_are_case_insensitive() -> None:
     settings = fp.parse_modelfile("# judge\nfrom gemma2:9b\nparameter NUM_CTX 4096\n")
     assert (settings.base, settings.num_ctx) == ("gemma2:9b", 4096)
+
+
+def test_the_modelfile_s_system_and_template_are_read_for_the_judge_check() -> None:
+    # score compares them with the served judge's (second reviewer).
+    text = (
+        "FROM gemma2:9b\n"
+        "PARAMETER\tnum_ctx    8192\n"  # any whitespace between the words
+        'SYSTEM """You judge.\n# not a comment in here\nBe brief."""\n'
+        'TEMPLATE "{{ .Prompt }}"\n'
+    )
+    settings = fp.parse_modelfile(text)
+    assert settings.num_ctx == 8192
+    assert settings.system == "You judge.\n# not a comment in here\nBe brief."
+    assert settings.template == "{{ .Prompt }}"
+    assert (fp.parse_modelfile("FROM x\nPARAMETER num_ctx 8192\n").system, settings.base) == (
+        None, "gemma2:9b"
+    )
+
+
+def test_a_generator_that_is_the_judge_s_base_still_needs_its_digest(world: World) -> None:
+    # Skipping a base digest that was never recorded must not skip the generator's when
+    # gemma2 both answers and underlies the judge (second reviewer).
+    answers, scores = runs_for(world)
+    gemma = Generator(ref="components.llms.gemma", model="gemma2:9b", digest=None)
+    live = {"rag-judge:latest": JUDGE_DIGEST, "gemma2:9b": BASE_DIGEST}
+    assert digest_drift(answers.model_copy(update={"generator": gemma}), scores, live) == [
+        "gemma2:9b: the run recorded no digest; re-run generate and score with Ollama up"
+    ]
 
 
 # ---- the floors --------------------------------------------------------------------------

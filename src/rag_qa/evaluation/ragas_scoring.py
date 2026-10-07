@@ -15,7 +15,7 @@ What a run does, in order, refusing with a message (exit 2) before any model loa
 3. Ollama serves ``rag-judge`` with exactly the Modelfile's ``num_ctx``. Ollama's OpenAI
    endpoint cannot set the context per request, and its 4k default would truncate
    RAGAs' prompts silently (caveat 22);
-4. the installed ragas is the one the fingerprint names.
+4. the installed ragas and instructor are the ones the fingerprint names.
 
 Then it scores each answerable item with four metrics (faithfulness, answer relevancy,
 context precision, context recall), one judge call at a time, and computes the decline
@@ -49,6 +49,7 @@ from typing import Any
 from rag_qa.evaluation.dataset import GoldenItem
 from rag_qa.evaluation.fingerprint import (
     GENERATION_PARTS,
+    INSTRUCTOR_VERSION,
     JUDGE_MODE,
     METRICS,
     RAGAS_VERSION,
@@ -141,11 +142,54 @@ def _same(served: str | None, written: str) -> bool:
         return served == written
 
 
+def _not_from_the_modelfile(
+    root: str, shown: Mapping[str, Any], served: Mapping[str, str], settings: JudgeSettings
+) -> list[str]:
+    """What the served judge has that its Modelfile and its base do not give it: a
+    parameter or a SYSTEM or TEMPLATE text left from an older Modelfile (S2-5's second
+    reviewer). A created model serves its base's parameters, SYSTEM and TEMPLATE, with the
+    Modelfile's own in their place.
+
+    Needs the base model to know what it gives. When Ollama cannot show it (removed after
+    ``ollama create``, or a FROM that is a file), only what the Modelfile sets is checked:
+    each PARAMETER by the caller, and the SYSTEM and TEMPLATE here.
+    """
+    try:
+        base = ollama_show(root, settings.base)
+    except OllamaError:
+        base = None
+    differ = []
+    if base is not None:
+        inherited = served_parameters(base)
+        differ += [
+            f"{name} {served[name]} (neither the Modelfile nor {settings.base} sets it)"
+            for name in sorted(set(served) - set(inherited) - set(settings.parameters))
+        ]
+        differ += [
+            f"{name} {served.get(name, 'unset')} ({settings.base} has {value}, and the "
+            f"Modelfile does not set it)"
+            for name, value in inherited.items()
+            if name not in settings.parameters and not _same(served.get(name), value)
+        ]
+    for keyword, written in (("SYSTEM", settings.system), ("TEMPLATE", settings.template)):
+        key = keyword.lower()
+        if written is not None:
+            wanted = written
+        elif base is not None:
+            wanted = str(base.get(key) or "")
+        else:
+            continue
+        if str(shown.get(key) or "").strip() != wanted.strip():
+            differ.append(f"a {keyword} that is not the one its Modelfile gives it")
+    return differ
+
+
 def check_judge(
     root: str, model: str, modelfile: str, settings: JudgeSettings
 ) -> tuple[str, str | None]:
     """The judge is served as its Modelfile says: built on its FROM, with each of its
-    parameters, ``num_ctx`` first. Returns its digest and its base model's (recorded,
+    parameters, ``num_ctx`` first, and nothing its Modelfile and base do not give it
+    (:func:`_not_from_the_modelfile`). Returns its digest and its base model's (recorded,
     never hashed).
 
     The Modelfile's text is what the run's ``judge`` part hashes. An edited Modelfile that
@@ -167,6 +211,7 @@ def check_judge(
         for name, value in settings.parameters.items()
         if not _same(served.get(name), value)
     ]
+    differ += _not_from_the_modelfile(root, shown, served, settings)
     parent = str(shown.get("details", {}).get("parent_model") or "")
     if parent and ollama_tag(parent) != ollama_tag(settings.base):
         differ.append(f"built on {parent} (the Modelfile says FROM {settings.base})")
@@ -183,8 +228,8 @@ def check_judge(
 
 
 def check_ragas() -> dict[str, str]:
-    """The installed versions of the eval extra; ragas must be the one the fingerprint
-    names. Returns them for the record."""
+    """The installed versions of the eval extra; ragas and instructor must be the ones the
+    fingerprint names. Returns them for the record."""
     try:
         versions = {
             name: importlib.metadata.version(name) for name in ("ragas", "instructor", "openai")
@@ -194,12 +239,16 @@ def check_ragas() -> dict[str, str]:
             f"rag-eval score needs the eval extra ({e.name} is not installed): "
             f"uv sync --extra eval"
         ) from None
-    if versions["ragas"] != RAGAS_VERSION:
-        raise ScoringError(
-            f"ragas {versions['ragas']} is installed, but this checkout scores with "
-            f"{RAGAS_VERSION} (rag_qa.evaluation.fingerprint.RAGAS_VERSION, held to uv.lock): "
-            f"uv sync --extra eval"
-        )
+    for name, pinned, constant in (
+        ("ragas", RAGAS_VERSION, "RAGAS_VERSION"),
+        ("instructor", INSTRUCTOR_VERSION, "INSTRUCTOR_VERSION"),
+    ):
+        if versions[name] != pinned:
+            raise ScoringError(
+                f"{name} {versions[name]} is installed, but this checkout scores with "
+                f"{pinned} (rag_qa.evaluation.fingerprint.{constant}, held to uv.lock): "
+                f"uv sync --extra eval"
+            )
     return versions
 
 

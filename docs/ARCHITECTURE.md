@@ -865,7 +865,7 @@ fixes a stale result:
 | `corpus` | the sha256 of every file the corpus walk would load | generate and score |
 | `questions` | each golden record's `id`, `question`, `answerable` and `must_not_contain` | generate and score |
 | `references` | each golden record's `ground_truth` | score only |
-| `judge` | the judge model name, the metric set, the ragas version and `eval/judge.Modelfile`'s text | score only |
+| `judge` | the judge model name, the metric set, the ragas and instructor versions and `eval/judge.Modelfile`'s text | score only |
 
 - **The rendered-prompt probe** is the chat prompt rendered over two fixed fake
   documents with `chain.format_docs`. A change to `format_docs`, to `citation()` or to
@@ -973,6 +973,7 @@ these; the story file has the recipe and the measurements._
     re-run score.
   - The ragas version is `fingerprint.RAGAS_VERSION`, since CI has no ragas to ask. A
     test holds it to `uv.lock`, and `score` refuses an installed ragas that differs.
+    instructor's is pinned the same way (the second reviewer, below).
   - `judge` also hashes the answer-relevancy embedder, the instructor mode and the metric
     settings. Answer relevancy asks one question, not three: under greedy decoding the
     spike's three were identical, so the mean is the same at a third of the calls.
@@ -998,6 +999,19 @@ these; the story file has the recipe and the measurements._
     costs no re-score. A SYSTEM or TEMPLATE text is kept whole.
   - Accepted, as DEC-17 accepted it for the retrieval embedder: answer relevancy's
     embedder is pinned by name, not by revision.
+- **The second reviewer (2026-10-07) closed two gaps before any baseline exists:**
+  - **instructor's version is pinned and hashed into `judge`, as ragas's is**
+    (`fingerprint.INSTRUCTOR_VERSION`). In JSON mode instructor adds its own system
+    message to every judge call, and writes the re-ask after a parse failure. So a lock
+    bump changed the judge's prompts without moving `judge`. A test holds the pin to
+    `uv.lock`, and `score` refuses an installed instructor that differs.
+  - **The served judge is checked both ways.** A created model serves its base's
+    parameters, SYSTEM and TEMPLATE, with the Modelfile's own in their place, as Ollama's
+    `/api/show` shows. So `score` also refuses a parameter that neither gives it, an
+    inherited one that changed, and a SYSTEM or TEMPLATE that is not the Modelfile's (or
+    the base's, when the Modelfile sets none). Each is a Modelfile edit never re-created.
+    When Ollama cannot show the base (removed after `ollama create`), only what the
+    Modelfile sets is checked.
 - **Cost, for S2-5b:** one answerable item took 39 min to score on this CPU (2 Ollama
   threads), so a full local scoring is about 13 h, not 3–4 h. Colab/Kaggle is the default.
 
@@ -1614,7 +1628,7 @@ generation: {faithfulness: ..., answer_relevancy: ..., context_precision: ...,
 - the `fingerprint`, as hashes of `query`, `ingestion`, `corpus`, `questions`,
   `references` and `judge` (DEC-15);
 - the generator and judge models, with their recorded Ollama digests (not hashed), and
-  the ragas version;
+  the ragas, instructor and openai versions (the first two also hashed into `judge`);
 - the judge's `num_ctx` and the largest `prompt_tokens` seen;
 - the parse failures, counted per metric;
 - timestamps;

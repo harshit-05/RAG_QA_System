@@ -9,6 +9,7 @@ import importlib.metadata
 import importlib.util
 import json
 import types
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -261,6 +262,81 @@ def test_a_judge_not_built_from_its_modelfile_is_refused(
     assert score(scoring) == EXIT_CANNOT_RUN
     err = capsys.readouterr().err
     assert problem in err and "ollama create rag-judge" in err
+
+
+def stale_system(ollama: FakeOllama, modelfile: Path) -> None:
+    ollama.systems["rag-judge:latest"] = "You are a lenient judge."  # left from an old one
+
+
+def leftover_parameter(ollama: FakeOllama, modelfile: Path) -> None:
+    ollama.parameters["rag-judge:latest"] += f"\n{'top_k':<30} 40"
+
+
+def changed_inheritance(ollama: FakeOllama, modelfile: Path) -> None:
+    ollama.parameters["rag-judge:latest"] = ollama.parameters["rag-judge:latest"].replace(
+        '"<end>"', '"<eot>"'
+    )
+
+
+def system_never_created(ollama: FakeOllama, modelfile: Path) -> None:
+    modelfile.write_text(modelfile.read_text() + 'SYSTEM """You judge."""\n')
+
+
+@pytest.mark.parametrize(
+    ("break_", "problem"),
+    [
+        pytest.param(stale_system, "a SYSTEM that is not the one its Modelfile gives it",
+                     id="a SYSTEM the Modelfile no longer has"),
+        pytest.param(system_never_created, "a SYSTEM that is not the one its Modelfile gives it",
+                     id="a SYSTEM the served judge never got"),
+        pytest.param(leftover_parameter, "top_k 40 (neither the Modelfile nor gemma2:9b sets it)",
+                     id="a PARAMETER the Modelfile no longer has"),
+        pytest.param(changed_inheritance,
+                     "stop <eot> (gemma2:9b has <end>, and the Modelfile does not set it)",
+                     id="an inherited parameter changed"),
+    ],
+)
+def test_a_judge_with_what_its_modelfile_does_not_give_is_refused(
+    scoring: Path, fake_ollama: FakeOllama, no_ragas: None, capsys: pytest.CaptureFixture[str],
+    break_: Callable[[FakeOllama, Path], None], problem: str,
+) -> None:
+    # Each is hashed into `judge` as the Modelfile has it, while the served judge differs:
+    # an edited Modelfile, never re-created (S2-5's second reviewer).
+    break_(fake_ollama, scoring.parent / "eval" / "judge.Modelfile")
+    assert score(scoring) == EXIT_CANNOT_RUN
+    err = capsys.readouterr().err
+    assert problem in err and "ollama create rag-judge" in err
+
+
+def test_a_judge_whose_system_matches_its_modelfile_passes(
+    scoring: Path, fake_ollama: FakeOllama, no_ragas: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    system_never_created(fake_ollama, scoring.parent / "eval" / "judge.Modelfile")
+    fake_ollama.systems["rag-judge:latest"] = "You judge."
+    assert score(scoring) == EXIT_CANNOT_RUN
+    assert "needs the eval extra" in capsys.readouterr().err  # every judge check passed
+
+
+def test_without_its_base_only_what_the_modelfile_sets_is_checked(
+    scoring: Path, fake_ollama: FakeOllama, no_ragas: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The base removed after `ollama create`: nothing says what it gave, so a parameter the
+    # Modelfile does not set cannot be told a leftover.
+    del fake_ollama.parameters["gemma2:9b"]
+    leftover_parameter(fake_ollama, scoring.parent / "eval" / "judge.Modelfile")
+    assert score(scoring) == EXIT_CANNOT_RUN
+    assert "needs the eval extra" in capsys.readouterr().err
+
+
+def test_another_instructor_version_is_refused(
+    scoring: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    installed = {"ragas": fp.RAGAS_VERSION, "instructor": "1.18.0", "openai": "3.3.0"}
+    monkeypatch.setattr(importlib.metadata, "version", installed.__getitem__)
+    assert score(scoring) == EXIT_CANNOT_RUN
+    err = capsys.readouterr().err
+    pinned = fp.INSTRUCTOR_VERSION
+    assert f"instructor 1.18.0 is installed, but this checkout scores with {pinned}" in err
 
 
 def test_a_served_value_written_another_way_is_the_same() -> None:

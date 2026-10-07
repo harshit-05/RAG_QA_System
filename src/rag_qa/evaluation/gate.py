@@ -251,7 +251,7 @@ class ScoresRun(_Run):
     fingerprint: dict[str, str]  # all six parts
     generator: Generator
     judge: JudgeRecord
-    versions: dict[str, str]  # ragas, instructor, openai: recorded, only ragas is hashed
+    versions: dict[str, str]  # ragas, instructor, openai: recorded; the first two are hashed
     failures: dict[str, Failures]
     aggregate: dict[str, float | None]
     items: list[ScoreItem]
@@ -434,14 +434,16 @@ def digest_drift(
     model behind the same tag changes answers without changing any hashed input."""
     problems = []
     recorded = [
-        (answers.generator.model, answers.generator.digest, "generate and score"),
-        (scores.judge.model, scores.judge.digest, "score"),
-        (scores.judge.base, scores.judge.base_digest, "score"),
+        (answers.generator.model, answers.generator.digest, "generate and score", False),
+        (scores.judge.model, scores.judge.digest, "score", False),
+        (scores.judge.base, scores.judge.base_digest, "score", True),
     ]
-    for model, digest, rerun in recorded:
+    for model, digest, rerun, is_base in recorded:
         if model is None:
             continue  # not an Ollama model: nothing to compare
-        if digest is None and model == scores.judge.base:
+        # Flagged, not matched by name: a generator that is the judge's base model (gemma2
+        # answering) must still report a digest it never recorded (second reviewer).
+        if digest is None and is_base:
             # The base was not listed when the run scored (removed after `ollama create`,
             # or a path). The judge's own digest already pins its layers, and no re-score
             # could record this one, so it is no reason to fail.
