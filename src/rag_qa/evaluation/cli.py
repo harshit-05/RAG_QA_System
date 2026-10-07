@@ -315,7 +315,7 @@ class _CannotRun(Exception):
 @dataclass(frozen=True)
 class _Setup:
     config_file: Path
-    config: Any  # RagConfig
+    config: RagConfig
     eval_dir: Path
     golden: list[GoldenItem]
 

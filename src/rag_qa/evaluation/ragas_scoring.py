@@ -337,8 +337,8 @@ class CallLog:
             self.retried[self.metric] += 1
 
 
-#: What each metric is asked, from one answered item and its reference.
 def metric_inputs(item: AnswerItem, reference: str) -> dict[str, dict[str, Any]]:
+    """What each metric is asked, from one answered item and its reference."""
     return {
         "faithfulness": {
             "user_input": item.question,

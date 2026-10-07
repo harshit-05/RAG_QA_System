@@ -196,6 +196,10 @@ def judge(c: dict[str, Any]) -> dict[str, Any]:
     return c["evaluation"]["judge"]
 
 
+#: A Modelfile SYSTEM instruction: it changes the judge's verdicts, so it moves `judge`.
+SYSTEM_LINE = 'SYSTEM """Judge strictly."""\n'
+
+
 def one_word(prompt: dict[str, Any]) -> None:
     """S2-5b's one-word prompt change."""
     prompt["system"] = prompt["system"].replace("helpful and precise", "helpful, precise")
@@ -249,6 +253,8 @@ MOVES: list[Any] = [
     # judge
     pytest.param(lambda w, _: setattr(w, "modelfile", w.modelfile.replace("seed 42", "seed 7")),
                  "judge", id="the Modelfile"),
+    pytest.param(lambda w, _: setattr(w, "modelfile", w.modelfile + SYSTEM_LINE),
+                 "judge", id="a SYSTEM line in the Modelfile"),
     pytest.param(setter(judge, "model", "other-judge"), "judge", id="the judge model"),
     pytest.param(setter(judge, "embedding_model", "sentence-transformers/all-mpnet-base-v2"),
                  "judge", id="the embedder"),
@@ -277,6 +283,12 @@ STAYS: list[Any] = [
     pytest.param(setter(judge, "base_url", "http://gpu-box:11434/v1"), id="the judge base_url"),
     pytest.param(setter(judge, "timeout_s", 60), id="the judge timeout"),
     pytest.param(setter(llm, "base_url", "http://gpu-box:11434"), id="the llm base_url"),
+    # Runtime-only llm keys (S2-5's first review): none changes an answer.
+    pytest.param(setter(llm, "validate_model_on_init", False), id="the start-up model check"),
+    pytest.param(setter(llm, "keep_alive", "10m"), id="keep_alive"),
+    pytest.param(setter(llm, "client_kwargs", {"timeout": 600}), id="the client's timeout"),
+    pytest.param(lambda w, _: setattr(w, "modelfile", "# a note\n\n" + w.modelfile + "# end\n"),
+                 id="a comment in the Modelfile"),
     pytest.param(setter(query, "reranker", "components.rerankers.ms_marco_minilm_cuda"),
                  id="the reranker's device"),
     pytest.param(
@@ -732,3 +744,18 @@ def test_a_failed_write_leaves_the_last_run_and_no_stray_file(
         write_run(answers.model_copy(update={"limit": 1}), target)
     assert target.read_bytes() == before
     assert sorted(p.name for p in target.parent.iterdir()) == ["answers-latest.json"]
+
+
+def test_modelfile_directives_drop_comments_but_keep_block_text() -> None:
+    text = (
+        "# header\nFROM gemma2:9b\n\nPARAMETER num_ctx 8192  \n"
+        'SYSTEM """\n# not a comment: part of the system text\nJudge strictly.\n"""\n# end\n'
+    )
+    assert fp.modelfile_directives(text) == [
+        "FROM gemma2:9b",
+        "PARAMETER num_ctx 8192",
+        'SYSTEM """',
+        "# not a comment: part of the system text",
+        "Judge strictly.",
+        '"""',
+    ]

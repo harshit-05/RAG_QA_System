@@ -16,9 +16,9 @@ part           hashes                                                           
 ``questions``  each golden record's id, question, answerable flag and           generate, score
                ``must_not_contain``
 ``references`` each golden record's ``ground_truth``                            score
-``judge``      the judge model, its Modelfile's text, the answer-relevancy      score
-               embedder, the metric set, the decline marker and the ragas
-               version
+``judge``      the judge model, its Modelfile (comments aside), the answer-     score
+               relevancy embedder, the metric set, the decline marker and the
+               ragas version
 =============  ===============================================================  ===============
 
 Each is canonical JSON (sorted keys) hashed with sha256, by
@@ -94,8 +94,20 @@ METRICS: Final[Mapping[str, Mapping[str, Any]]] = {
     "context_recall": {"class": "ContextRecall"},
 }
 
-#: Keys of a query component that choose where it runs, not what it answers.
-RUNTIME_KEYS: Final = ("base_url", "device")
+#: Keys of a query component that choose where or how it runs, never what it answers, so
+#: editing one never forces a re-run: the server and its HTTP clients (timeouts included),
+#: the device, how long Ollama keeps the model loaded, and the start-up check that it
+#: exists. ``num_thread`` is deliberately not one: a different thread count can change the
+#: floating-point sums, and so, rarely, an answer (STATUS.md backlog, S2-5b).
+RUNTIME_KEYS: Final = (
+    "base_url",
+    "device",
+    "client_kwargs",
+    "async_client_kwargs",
+    "sync_client_kwargs",
+    "keep_alive",
+    "validate_model_on_init",
+)
 
 #: What the prompt is rendered over for the probe: one chunk with a page, one without, so
 #: a change to how either kind is cited moves ``query``.
@@ -237,12 +249,32 @@ def read_modelfile(path: Path) -> str:
         raise FingerprintError(f"cannot read the judge's Modelfile {path}: {e}") from e
 
 
+def modelfile_directives(text: str) -> list[str]:
+    """A Modelfile's text without its comment and blank lines: what Ollama builds from.
+
+    Hashed in place of the raw text, so editing a comment never forces a re-score, while
+    a FROM, PARAMETER, SYSTEM or TEMPLATE edit still does. A line inside a ``\"\"\"``
+    block (a SYSTEM or TEMPLATE text) is kept whatever it holds, ``#`` included.
+    """
+    kept = []
+    in_block = False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not in_block and (not stripped or stripped.startswith("#")):
+            continue
+        kept.append(line)
+        if stripped.count('"""') % 2:
+            in_block = not in_block
+    return kept
+
+
 def judge_part(evaluation: Evaluation, modelfile_text: str) -> str:
     judge = evaluation.judge
     return spec_identity(
         {
             "model": judge.model,
-            "modelfile": modelfile_text,
+            "modelfile": modelfile_directives(modelfile_text),
             "embedding_model": judge.embedding_model,
             "metrics": METRICS,
             "mode": JUDGE_MODE,
