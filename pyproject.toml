@@ -30,11 +30,13 @@ rag-query = "rag_qa.cli:main"
 rag-eval = "rag_qa.evaluation.cli:main"
 
 [project.optional-dependencies]
-# Evaluation harness. Wired into CI as a quality gate in Phase 2 (FR-7).
+# Tier 2 of the quality bar (FR-7, DEC-15): `rag-eval score`, run offline, never in CI.
+# rag_qa.evaluation.ragas_scoring imports openai and instructor itself, so they are
+# declared rather than left to arrive through ragas.
 eval = [
     "ragas>=0.4",
-    "datasets>=3",
-    "pandas>=2.2",
+    "openai>=1",
+    "instructor>=1.17",
 ]
 
 [dependency-groups]
@@ -114,20 +116,25 @@ warn_unused_ignores = true
 # Only the imports that have no stubs are treated as Any. A global
 # ignore_missing_imports would also hide a misspelled rag_qa import.
 [[tool.mypy.overrides]]
-module = [
-    "docx2txt",
-    "pandas",    # these three come from the optional eval extra
-    "datasets",
-    "ragas.*",
-]
+module = ["docx2txt"]
 ignore_missing_imports = true
+
+# The optional eval extra, imported only by rag_qa.evaluation.ragas_scoring. CI never
+# installs it, while a scoring machine does, so mypy is told to treat it as Any either
+# way: otherwise the two would type-check differently, and warn_unused_ignores would
+# fail one of them.
+[[tool.mypy.overrides]]
+module = ["ragas", "ragas.*", "openai", "openai.*", "instructor", "instructor.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 # Coverage gate (NFR-8, S1-5). 80% is the SRS figure, deliberately not higher: a
 # higher bar invites tests written for the number rather than the behaviour.
 [tool.coverage.run]
 source = ["rag_qa"]
-# evaluate.py is Phase 2 work (FR-7) and imports the optional `eval` extra.
-omit = ["*/rag_qa/evaluate.py"]
+# ragas_scoring.py needs the optional eval extra and Ollama, which CI has neither of
+# (DEC-15). Its pure helpers are still tested; its ragas wiring runs only in a real score.
+omit = ["*/rag_qa/evaluation/ragas_scoring.py"]
 
 [tool.coverage.report]
 fail_under = 80

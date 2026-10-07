@@ -56,6 +56,19 @@ half of the Phase 2 exit holds. Design: ARCHITECTURE.md §2.1 DEC-15.
      only.
 - **CI:** `uv run rag-eval check` becomes the last step of the `check` job.
 
+## Inputs from S2-5's review (2026-10-07)
+
+- **Confirm `check --with-ollama` across machines before relying on it.** A Colab
+  baseline records the digest of Colab's `ollama create rag-judge`. It is not known
+  whether the same Modelfile on the same `gemma2:9b` blobs gives the same digest here.
+  Run `ollama create` on both, compare `ollama list`, and record the answer. If they
+  differ, `--with-ollama` cannot check a Colab-scored run from this host. Say so in the
+  README instead.
+- **Make the runs resumable first** (STATUS.md backlog): one transport error on item 19
+  would lose a 13–18 h scoring.
+- **Land `num_thread` before the baseline**, as the Scope says. It stays in the `query`
+  hash on purpose, while the other runtime-only llm keys do not (S2-5's review).
+
 ## Out of scope
 
 - Changing the prompt, `min_score` or the model to improve a number: follow-ups, each

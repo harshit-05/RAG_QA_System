@@ -1,0 +1,7 @@
+# The tier-2 judge (DEC-15). Build it with: ollama create rag-judge -f eval/judge.Modelfile
+# Its directives are hashed into a scored run's `judge` part: editing one means a re-score.
+FROM gemma2:9b
+PARAMETER num_ctx 8192
+PARAMETER num_predict 2048
+PARAMETER temperature 0
+PARAMETER seed 42

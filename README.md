@@ -214,7 +214,8 @@ src/rag_qa/
   ingest.py        the rag-ingest command: updates the index with what changed
   chain.py         the retrieval and answer chain (LangChain LCEL)
   cli.py           the rag-query command
-  evaluate.py      RAGAs evaluation (Phase 2)
+  evaluation/      the rag-eval command: retrieval scores (tier 1), and generation
+                   scored by RAGAs offline, then checked against the floors (tier 2)
 tests/             the test suite, including one regression case per Phase 0 bug
 docs/              specification, architecture, workflow and decision records
 stories/           the delivery board and a record of each change

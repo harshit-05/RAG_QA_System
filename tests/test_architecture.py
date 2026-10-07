@@ -8,9 +8,12 @@
   ``^(from|import) .*chain``, which false-positives on ``langchain_core`` (S1-3).
   A fresh process is required: inside pytest, other tests have already loaded
   everything.
-* ``evaluation.gate`` loads no model stack: it holds the floors, and S2-5's
-  ``rag-eval check`` runs it in CI's model-free job (ARCHITECTURE.md §2.2). Checked the
-  same way, in a fresh interpreter.
+* ``evaluation.gate`` loads no model stack: it holds the floors and the freshness check
+  that ``rag-eval check`` runs in CI's model-free job (ARCHITECTURE.md §2.2), and imports
+  the fingerprint, which may bring in ``langchain_core`` and ``rag_qa.chain`` but nothing
+  heavier. Nor does ``evaluation.cli``, which that CI step runs (S2-5b): it imports the
+  scoring module, whose ragas imports must stay inside functions. Checked the same way,
+  in a fresh interpreter.
 * ADR-007 / DEC-1: application code never imports ``langchain_classic`` or the
   ``langchain`` meta-package. Checked on the **parsed imports**, so a docstring that
   merely names the package cannot trip it.
@@ -62,11 +65,14 @@ def test_the_config_layer_loads_no_langchain(module: str) -> None:
     assert langchain == []
 
 
-def test_the_floors_load_without_the_model_stack() -> None:
-    # S2-5 adds the fingerprint, which may bring in langchain_core, but never any of these:
-    # `check` must stay a CPU-only, model-free step.
-    heavy = {"ragas", "openai", "torch", "sentence_transformers", "langchain_huggingface"}
-    loaded = modules_loaded_by("rag_qa.evaluation.gate")
+@pytest.mark.parametrize("module", ["rag_qa.evaluation.gate", "rag_qa.evaluation.cli"])
+def test_the_gate_loads_without_the_model_stack(module: str) -> None:
+    # The fingerprint may bring in langchain_core, but never any of these: `rag-eval check`
+    # must stay a CPU-only, model-free step, and CI never installs the eval extra.
+    heavy = {
+        "ragas", "openai", "instructor", "torch", "sentence_transformers", "langchain_huggingface"
+    }
+    loaded = modules_loaded_by(module)
     assert sorted(m for m in loaded if m.split(".")[0] in heavy) == []
 
 

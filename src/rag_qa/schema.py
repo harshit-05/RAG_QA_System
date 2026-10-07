@@ -19,12 +19,20 @@ copies. A caller mutating what it got back cannot reach the config.
 """
 
 import difflib
+import string
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from rag_qa.registry import allowlist_hint, is_allowed, removed_prefix_hint
 
@@ -168,9 +176,70 @@ class Components(_Strict):
         return self
 
 
+#: The placeholders the chat prompt is filled with, and the only ones it may use.
+PROMPT_FIELDS = ("context", "question")
+
+
+def placeholders(template: str) -> list[str]:
+    """Every replacement field in an f-string template, nested format specs included.
+
+    ``string.Formatter`` reads braces exactly as ``str.format`` and an f-string
+    ``ChatPromptTemplate`` do: ``{{`` and ``}}`` are literal braces, and ``{}`` is a field
+    named ``""``. Raises ``ValueError`` on an unbalanced brace. Using it keeps this module
+    free of LangChain.
+    """
+    fields = []
+    for _, field, spec, _ in string.Formatter().parse(template):
+        if field is not None:
+            fields.append(field)
+        if spec:
+            fields += placeholders(spec)
+    return fields
+
+
 class Prompt(_Strict):
     system: str
     human: str
+
+    @model_validator(mode="after")
+    def check_placeholders(self) -> "Prompt":
+        """The template's placeholders are the ones the chain fills, where it fills them
+        (ARCHITECTURE.md §2.3; the FR-8 follow-up found in S1-1).
+
+        A ``human`` turn without ``{context}`` answers without retrieval, silently. Any
+        other placeholder is a required variable that fails every question. ``{context}``
+        in the system turn would put retrieved text among the instructions (OWASP LLM01).
+        """
+        found: dict[str, list[str]] = {}
+        for role in ("system", "human"):
+            try:
+                found[role] = placeholders(getattr(self, role))
+            except ValueError as e:
+                raise ValueError(
+                    f"{role}: {e}. A literal brace is written doubled, {{{{ or }}}}"
+                ) from None
+        problems = []
+        stray = sorted({f for fields in found.values() for f in fields if f not in PROMPT_FIELDS})
+        if stray:
+            problems.append(
+                f"unknown placeholder(s) {', '.join('{' + f + '}' for f in stray)}: only "
+                f"{{context}} and {{question}} are filled, so each other one fails every "
+                f"question. A literal brace is written doubled, {{{{ or }}}}"
+            )
+        missing = [f"{{{f}}}" for f in PROMPT_FIELDS if f not in found["human"]]
+        if missing:
+            problems.append(
+                f"human must contain {{context}} and {{question}}; it has no "
+                f"{' or '.join(missing)}"
+            )
+        if "context" in found["system"]:
+            problems.append(
+                "system must not contain {context}: retrieved text belongs in the human "
+                "turn, apart from the instructions (OWASP LLM01)"
+            )
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
 
 
 class Ingestion(_Strict):
@@ -338,6 +407,59 @@ class Paths(_Strict):
         return resolved
 
 
+class Judge(_Strict):
+    """The tier-2 judge (DEC-15): an Ollama model built from a committed Modelfile, reached
+    through Ollama's OpenAI-compatible endpoint. Only ``rag-eval score`` builds it."""
+
+    model: str = Field(min_length=1)
+    #: A file in the eval folder (``eval/`` beside the config file, or ``--eval-dir``), so
+    #: the eval files travel together. Its text is hashed into a run's ``judge`` part, and
+    #: its ``num_ctx`` is checked against the served model's before scoring.
+    modelfile: str
+    base_url: str = Field(min_length=1)
+    #: The sentence-transformers model answer relevancy compares questions with (on CPU).
+    embedding_model: str = Field(min_length=1)
+    #: Seconds one judge call may take. Runtime only, never hashed: a call on this CPU took
+    #: up to 13 minutes in S2-5's spike.
+    timeout_s: float = Field(gt=0)
+
+    @field_validator("modelfile")
+    @classmethod
+    def check_modelfile(cls, modelfile: str) -> str:
+        path = PurePosixPath(modelfile)
+        if (
+            not modelfile.strip()
+            or path.is_absolute()
+            or modelfile.startswith("~")
+            or ".." in path.parts
+            or "\\" in modelfile
+        ):
+            raise ValueError(
+                f"{modelfile!r} must be a file name relative to the eval folder (eval/ beside "
+                f"the config file, or --eval-dir), with no '..', e.g. judge.Modelfile"
+            )
+        return modelfile
+
+
+class Evaluation(_Strict):
+    """What only ``rag-eval`` reads (ARCHITECTURE.md §2.3). Optional in the file."""
+
+    #: The core of the system prompt's refusal sentence. An unanswerable question's answer
+    #: counts as a decline when it contains this, in any case (DEC-15).
+    decline_marker: str
+    judge: Judge
+
+    @field_validator("decline_marker")
+    @classmethod
+    def check_marker(cls, marker: str) -> str:
+        if not marker.strip() or marker != marker.strip():
+            raise ValueError(
+                "must be a non-empty phrase with no surrounding spaces, e.g. "
+                "'could not find the answer'"
+            )
+        return marker
+
+
 #: Each pipeline slot, and the component kind it must reference.
 _SLOT_KINDS = {
     ("ingestion", "splitter"): "splitters",
@@ -356,6 +478,26 @@ class RagConfig(_Strict):
     # Optional in the file, in which case the defaults apply. validate_default makes
     # the defaults go through Paths.anchor too, so they come out absolute as well.
     paths: Paths = Field(default_factory=dict, validate_default=True)
+    #: Read by ``rag-eval`` only (S2-5). Optional, so a config without it still serves.
+    evaluation: Evaluation | None = None
+
+    @model_validator(mode="after")
+    def check_decline_marker(self) -> "RagConfig":
+        """The decline marker is part of the refusal the system prompt asks for.
+
+        Edit the refusal sentence without the marker, and the decline rate would drop to
+        zero without a word (ARCHITECTURE.md §2.3). Compared in any case, as answers are.
+        """
+        if self.evaluation is None:
+            return self
+        marker = self.evaluation.decline_marker
+        if marker.lower() not in self.pipeline.query.prompt.system.lower():
+            raise ValueError(
+                f"evaluation.decline_marker {marker!r} does not appear in "
+                f"pipeline.query.prompt.system. It must be part of the refusal sentence the "
+                f"system prompt asks for, or no answer would ever count as a decline"
+            )
+        return self
 
     def _slots(self) -> Iterator[tuple[str, str, str]]:
         """Every pipeline reference in use: ``(location, reference, required kind)``.
