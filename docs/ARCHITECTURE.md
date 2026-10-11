@@ -1015,6 +1015,32 @@ these; the story file has the recipe and the measurements._
 - **Cost, for S2-5b:** one answerable item took 39 min to score on this CPU (2 Ollama
   threads), so a full local scoring is about 13 h, not 3–4 h. Colab/Kaggle is the default.
 
+_S2-5b (2026-10-11), on Opus 5.5. The baseline settled these; the story file has the
+measurements._
+
+- **Runs resume** (`evaluation/checkpoint.py`).
+  - Each finished item is appended to `<out stem>.partial.jsonl`, `fsync`'d.
+  - A re-run skips the items it holds, but only for the same identity: the generation
+    parts and the generator's digest for `generate`; the answers sha, `references`,
+    `judge`, the digests and the versions for `score`; and `--limit` for both.
+  - The run file is still written once, atomically, and the checkpoint is deleted after.
+- **`num_thread: 10`** is on every Ollama llm, in `query`. The judge's Modelfile has none,
+  since it scores on a GPU.
+- **The judge repeated exactly.**
+  - Two scorings of the same answers file on one Colab T4, with Ollama 0.22.1, agreed to
+    the last digit. The Modelfile's `seed` and temperature 0 made the run deterministic on
+    one setup, which this decision had not expected.
+  - So the measured spread was 0, and each floor is the baseline minus the 0.05 minimum.
+  - Cross-hardware spread is unmeasured, so re-scores run on the same setup.
+- **Ollama digests are portable across machines for the same Ollama version.** The same
+  Modelfile on the same `gemma2:9b` blobs gave `d85f8193c353` on Colab and here, so
+  `check --with-ollama` holds for a Colab-scored run. The recipe pins `OLLAMA_VERSION`.
+- **The judge is lenient, not noisy.** The hand check found that it:
+  - scored one fabricated answer as faithful;
+  - credited two references that the contexts only half held.
+
+  The floors stand as regression gates for this judge; the absolute numbers run high.
+
 Rejected:
 
 - **RAGAs in CI with a hosted judge**: cost, a secret, network access and a non-local

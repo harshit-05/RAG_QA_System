@@ -5,18 +5,37 @@
 
 ## Now
 
-**Next action: [S2-5b](phase-2/S2-5b-tier2-baseline.md), in progress on
-`chore/s2-5b-tier2-baseline`.**
+**Next action: open the S2-5b PR from `chore/s2-5b-tier2-baseline`; CI is its last
+verification. Then [S2-7](phase-2/S2-7-http-api.md).**
 
-**S2-5b is in progress** (2026-10-07, on Opus 5.5; the story says opus-fast). The plan,
-confirmed by the maintainer:
+**S2-5b is in review** (2026-10-11, on Opus 5.5; the story says opus-fast). Tier 2 is
+enforced: the baseline is committed, its floors are set, and `rag-eval check` is the last
+step of CI's `check` job. Verifications 1–4 are shown in the story file.
 
-1. make `generate` and `score` resumable;
-2. measure and set `num_thread`;
-3. settle the cross-machine digest question;
-4. generate here;
-5. **score twice on a Colab T4** (maintainer's choice), with the checkpoint on Google Drive;
-6. set the floors from the two scorings, and add `rag-eval check` to CI.
+- **Runs resume.** `generate` and `score` keep each finished item in a checkpoint beside
+  their output (`<name>.partial.jsonl`), and the same command resumes. A `/code-review`
+  found 9 issues; 7 were fixed.
+- **`num_thread` 10** is set on every Ollama llm. Time to first token went from 251 s to
+  168 s, with identical answers.
+- **The baseline:**
+  - generated here in 69 min;
+  - scored twice on a Colab T4, about 35 min each;
+  - faithfulness 0.908, answer relevancy 0.719, context precision 0.920, context recall
+    1.0, decline rate 0.6;
+  - the floors are each minus 0.05.
+- **The two scorings were identical**, so the measured noise was 0. A re-score on other
+  hardware remains unmeasured (caveat 16).
+- **The digest question is answered.** With Ollama 0.22.1 pinned, Colab's `ollama create`
+  gives this host's `d85f8193c353`, so `check --with-ollama` passes here on a Colab-scored
+  run.
+- **The hand check found the judge lenient.** It scored a made-up answer as faithful, and
+  gave context recall 1.0 twice where the contexts held half the reference. That is
+  recorded, not fixed (backlog).
+- **The maintainer kept the decline marker:** two honest refusals that paraphrase it count
+  as misses (backlog).
+- **From now on, CI fails on any edit to a hashed input until tier 2 is re-run** (caveat
+  24). S2-7 and S2-8 should leave the prompt, the llm, retriever and reranker specs, the
+  corpus and the golden set alone.
 
 **S2-5 is done** (2026-10-07, PR #13, on Opus 5.5 in place of Fable). CI was green on
 `b6f4e74`. Tier 2's harness is code: `rag-eval generate`, `score` and `check`, the
@@ -29,8 +48,8 @@ six-part fingerprint, and the prompt placeholder rules.
   `num_predict 2048`; and `rag-judge` serves 8192 tokens in 8.3 GB.
 - **Tier 2 costs about 39–54 min per item on this CPU**, so a full local scoring is
   13–18 h. S2-5b scores on Colab/Kaggle by default.
-- **Two reviews, 10 and 10 findings; 19 fixed, 1 deferred** (resumable runs, in the
-  backlog). They added `max_unscored` to the floors and an answers hash to the scores, and
+- **Two reviews, 10 and 10 findings; 19 fixed, 1 deferred** (resumable runs, which S2-5b
+  closed). They added `max_unscored` to the floors and an answers hash to the scores, and
   `score` now checks the served judge against its whole Modelfile.
 - **The second reviewer (2026-10-07): no blockers, 3 findings, all fixed on the PR.**
   - instructor's version is pinned and hashed into `judge`, as ragas's is: it writes
@@ -261,15 +280,10 @@ The final story of each phase performs the tag + version bump at close-out.
 
 - [x] Resolve DEC-1 / DEC-2 — done in the Phase 0 arch pass, 2026-09-18.
 
-- [ ] **Phase 2 (S2-5b): somewhere to run tier-2 scoring.** It scores twice, to measure
-  the judge's noise.
-  - **Locally:** about 3–4 h of CPU per scoring was the estimate; S2-5 measured 39–54 min
-    per item, so 13–18 h per scoring and twice that in all. `rag-judge` (8k context) holds
-    8.3 GB (measured).
-  - **On Colab/Kaggle:** needs an account, plus Ollama with the same `gemma2:9b` tag on
-    the GPU runtime, and `ollama create rag-judge -f eval/judge.Modelfile`.
-
-  S2-5b surfaces the estimate first, and the maintainer picks.
+- [x] **Phase 2 (S2-5b): somewhere to run tier-2 scoring.** Done 2026-10-11: a Colab T4,
+  with Ollama pinned to 0.22.1 and outputs on Google Drive. That is about 35 min per
+  scoring, against 13–18 h on this CPU at 2 threads. The notebook's cells are in S2-5b's
+  story file.
 
 - [ ] Nothing else: uv ✓, Python 3.12 (uv-managed) ✓, Ollama daemon ✓,
       Docker 29.8.1 ✓ (Phase 3), disk 311 GB free ✓. **No MCP servers are
@@ -287,6 +301,7 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
 - Items 16–21 are known costs of Phase 2 work.
 - Item 22 comes from the second design review.
 - Item 23 comes from S2-4.
+- Item 24 comes from S2-5b.
 
 1. **Resolved (2026-09-18), historical.** The three pending commits (baseline,
    S0-1, S0-2) landed as `ee86e1f`, `f702dc8` + `e781b17` and `0987c60`. The
@@ -306,8 +321,11 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
    - **The cause is a setting, not this CPU** (S2-1 second review). Ollama's journal
      shows every mistral load with `NumThreads:2`: on this i7-1255U it counts only the
      2 performance cores, out of 10 cores and 12 threads. The service also recorded a
-     2.3 GB swap peak, so the weights were partly swapped out. `ChatOllama` takes
-     `num_thread`, and the backlog line "num_thread" sets it before S2-5b.
+     2.3 GB swap peak, so the weights were partly swapped out.
+   - **S2-5b set `num_thread: 10` (2026-10-11).** With memory free and no swap, time to
+     first token was 251 s at 2 threads, 187 s at 6 and 168 s at 10, with identical
+     answers. So the thread count was the cost, not swap. Budget manual runs on about
+     150–170 s to first token and 2.5–3 min per answer.
    - Before timing anything, check `free -h` and `ollama ps` (caveat 8), and read the
      `NumThreads:` value from `journalctl -u ollama`.
 4. **First run downloads models.** Ingestion pulls the MiniLM embedder
@@ -359,11 +377,14 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
 16. **Tier-2 evaluation is hours-scale on CPU.** About 25 questions × 4 RAGAs metrics with
     `gemma2:9b` take about 3–4 h to score. **Measured in S2-5 (2026-10-07): 39–54 min per
     answerable item** on Ollama's 2 threads, so 13–18 h for the 20; the judge holds 8.3 GB.
-    - Generating takes about 40 min **if each answer takes ~1–2 min**. At S2-1's 254 s to
-      first token, generating alone is about 1.8 h (25 × 254 s) before any decoding.
-    - That figure ran on 2 threads with swapped weights (caveat 3). Re-measure after the
-      `num_thread` backlog line, with memory freed, then surface the estimate before
-      starting.
+    - **Measured in S2-5b (2026-10-11):**
+      - generating the 25 answers took **69 min** here at `num_thread` 10;
+      - one scoring took **about 35 min on a Colab T4**, and two identical scorings
+        showed no judge noise on that setup.
+    - **Re-score on the same setup:** a Colab T4, Ollama pinned to 0.22.1, and the
+      notebook in S2-5b's story. The floors' 0.05 tolerance was set with zero measured
+      noise. A score from other hardware (this CPU, another GPU) may differ by an amount
+      no one has measured.
     - Scoring defaults to Colab/Kaggle (GPU offload notes).
 17. **Never run the generator and the judge together.** mistral (~5 GB resident) and
     `gemma2:9b` do not both fit beside a desktop in 15 GB. Generate, run
@@ -402,6 +423,18 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
     that job sees the world, with
     `HF_HOME=<an empty dir> HF_HUB_OFFLINE=1 uv run pytest`, and see that the folder
     stays empty.
+24. **An edit to a hashed input fails CI until tier 2 is re-run** (S2-5b, DEC-15). The
+    `check` job ends with `rag-eval check`, which fails on a stale committed run.
+    - **A re-run of generate and score (about 70 min here, then about 70 min on a T4):**
+      the prompt, an llm, retriever or reranker spec, `reranker_candidates`, a corpus file,
+      the embedder, the splitter, the loader map or a golden question.
+    - **A re-run of score only:** a `ground_truth`, `decline_marker` or the judge's
+      Modelfile.
+    - **Free:** `notes`, `expected_sources`, comments, and the runtime-only llm keys.
+
+    So a story that touches one of these budgets the re-run, and the error names which
+    re-run. Code changes are not hashed: after one that changes answers, re-run tier 2 by
+    hand.
 
 ## GPU offload notes (nothing *requires* GPU; Colab/Kaggle available)
 
@@ -411,7 +444,8 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
   - `rag-eval generate` runs here.
   - `rag-eval score` runs on Colab/Kaggle, with Ollama and `gemma2:9b` on their GPU.
   - The two exchange only `eval/runs/answers-latest.json`.
-  - S2-5b records the recipe.
+  - S2-5b's story records the recipe as run: a T4, Ollama 0.22.1, outputs on Drive, and
+    about 35 min per scoring.
 - **Bulk re-embedding** only if the corpus grows to thousands of docs.
 - **Serving SLO (NFR-2)** — Colab/Kaggle are batch sandboxes with session
   limits, not hosting; if the <2 s SLO must hold at v1.0, that's a real
@@ -480,7 +514,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Done 2026-10-04 (PR #9) |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Done 2026-10-05 (PR #11); reranker on |
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Done 2026-10-07 (PR #13) |
-| [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | In progress |
+| [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | In review 2026-10-11 |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Todo |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
@@ -566,9 +600,15 @@ leads with one of two things:
   - The Sources-relevance line gets its knob, `min_score`, off by default. Its tuning
     stays below, after S2-5.
 
-- **S2-5 (in review, 2026-10-07):** tier 2's harness (FR-7, ISS-15): `rag-eval generate`,
-  `score` and `check`, the six-part fingerprint, and the prompt placeholder rules. It
-  closes two lines below: the placeholder check, and the judge pointed at local Ollama.
+- **S2-5 (PR #13):** tier 2's harness (FR-7, ISS-15): `rag-eval generate`, `score` and
+  `check`, the six-part fingerprint, and the prompt placeholder rules. It closes two lines
+  below: the placeholder check, and the judge pointed at local Ollama.
+- **S2-5b (in review, 2026-10-11):** tier 2 enforced (FR-7). It closes three lines below:
+  - resumable runs;
+  - `num_thread`, now 10;
+  - the judge's `num_thread`, not set: the baseline scored on a GPU.
+
+  It opens two follow-ups from its hand check and its answers.
 - **S2-6:** incremental ingestion (FR-2, ISS-14, NFR-4 in place, SRS §7.3, DEC-17).
   - Three backlog lines close with it: walk pruning, the §7.3 chunk metadata, and the
     embedder check on open.
@@ -702,19 +742,37 @@ leads with one of two things:
   - **Fix first, then re-measure:** make `stream_answer` close the model stream
     deterministically on cancel, then show the test passing in a few hundred one-core
     runs. Do not paper over it with a retry or a sleep in the test.
-- **S2-5b, before the baseline — make tier-2 runs resumable** (found in S2-5's first
-  review). A transport error or a timeout aborts `score` with nothing written, and with
-  13–18 h per local scoring that can cost a night's run. So can a failure in `generate`.
-  Write progress as it goes, and skip ids already done; or accept the risk on Colab's
-  faster judge. S2-5b decides.
+- **Closed by S2-5b (2026-10-11) —** tier-2 runs resume: `generate` and `score` keep each
+  finished item in `<name>.partial.jsonl`, and the same command skips them
+  (`evaluation/checkpoint.py`).
+- **After S2-5b — what the baseline's answers and hand check found.** Each fix is a change
+  to measure with this harness (a re-run, caveat 24), not to make by eye.
+  - **Two refusals paraphrase past the decline marker:** "I could not find information
+    about…" (`unanswerable-yolo-dataset`, `unanswerable-cade8-venue`). That puts
+    `decline_rate` at 0.6. The maintainer kept the marker. Tighten the prompt's refusal
+    instruction, or revisit the rule.
+  - **Generation misses:**
+    - `glider-name` refuses although its title chunk is in context;
+    - `glider-slm` makes up "Summarization as Judge Model" (tier 1's one miss: page 2 is
+      not retrieved).
+
+    The prompt, `min_score` and the DEC-2 revisit are the levers.
+  - **The judge is lenient.**
+    - It scored `glider-slm`'s fabrication as faithful (1.0).
+    - It gave context recall 1.0 on two items whose contexts hold half the reference.
+    - So the baseline runs high, and context recall sits at its ceiling.
+    - Options: a stronger judge, or a second judge for spot checks, in the DEC-2 revisit or
+      Phase 3. Either would move `judge` and need a re-score.
+  - **Answer relevancy is all-or-nothing on hedging.** ragas zeroes a "noncommittal"
+    answer, so one hedge in an otherwise right answer costs about 0.04 of the mean.
 - **When a ragas release stops importing `langchain_community.chat_models.vertexai` —
   delete the import shim** in `ragas_scoring.import_ragas` (S2-5,
   vibrantlabsai/ragas#2741). `tests/test_eval_scoring.py` fails then and says so. A
   ragas upgrade also means bumping `fingerprint.RAGAS_VERSION`, which `uv.lock`'s test
   enforces, and re-scoring.
-- **S2-5b — the judge's `num_thread`.** The judge also runs on Ollama's 2 threads. Once
-  the generator's `num_thread` is measured, the same `PARAMETER` can go into
-  `eval/judge.Modelfile`, before the baseline: it moves `judge`.
+- **Closed by S2-5b (2026-10-11) —** the judge's `num_thread`: not set. The baseline scored
+  on a Colab T4, where every layer runs on the GPU. A local CPU re-score would add
+  `PARAMETER num_thread 10` to `eval/judge.Modelfile`, which moves `judge`.
 - **Flaky under load — two Ctrl-C tests in `tests/test_cli.py`** (found in S2-5's second
   review). `test_ctrl_c_while_a_chunk_is_processed_leaves_no_stream_open_at_the_prompt`
   and `test_two_ctrl_cs_during_an_answer_end_the_session` failed once in a full run
@@ -769,21 +827,9 @@ leads with one of two things:
   is OpenAI). DEC-15 settles both halves: the judge is `gemma2:9b` through Ollama's
   OpenAI endpoint, and a full sweep on CPU takes hours, so scoring offloads to
   Colab/Kaggle.
-- **S2-5b, first step — set Ollama's `num_thread` (found in S2-1's second review).**
-  Ollama loads mistral with `NumThreads:2` on this i7-1255U, which has 2 performance
-  cores, 10 cores and 12 threads. That is part of why S2-1 measured 254 s to first token
-  (caveat 3).
-  - Free memory first: `ollama stop`, close the desktop apps, `free -h`.
-  - Time one fixed golden question at `num_thread` 2, 6 and 10, and record the
-    time-to-first-token for each.
-  - Set the fastest on the Ollama entries in `config.yaml`, with the numbers in a
-    comment.
-  - It must land **before** the tier-2 baseline. The llm spec is hashed into the
-    fingerprint's `query` part, so adding it afterwards marks the baseline stale and
-    forces another multi-hour run. A different thread count can also change the
-    floating-point sums, and so, rarely, an answer.
-  - A small change on its own: config plus a measured comment. It can also ride S2-3. S2-2
-    closed without it.
+- **Closed by S2-5b (2026-10-11) —** Ollama's `num_thread` (found in S2-1's second review).
+  It is now 10 on every Ollama llm, set before the baseline. The measured table is in
+  `config.yaml` and caveat 3.
 - **Closed by S2-6 (2026-10-05) —** the ingestion manifest records the embedder's identity and dimension;
   refuse to open an index built with a different embedder (DEC-17).
 - **Phase 3 —** NFR-2 (<2 s first token) is unachievable CPU-only: revise the SLO
