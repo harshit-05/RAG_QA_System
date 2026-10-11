@@ -5,13 +5,16 @@
 
 ## Now
 
-**Next action: push the second review's commit to PR #14 (S2-5b), and merge once CI is
-green. Then [S2-7](phase-2/S2-7-http-api.md).**
+**Next action: [S2-7](phase-2/S2-7-http-api.md), the HTTP API.** It is plan-first, on
+`feat/s2-7-http-api`. Its story routes it to Fable, so it runs on Opus 5.5 at max effort
+with two reviews, and records the substitution under Deviation (CLAUDE.md). Mind caveat
+24: tier 2 turns CI red on any edit to the prompt, the llm, retriever or reranker specs,
+the corpus or the golden set.
 
-**S2-5b is in review** (2026-10-11, PR #14, on Opus 5.5; the story says opus-fast). Tier 2
-is enforced: the baseline is committed, its floors are set, and `rag-eval check` is the
-last step of CI's `check` job, green on the runner. Every verification is shown in the
-story file.
+**S2-5b is done** (2026-10-12, PR #14, merged as `e88c6f2`; on Opus 5.5, where the story
+says opus-fast). CI was green on its last commit, `edd933b`. Tier 2 is enforced: the
+baseline is committed, its floors are set, and `rag-eval check` is the last step of CI's
+`check` job. Every verification is shown in the story file.
 
 - **Runs resume.** `generate` and `score` keep each finished item in a checkpoint beside
   their output (`<name>.partial.jsonl`), and the same command resumes. A `/code-review`
@@ -540,7 +543,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Done 2026-10-04 (PR #9) |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Done 2026-10-05 (PR #11); reranker on |
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Done 2026-10-07 (PR #13) |
-| [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | In review 2026-10-12 (PR #14, CI green on `8ba2d9f`; two reviews done) |
+| [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Done 2026-10-12 (PR #14) |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Todo |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
@@ -629,7 +632,7 @@ leads with one of two things:
 - **S2-5 (PR #13):** tier 2's harness (FR-7, ISS-15): `rag-eval generate`, `score` and
   `check`, the six-part fingerprint, and the prompt placeholder rules. It closes two lines
   below: the placeholder check, and the judge pointed at local Ollama.
-- **S2-5b (in review, 2026-10-11):** tier 2 enforced (FR-7). It closes three lines below:
+- **S2-5b (PR #14):** tier 2 enforced (FR-7). It closes three lines below:
   - resumable runs;
   - `num_thread`, now 10;
   - the judge's `num_thread`, not set: the baseline scored on a GPU.

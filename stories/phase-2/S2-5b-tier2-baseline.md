@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-12): PR #14, every verification shown below; CI green on `8ba2d9f`. First review: no blockers, 4 doc findings, fixed on the PR. Second review: no blockers, 2 findings (the docs fixed on the PR, one code line to the backlog). Next: CI on the second review's commit, then merge |
+| **Status** | Done (2026-10-12): PR #14, merged as `e88c6f2`, with CI green on its last commit, `edd933b`. Every verification is shown below. Two reviews, no blockers: 4 doc findings, then 2 (the docs fixed on the PR, one code line to the backlog) |
 | **Closes** | FR-7 (tier 2 enforced) |
 | **Depends on** | S2-5 (the harness and the gate) |
 | **Model** | opus-fast |
