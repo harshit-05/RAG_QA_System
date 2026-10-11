@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-11): verifications 1–4 shown below; 5 (CI) runs on the PR |
+| **Status** | In review (2026-10-11): PR #14, every verification shown below; CI green on `da4b96b`. First review: no blockers, 4 doc findings, fixed on the PR. Next: CI on the review commit, then merge |
 | **Closes** | FR-7 (tier 2 enforced) |
 | **Depends on** | S2-5 (the harness and the gate) |
 | **Model** | opus-fast |
@@ -134,6 +134,10 @@ gh run list --limit 2                            # check (including rag-eval che
   - Ctrl-C and a failed final write now say where the finished items are;
   - the resume hint is worded so it holds even after a refusal;
   - `generate` walks the items once, in order.
+- The other two needed no change:
+  - one asked for a branch, which the story's first step creates;
+  - one flagged the score checkpoint's `started_at`, which a resume never reads. It stays,
+    so that both kinds of checkpoint share one header.
 - The score loop got its first end-to-end tests, with ragas faked.
 
 ### `num_thread` (2026-10-11)
@@ -261,8 +265,12 @@ retried in both.
   temperature 0. On one T4 with Ollama 0.22.1, the Modelfile's `seed` and greedy decoding
   made it exactly repeatable. So the two scorings measure repeatability on that one setup.
   They do not measure a re-score on other hardware (this CPU, another GPU), which remains
-  unmeasured. The 0.05 minimum is therefore the whole tolerance: one item moving by 1.0
-  on a metric is exactly 0.05.
+  unmeasured. The 0.05 minimum is therefore the whole tolerance: on the four RAGAs
+  metrics, one item of 20 moving by 1.0 is exactly 0.05.
+- **`decline_rate`'s floor allows no change** (found in review). Its 5 items are 0.2
+  each, so one more refusal that misses the marker gives 0.4, below 0.55. It stays
+  strict: a paraphrased refusal is a prompt-following miss, and generation here is
+  deterministic.
 
 ### Hand check (caveat 18, 2026-10-11)
 
@@ -283,7 +291,8 @@ relevancy, context precision and context recall.
 - **The judge is lenient, not noisy.** It never misparsed, it repeated exactly, and it was
   right wherever the evidence was plain.
 - **It missed one fabrication** (faithfulness), and twice credited a reference the contexts
-  only half held (context recall).
+  only half held (context recall). The review found a third such credit, `glider-purpose`
+  (Review, below).
 - **So the baseline is somewhat high.** Context recall's 1.000 on all 20 items is partly a
   ceiling.
 - **As a regression gate it still holds.** The same judge scores a later run the same way.
@@ -313,8 +322,8 @@ relevancy, context precision and context recall.
   - a fabrication that shares words with the context: "Summarization **as Judge Model**"
     against the context's "SLM-**as-judge model**". Word overlap is the likely cause, a
     known weakness of small judges;
-  - context recall: it saturates, at 1.0 on all 20 items, including two found
-    half-supported by hand.
+  - context recall: it saturates, at 1.0 on all 20 items, including three found only
+    partly supported by hand: two in the hand check, and `glider-purpose` in the review.
 - **On the hand-checked verdicts** (5 items × 4 metrics), 3 of 20 were clearly wrong,
   about 15%, all too generous: `glider-slm`'s faithfulness and context recall, and
   `lusk-overbeek-itp`'s context recall.
@@ -333,9 +342,10 @@ relevancy, context precision and context recall.
   - answer relevancy: volatile on hedging.
 - **The absolute numbers are not quality claims.** "Faithfulness 0.91" overstates it; they
   are relative baselines for this judge.
-- **For the review:** `context_recall` could be made `null` (recorded, not gated) at no
-  cost, since floors are not hashed. It stays gated here because DEC-15's rule removes a
-  metric only for noise, and this judge showed none. That is the maintainer's call.
+- **`context_recall` stays gated** (Review, below). A `null` floor would cost nothing,
+  since floors are not hashed, but DEC-15's rule removes a metric only for noise, and this
+  judge showed none. The stronger reason is that its errors all leaned generous, so a fall
+  it reports is likely real.
 
 **Follow-ups** (STATUS.md backlog, "After S2-5b"):
 
@@ -369,13 +379,75 @@ relevancy, context precision and context recall.
    `num_ctx` 8192 and served 8192. The largest prompt was 3,620 tokens and the largest
    answer 513; the mode was `json`, and the embedder MiniLM. The aggregates are as in the
    table above.
-5. **CI:** on the PR (pending).
+5. **CI: green on PR #14.** Run 38135431966, on `da4b96b`, took 5 min 13 s.
+   - `check` passed, including the new **Tier-2 check** step. On GitHub's runner all six
+     fingerprint parts were `ok` and every floor was met. That is a fresh checkout on
+     another machine reproducing the corpus hashes, the rendered-prompt probe and the
+     judge hash.
+   - `eval-retrieval` passed.
+   - The two timing-based Ctrl-C tests did not flake. The earlier run on the PR
+     (38135061271) was green too.
+
+## Review (2026-10-11)
+
+**First review (Opus 5.5, over the `/code-review` pass): no blockers; 4 findings, all in
+the docs, fixed on the PR.**
+
+- **Checked and sound:**
+  - the two run files. The aggregates recompute from the items, which are in the answers
+    file's order. The scores' `answers` sha matches `answers-latest.json`. The timings match
+    the file: 69.1 min, a median of 159 s, at most 274 s, and a median ttft of 148 s;
+  - the floors: each is the baseline minus 0.05, rounded down;
+  - verifications 2, 3 and 3b, re-run here:
+    - exit 0;
+    - exit 1, with only `query` CHANGED;
+    - exit 1, with only `references` CHANGED;
+    - exit 0, with all three digests live on Ollama 0.22.1;
+  - CI's Tier-2 check step: the runner ran the whole check, and all six parts were `ok`;
+  - the hand check's wrong verdicts on `glider-slm` and `lusk-overbeek-itp`, against their
+    contexts;
+  - the resume code and the `/code-review`'s 7 fixes: the torn-line cut, the identity and
+    kind checks, the restore from JSON (covered end to end), the failure counts taken from
+    the items, and the totals carried across sessions. Nothing new was found;
+  - the package version is not hashed, so S2-9's bump to 0.3.0 leaves the run fresh.
+- **Not checkable from the repo:** scoring 2 is on the maintainer's Drive. That it matched
+  scoring 1 is the maintainer's attestation. The smoke run, which matched both, crossed a
+  judge load.
+- **Not re-run:** the test suite. CI was green on `da4b96b`, the HEAD under review.
+
+**Findings:**
+
+- **A third context-recall overcredit: `glider-purpose`.** The review read the five items
+  whose retrieval missed an expected page.
+  - Three deserve their 1.0: `glider-training-data`, `cade7-venue` and `yolo-objectives`.
+  - `glider-purpose` does not. The reference's third sentence, LiveBench's 0.654 against
+    0.481 and 0.485, is only on p. 7, which was not retrieved. Context 2 (p. 5) describes
+    LiveBench but gives no scores, so its context recall should be about 0.67.
+  - With the three corrected, this baseline's context recall is about 0.94, below its own
+    floor. So the number is relative to this judge, as the assessment says.
+  - Corrected here, in STATUS.md, ARCHITECTURE.md and `thresholds.yaml`.
+- **`decline_rate`'s floor allows no change.** Its 5 items are 0.2 each, so the 0.05
+  minimum tolerates none. The comments said "one item in 20". **Kept at 0.55**, on the
+  review's recommendation: it follows the marker decision, and generation here is
+  deterministic. The comments now say so.
+- **The `/code-review`'s two other findings were not named.** They are now, under
+  Discovered.
+- **The model deviation cited CLAUDE.md's Fable note,** which does not route S2-5b.
+  Reworded.
+
+**`context_recall` stays gated, on the review's recommendation.**
+
+- This judge's errors all leaned generous, so a fall it reports is likely real: the alarm
+  is quiet, but not false.
+- A `null` floor would drop that alarm and still print the 1.000.
+- A re-score on other hardware risks a false alarm on all four metrics alike.
+- It is not read as retrieval coverage: tier 1 gates retrieval.
 
 ## Deviation from plan
 
-- **Model:** Opus 5.5, where the story said opus-fast, per CLAUDE.md's Fable note. The
-  resumable-run code was moderately design-heavy, so it got a `/code-review` pass (9
-  findings, 7 fixed).
+- **Model:** Opus 5.5 without `/fast`, where the story said opus-fast. CLAUDE.md's Fable
+  note does not cover S2-5b. The resumable-run code was moderately design-heavy, so it got
+  a `/code-review` pass (9 findings: 7 fixed, 2 needed no change).
 - **`--limit` is part of a checkpoint's identity.** The plan left it out, as items are
   independent. The review showed that a smoke run into the same `--out` would then
   resume from a full run's checkpoint, and delete it when done.

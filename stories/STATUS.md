@@ -5,16 +5,17 @@
 
 ## Now
 
-**Next action: open the S2-5b PR from `chore/s2-5b-tier2-baseline`; CI is its last
-verification. Then [S2-7](phase-2/S2-7-http-api.md).**
+**Next action: push the first review's commits to PR #14 (S2-5b), and merge once CI is
+green. Then [S2-7](phase-2/S2-7-http-api.md).**
 
-**S2-5b is in review** (2026-10-11, on Opus 5.5; the story says opus-fast). Tier 2 is
-enforced: the baseline is committed, its floors are set, and `rag-eval check` is the last
-step of CI's `check` job. Verifications 1–4 are shown in the story file.
+**S2-5b is in review** (2026-10-11, PR #14, on Opus 5.5; the story says opus-fast). Tier 2
+is enforced: the baseline is committed, its floors are set, and `rag-eval check` is the
+last step of CI's `check` job, green on the runner. Every verification is shown in the
+story file.
 
 - **Runs resume.** `generate` and `score` keep each finished item in a checkpoint beside
   their output (`<name>.partial.jsonl`), and the same command resumes. A `/code-review`
-  found 9 issues; 7 were fixed.
+  found 9 issues: 7 were fixed, and 2 needed no change.
 - **`num_thread` 10** is set on every Ollama llm. Time to first token went from 251 s to
   168 s, with identical answers.
 - **The baseline:**
@@ -29,13 +30,25 @@ step of CI's `check` job. Verifications 1–4 are shown in the story file.
   gives this host's `d85f8193c353`, so `check --with-ollama` passes here on a Colab-scored
   run.
 - **The hand check found the judge lenient.** It scored a made-up answer as faithful, and
-  gave context recall 1.0 twice where the contexts held half the reference. That is
-  recorded, not fixed (backlog).
+  gave context recall 1.0 three times where the contexts held only part of the reference
+  (the third was found in review). That is recorded, not fixed (backlog).
 - **The maintainer kept the decline marker:** two honest refusals that paraphrase it count
   as misses (backlog).
 - **From now on, CI fails on any edit to a hashed input until tier 2 is re-run** (caveat
   24). S2-7 and S2-8 should leave the prompt, the llm, retriever and reranker specs, the
   corpus and the golden set alone.
+- **First review (2026-10-11): no blockers; 4 findings, all in the docs, fixed on the PR.**
+  It re-ran verifications 2, 3 and 3b, recomputed the run files, and checked the
+  `/code-review`'s fixes.
+  - **A third context-recall overcredit, `glider-purpose`:** its LiveBench scores are only
+    on p. 7, which was not retrieved. With all three corrected, context recall would be
+    about 0.94, below its own floor.
+  - **`decline_rate`'s floor allows no change.** One flip of its 5 items gives 0.4. It
+    stays at 0.55, which is strict on purpose.
+  - The `/code-review`'s two unfixed findings are named, and the model deviation is
+    reworded.
+  - **`context_recall` stays gated.** The judge's errors all leaned generous, so a fall it
+    reports is likely real.
 
 **S2-5 is done** (2026-10-07, PR #13, on Opus 5.5 in place of Fable). CI was green on
 `b6f4e74`. Tier 2's harness is code: `rag-eval generate`, `score` and `check`, the
@@ -514,7 +527,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Done 2026-10-04 (PR #9) |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Done 2026-10-05 (PR #11); reranker on |
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Done 2026-10-07 (PR #13) |
-| [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | In review 2026-10-11 |
+| [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | In review 2026-10-11 (PR #14, CI green; first review done) |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Todo |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
@@ -759,7 +772,8 @@ leads with one of two things:
     The prompt, `min_score` and the DEC-2 revisit are the levers.
   - **The judge is lenient.**
     - It scored `glider-slm`'s fabrication as faithful (1.0).
-    - It gave context recall 1.0 on two items whose contexts hold half the reference.
+    - It gave context recall 1.0 on three items whose contexts hold only part of the
+      reference: `glider-slm`, `lusk-overbeek-itp`, and `glider-purpose` (found in review).
     - It got 3 of the 20 hand-checked verdicts wrong, all too generous. So the baseline
       runs high, context recall sits at its ceiling, and the gate is a quieter alarm than
       its numbers suggest. The story file has the assessment.
