@@ -113,7 +113,77 @@ gh run list --limit 2                            # check (including rag-eval che
 
 ## Discovered
 
-(Filled during implementation.)
+### Resumable runs (2026-10-07)
+
+- `generate` and `score` keep each finished item in `<out stem>.partial.jsonl` beside the
+  file they write (`evaluation/checkpoint.py`), and the same command resumes from it.
+- A checkpoint resumes only the run that wrote it. It must match on:
+  - the generation parts, the generator and its digest (for `generate`);
+  - the answers sha, `references`, `judge`, the judge's and base's digests and the
+    versions (for `score`);
+  - `--limit`.
+
+  Anything else is refused with "delete it to start over".
+- A `/code-review` pass found 9 issues, and 7 were fixed:
+  - a torn last line is now cut from the file, not only skipped in memory: the next
+    append ran on from it, so a second interruption found a bad line;
+  - `--limit` joined the identity: a smoke run into the same `--out` had resumed from a
+    full run's checkpoint and then deleted it;
+  - an Ollama that cannot report the generator's digest yet says "run again", not
+    "delete";
+  - Ctrl-C and a failed final write now say where the finished items are;
+  - the resume hint is worded so it holds even after a refusal;
+  - `generate` walks the items once, in order.
+- The score loop got its first end-to-end tests, with ragas faked.
+
+### `num_thread` (2026-10-11)
+
+Mistral, golden question 2, the model loaded, 8.7 GB available and no swap.
+`journalctl` confirmed `NumThreads:2`, `6` and `10`.
+
+| num_thread | time to first token | total | question 1 (with the reload) |
+| --- | --- | --- | --- |
+| 2 (Ollama's default here) | 250.9 s | 260.5 s | 298.3 s |
+| 6 | 186.6 s | 193.7 s | 223.9 s |
+| **10** | **167.6 s** | **175.4 s** | 190.4 s |
+
+- Both answers were byte-identical at all three counts.
+- 10, the physical core count, is set on all three Ollama llms.
+- `query` moved, as it should.
+- S2-1's 254 s figure at 2 threads (with swapped weights) is reproduced at 2 threads
+  with no swap. So the thread count was the main cost, not swap.
+
+### The digest question, this host's half (2026-10-11)
+
+`ollama create rag-judge -f eval/judge.Modelfile` again, 10 hours after the first, gave
+the same ID, `d85f8193c353`. So `create` is deterministic on one host, with no timestamp
+in the manifest. Colab's half is in the scoring record below.
+
+### Generation (2026-10-11)
+
+- **The run:** 25 answers in **69 min**, at `num_thread` 10. That is a median of 159 s per
+  answer and at most 274 s, with a median ttft of 148 s. The estimate was 75–80 min.
+- **The answers file:**
+  - its fingerprint matches the checkout;
+  - mistral's digest is `6577803aa9a0`;
+  - every prompt got 5 chunks;
+  - no answer is empty.
+- **Decline rate 3/5 = 0.6.** Two unanswerable answers are honest refusals that
+  paraphrase past the marker "could not find the answer":
+  - `unanswerable-yolo-dataset`: "I could not find information about which specific
+    public dataset…";
+  - `unanswerable-cade8-venue`: "I could not find information about the location of…".
+
+  **The maintainer kept the marker (2026-10-11).** The prompt asks for that exact
+  sentence, so a paraphrase is a prompt-following miss. Redefining the metric after
+  seeing the data would move the goalposts. A measured follow-up (tighten the prompt, or
+  revisit the rule) goes to the backlog.
+- **A false refusal: `glider-name`** ("What does GLIDER stand for?").
+  - Chunk 3 is the paper's title page: "GLIDER: Grading LLM Interactions and Decisions
+    using Explainable Ranking".
+  - Mistral still answered that the context does not mention it.
+  - Retrieval worked, and generation missed. The baseline's RAGAs numbers carry it.
+  - Fixing it is a prompt or model change, which is out of scope here.
 
 ## Deviation from plan
 
