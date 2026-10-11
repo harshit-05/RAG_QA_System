@@ -760,9 +760,14 @@ leads with one of two things:
   - **The judge is lenient.**
     - It scored `glider-slm`'s fabrication as faithful (1.0).
     - It gave context recall 1.0 on two items whose contexts hold half the reference.
-    - So the baseline runs high, and context recall sits at its ceiling.
-    - Options: a stronger judge, or a second judge for spot checks, in the DEC-2 revisit or
-      Phase 3. Either would move `judge` and need a re-score.
+    - It got 3 of the 20 hand-checked verdicts wrong, all too generous. So the baseline
+      runs high, context recall sits at its ceiling, and the gate is a quieter alarm than
+      its numbers suggest. The story file has the assessment.
+    - **First, measure it:** hand-label faithfulness for the 20 answers (one to two hours
+      of reading) and compute the judge's agreement. No re-run needed.
+    - **Then, if the agreement is poor:** a stronger judge (a 14B model at 4-bit should fit
+      on a T4, not yet measured), or a second judge for spot checks, in the DEC-2 revisit or
+      Phase 3. Either moves `judge` and needs a re-score.
   - **Answer relevancy is all-or-nothing on hedging.** ragas zeroes a "noncommittal"
     answer, so one hedge in an otherwise right answer costs about 0.04 of the mean.
 - **When a ragas release stops importing `langchain_community.chat_models.vertexai` —

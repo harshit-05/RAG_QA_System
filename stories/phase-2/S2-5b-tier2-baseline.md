@@ -294,6 +294,57 @@ relevancy, context precision and context recall.
 - **Tier 1 is page-level.** It calls `lusk-overbeek-itp` a hit, although the chunk with
   half the reference was not retrieved.
 
+### The judge, assessed (2026-10-11)
+
+**As machinery, it beat expectations:**
+
+| Expected (DEC-15, caveat 18) | Measured |
+| --- | --- |
+| Two scorings differ: "a 9B judge is not deterministic even at temperature 0" | Identical to the last digit, on one T4 with Ollama 0.22.1 |
+| Some misparses of RAGAs' structured prompts | 0 parse failures and 0 retries, over 360 judge calls. Each answerable item takes 9 calls in ragas 0.4.3: 2 for faithfulness (statements, then verdicts), 1 for answer relevancy at `strictness` 1, 1 per context for context precision (5), and 1 for context recall. That is 9 × 20 items × 2 scorings. Ollama's grammar-constrained JSON mode removes format errors, so the risk moves from format to content. |
+| Prompts near the context limit | Largest prompt 3,620 tokens, largest answer 513, of 8,192 |
+| About 1 h per scoring on a T4 | About 35 min |
+
+**As an evaluator, it is lenient.**
+
+- **What it gets right:** the blatant cases, namely the false refusal, the
+  self-contradiction and the clean answer.
+- **What it misses:**
+  - a fabrication that shares words with the context: "Summarization **as Judge Model**"
+    against the context's "SLM-**as-judge model**". Word overlap is the likely cause, a
+    known weakness of small judges;
+  - context recall: it saturates, at 1.0 on all 20 items, including two found
+    half-supported by hand.
+- **On the hand-checked verdicts** (5 items × 4 metrics), 3 of 20 were clearly wrong,
+  about 15%, all too generous: `glider-slm`'s faithfulness and context recall, and
+  `lusk-overbeek-itp`'s context recall.
+  - The sample was chosen for anomalies, so the rate on a random item is likely lower.
+  - Five items cannot pin it down.
+
+**What it means for reading the gate:**
+
+- **The bias is systematic, not random.** Every error leaned the same way, too generous. A
+  floor compares this judge with itself, so the bias costs less than noise would.
+- **The real cost is sensitivity.** A change that brought in `glider-slm`-style
+  fabrications might not move faithfulness at all. A lenient judge is a quieter alarm.
+- **How to read each floor:**
+  - faithfulness and context precision: coarse alarms that catch large regressions;
+  - context recall: close to signal-free near the top; tier 1 gates retrieval directly;
+  - answer relevancy: volatile on hedging.
+- **The absolute numbers are not quality claims.** "Faithfulness 0.91" overstates it; they
+  are relative baselines for this judge.
+- **For the review:** `context_recall` could be made `null` (recorded, not gated) at no
+  cost, since floors are not hashed. It stays gated here because DEC-15's rule removes a
+  metric only for noise, and this judge showed none. That is the maintainer's call.
+
+**Follow-ups** (STATUS.md backlog, "After S2-5b"):
+
+- **Measure the judge first.** Hand-label faithfulness for the 20 answers, about one to two
+  hours of reading, and compute the judge's agreement. That turns "lenient" into a number.
+- **Then spot-check with a stronger judge.** A 14B model at 4-bit should fit on a T4 (not
+  measured: check its size and its context's memory first). The DEC-2 revisit is the
+  natural place. A new judge moves `judge` and means a re-score.
+
 ## Verification record (2026-10-11)
 
 1. **The gates:** `ruff check` and `mypy` were clean, and `pytest --cov=rag_qa` gave **677
