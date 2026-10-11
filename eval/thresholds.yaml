@@ -26,13 +26,16 @@ retrieval:
 #   Baseline: faithfulness 0.9083, answer_relevancy 0.7186, context_precision 0.9203,
 #   context_recall 1.0, decline_rate 0.6 (3 of 5); nothing went unscored.
 #   The two scorings were identical, so the measured noise was 0, and each floor is the
-#   baseline minus the 0.05 minimum (one item in 20), rounded down to 3 decimals. That
-#   repeatability holds for the same setup: a re-score on other hardware is unmeasured.
+#   baseline minus the 0.05 minimum, rounded down to 3 decimals. On the four RAGAs metrics
+#   that is one item of 20 moving by 1.0. decline_rate's 5 items are 0.2 each, so its
+#   floor allows no change: one more refusal that misses the marker fails it, on purpose.
+#   That repeatability holds for the same setup: a re-score on other hardware is
+#   unmeasured.
 #   max_unscored 0.1 is 2 of 20 items: the larger of 0.1 and the worst share either
 #   scoring left unscored (0).
-#   The hand check found the judge lenient: it scored a made-up answer as faithful, and
-#   context recall 1.0 where the contexts held half the reference. Detail in
-#   stories/phase-2/S2-5b-tier2-baseline.md.
+#   The hand check and the first review found the judge lenient: it scored a made-up
+#   answer as faithful, and gave context recall 1.0 on three items whose contexts held
+#   only part of the reference. Detail in stories/phase-2/S2-5b-tier2-baseline.md.
 generation:
   faithfulness: 0.858
   answer_relevancy: 0.668

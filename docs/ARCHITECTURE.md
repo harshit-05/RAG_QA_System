@@ -1031,15 +1031,19 @@ measurements._
     the last digit. The Modelfile's `seed` and temperature 0 made the run deterministic on
     one setup, which this decision had not expected.
   - So the measured spread was 0, and each floor is the baseline minus the 0.05 minimum.
+    On `decline_rate`, whose 5 items are 0.2 each, that allows no change; it is strict on
+    purpose (first review).
   - Cross-hardware spread is unmeasured, so re-scores run on the same setup.
 - **Ollama digests are portable across machines for the same Ollama version.** The same
   Modelfile on the same `gemma2:9b` blobs gave `d85f8193c353` on Colab and here, so
   `check --with-ollama` holds for a Colab-scored run. The recipe pins `OLLAMA_VERSION`.
-- **The judge is lenient, not noisy.** The hand check found that it:
+- **The judge is lenient, not noisy.** The hand check and the first review found that it:
   - scored one fabricated answer as faithful;
-  - credited two references that the contexts only half held.
+  - credited three references that the contexts held only in part.
 
   The floors stand as regression gates for this judge; the absolute numbers run high.
+  `context_recall` stays gated: the judge's errors all leaned generous, so a fall it
+  reports is likely real.
 
 Rejected:
 
