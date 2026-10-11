@@ -75,12 +75,23 @@ components:
     # num_ctx 4096 because k=5 x 1000-char chunks overflows Ollama's 2048 default
     # silently, which reads as an ungrounded answer rather than an error.
     # temperature 0 so the Phase 2 evaluation harness is reproducible.
+    # num_thread 10, this host's physical cores (i7-1255U: 2 performance and 8
+    # efficiency cores, 12 threads). Ollama otherwise counts only the performance
+    # cores and runs on 2 threads. Measured with mistral on golden question 2, with
+    # the model loaded and memory free (S2-5b, 2026-10-11):
+    #   num_thread    time to first token    total
+    #        2              250.9 s          260.5 s
+    #        6              186.6 s          193.7 s
+    #       10              167.6 s          175.4 s
+    # The answers were identical at all three. num_thread is hashed into the tier-2
+    # fingerprint's query part, so a change marks the committed run stale.
     mistral_ollama:
       _target_: langchain_ollama.ChatOllama
       model: "mistral"
       temperature: 0
       num_ctx: 4096
       num_predict: 512
+      num_thread: 10
       validate_model_on_init: true
     # DEC-2 light fallback (2.2 GB vs mistral's ~5 GB resident). Use it when free
     # memory is tight: point pipeline.query.llm here. Same settings otherwise.
@@ -90,6 +101,7 @@ components:
       temperature: 0
       num_ctx: 4096
       num_predict: 512
+      num_thread: 10
       validate_model_on_init: true
     # Kept for the DEC-2 revisit once the eval harness exists (Phase 2).
     # Not pulled on this host: enabling this without `ollama pull qwen2:7b`
@@ -100,6 +112,7 @@ components:
       temperature: 0
       num_ctx: 4096
       num_predict: 512
+      num_thread: 10
       validate_model_on_init: true
 
   retrievers:
