@@ -1,7 +1,7 @@
 # The quality bar's floors (DEC-15). Each floor is the first measured baseline minus a
 # tolerance, and floors are only ever raised deliberately (ARCHITECTURE.md §2.1). A metric
 # passes when it is at or above its floor. `rag-eval` reads this file from eval/ beside the
-# config file. S2-5b adds a `generation:` section for tier 2.
+# config file.
 
 # Tier 1: retrieval, recomputed on every pull request and every push to main by CI's
 #   eval-retrieval job (S2-3).
@@ -16,3 +16,31 @@ retrieval:
   hit_rate: 0.9
   mrr: 0.745
   recall: 0.808
+
+# Tier 2: generation, scored offline and committed in eval/runs/; CI's check job runs
+#   `rag-eval check` against it (S2-5b). A floor is null for a metric recorded but not
+#   gated; every key must be present, so a typo can never switch a gate off.
+#   Measured 2026-10-11: mistral (num_thread 10) answered the 25 golden questions here,
+#   and rag-judge (gemma2:9b, eval/judge.Modelfile) scored them twice on a Colab T4 with
+#   Ollama 0.22.1.
+#   Baseline: faithfulness 0.9083, answer_relevancy 0.7186, context_precision 0.9203,
+#   context_recall 1.0, decline_rate 0.6 (3 of 5); nothing went unscored.
+#   The two scorings were identical, so the measured noise was 0, and each floor is the
+#   baseline minus the 0.05 minimum, rounded down to 3 decimals. On the four RAGAs metrics
+#   that is one item of 20 moving by 1.0. decline_rate's 5 items are 0.2 each, so its
+#   floor allows no change: one more refusal that misses the marker fails it, on purpose.
+#   That repeatability holds for the same setup: a re-score on other hardware is
+#   unmeasured.
+#   max_unscored 0.1 is 2 of 20 items: the larger of 0.1 and the worst share either
+#   scoring left unscored (0).
+#   The hand check and two reviews found the judge lenient: it scored two wrong answers as
+#   faithful (a made-up expansion, and numbers moved between a table's rows), and gave
+#   context recall 1.0 on four items whose contexts held only part of the reference.
+#   Detail in stories/phase-2/S2-5b-tier2-baseline.md.
+generation:
+  faithfulness: 0.858
+  answer_relevancy: 0.668
+  context_precision: 0.87
+  context_recall: 0.95
+  decline_rate: 0.55
+  max_unscored: 0.1

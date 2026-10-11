@@ -23,6 +23,11 @@ rate over the unanswerable ones. **A truncated judgement is an error, not a numb
 every judge call's token counts are checked, and a prompt within :data:`CONTEXT_MARGIN`
 tokens of ``num_ctx``, or a prompt and answer that fill it, aborts the run.
 
+**A run resumes** (S2-5b). With a checkpoint path, each scored item is kept as it is
+scored, with the call log's totals, and a re-run with the same answers, references, judge,
+versions and ``--limit`` skips what it holds (:mod:`.checkpoint`). The judge's context is
+polled again in every session.
+
 **Failures are counted by cause** (S2-5's spike). instructor raises the same
 ``InstructorRetryException`` for a judge whose output never parsed and for a connection
 error or a timeout. Only the first is a judge failure, counted per metric, with the item's
@@ -46,6 +51,9 @@ from pathlib import Path
 from statistics import fmean
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict
+
+from rag_qa.evaluation.checkpoint import Checkpoint
 from rag_qa.evaluation.dataset import GoldenItem
 from rag_qa.evaluation.fingerprint import (
     GENERATION_PARTS,
@@ -416,13 +424,77 @@ def unscorable(inputs: Mapping[str, Any]) -> bool:
 
 @dataclass(frozen=True)
 class ScoreRequest:
-    """Everything a score run needs, checked."""
+    """Everything a score run needs, checked. With a ``checkpoint`` path, each scored item
+    is kept there, and a re-run resumes from it (:mod:`.checkpoint`)."""
 
     config: RagConfig
     golden: Sequence[GoldenItem]
     answers: AnswersRun
     eval_dir: Path
     limit: int | None = None
+    checkpoint: Path | None = None
+
+
+# ---- resuming: what each checkpointed item carries ----------------------------------------
+
+
+class ScoreRecord(BaseModel):
+    """One scored item as the checkpoint keeps it, with the call log's running totals
+    after it, so a resumed run reports the same largest prompt and retries as one that
+    never stopped. ``served_context`` is what the session that scored it polled."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    item: ScoreItem
+    calls: int
+    max_prompt: int
+    max_completion: int
+    retried: dict[str, int]
+    served_context: int | None
+
+
+@dataclass(frozen=True)
+class Resume:
+    """What a checkpoint gives a resumed score run (:func:`resume_state`)."""
+
+    items: dict[str, ScoreItem]
+    calls: int = 0
+    max_prompt: int = 0
+    max_completion: int = 0
+    retried: Counter[str] = field(default_factory=Counter)
+    served_context: int | None = None
+
+
+def resume_state(records: Sequence[ScoreRecord]) -> Resume:
+    """The scored items by id; the call log's totals as the last record left them; and the
+    last served context any session polled."""
+    if not records:
+        return Resume(items={})
+    last = records[-1]
+    polled = [r.served_context for r in records if r.served_context is not None]
+    return Resume(
+        items={r.item.id: r.item for r in records},
+        calls=last.calls,
+        max_prompt=last.max_prompt,
+        max_completion=last.max_completion,
+        retried=Counter(last.retried),
+        served_context=polled[-1] if polled else None,
+    )
+
+
+def failures_of(scored: Sequence[ScoreItem], retried: Mapping[str, int]) -> dict[str, Failures]:
+    """Each metric's failures, counted from the scored items' own reasons."""
+    counts = {name: Counter(i.failures[name] for i in scored if name in i.failures)
+              for name in METRICS}
+    return {
+        name: Failures(
+            parse=counts[name]["parse"],
+            truncated=counts[name]["truncated"],
+            no_score=counts[name]["no_score"],
+            retried=retried.get(name, 0),
+        )
+        for name in METRICS
+    }
 
 
 async def score(
@@ -448,6 +520,25 @@ async def score(
     except OllamaError as e:
         raise ScoringError(str(e)) from e
     versions = check_ragas()
+    started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    resume, store = Resume(items={}), None
+    if request.checkpoint is not None:
+        # Everything that decides a score and is known before the first judge call.
+        store = Checkpoint(request.checkpoint, "generation", {
+            "answers": answers_identity(answers),
+            "references": current["references"],
+            "judge": current["judge"],
+            "judge_digest": digest,
+            "base_digest": base_digest,
+            "versions": versions,
+            "limit": request.limit,
+        })
+        resumed = store.load()
+        if resumed is not None:
+            resume = resume_state([store.restore(ScoreRecord, r) for r in resumed.records])
+            kept = sum(item.id in resume.items for item in answers.items[: request.limit])
+            total = len(answers.items[: request.limit])
+            say(f"Resuming {request.checkpoint}: {kept} of {total} already scored")
 
     ragas = import_ragas()
     client = ragas.AsyncOpenAI(
@@ -471,7 +562,13 @@ async def score(
             f"ragas built the judge in instructor mode {mode!r}, not {JUDGE_MODE!r}: this "
             f"ragas no longer behaves as S2-5's spike measured"
         )
-    log = CallLog(num_ctx=settings.num_ctx)
+    log = CallLog(
+        num_ctx=settings.num_ctx,
+        calls=resume.calls,
+        max_prompt=resume.max_prompt,
+        max_completion=resume.max_completion,
+        retried=Counter(resume.retried),
+    )
     llm.client.on("completion:response", log.on_response)
     llm.client.on("parse:error", log.on_parse_error)
     embeddings = ragas.HuggingFaceEmbeddings(model=judge.embedding_model, device="cpu")
@@ -487,11 +584,14 @@ async def score(
     references = {item.id: item.ground_truth for item in golden}
     must_not = {item.id: item.must_not_contain for item in golden}
     items = answers.items if request.limit is None else answers.items[: request.limit]
-    counts: dict[str, Counter[str]] = {name: Counter() for name in METRICS}
     served_context = None
     polled = False
+    calls_before = log.calls  # a resumed run's calls were made by an earlier session
     scored: list[ScoreItem] = []
     for n, item in enumerate(items, 1):
+        if item.id in resume.items:
+            scored.append(resume.items[item.id])
+            continue
         if not item.answerable:
             declined, leaked = declines(item.answer, evaluation.decline_marker, must_not[item.id])
             scored.append(
@@ -499,54 +599,68 @@ async def score(
             )
             say(f"[{n}/{len(items)}] {item.id}: {'declined' if declined else 'did not decline'}"
                 + (f", leaked {leaked}" if leaked else ""))
-            continue
-        values: dict[str, float | None] = {}
-        failures: dict[str, str] = {}
-        for name, inputs in metric_inputs(item, references[item.id]).items():
-            log.metric = name
-            if unscorable(inputs):
-                values[name], failures[name] = None, "no_score"
-                counts[name]["no_score"] += 1
-                continue
-            try:
-                value = (await metrics[name].ascore(**inputs)).value
-            except Exception as e:
-                kind = classify(e, ragas)
-                if kind is None:
-                    raise ScoringError(
-                        f"the judge call for {name} on {item.id} failed: {type(e).__name__}: "
-                        f"{e}. Nothing was written"
-                    ) from e
-                values[name], failures[name] = None, kind
-                counts[name][kind] += 1
-            else:
-                if value is None or (isinstance(value, float) and math.isnan(value)):
+        else:
+            values: dict[str, float | None] = {}
+            failures: dict[str, str] = {}
+            for name, inputs in metric_inputs(item, references[item.id]).items():
+                log.metric = name
+                if unscorable(inputs):
                     values[name], failures[name] = None, "no_score"
-                    counts[name]["no_score"] += 1
-                else:
-                    values[name] = float(value)
-            if log.overflow:
-                raise ScoringError(f"{log.overflow}. Nothing was written")
-            if not polled and log.calls:  # once, while the judge is surely loaded
-                polled = True
+                    continue
                 try:
-                    served_context = ollama_context(root, judge.model)
-                except OllamaError as e:
-                    raise ScoringError(str(e)) from e
-                if served_context is None:
-                    say(f"Note: Ollama's /api/ps does not report {judge.model}'s context; "
-                        f"its num_ctx was checked through /api/show only")
-                elif served_context != settings.num_ctx:
-                    raise ScoringError(
-                        f"Ollama serves {judge.model} with a {served_context}-token context, "
-                        f"not its Modelfile's {settings.num_ctx}. Nothing was written"
-                    )
-        scored.append(ScoreItem(id=item.id, answerable=True, scores=values, failures=failures))
-        shown = ", ".join(
-            f"{name} {'-' if value is None else f'{value:.3f}'}" for name, value in values.items()
-        )
-        say(f"[{n}/{len(items)}] {item.id}: {shown}")
+                    value = (await metrics[name].ascore(**inputs)).value
+                except Exception as e:
+                    kind = classify(e, ragas)
+                    if kind is None:
+                        raise ScoringError(
+                            f"the judge call for {name} on {item.id} failed: "
+                            f"{type(e).__name__}: {e}"
+                        ) from e
+                    values[name], failures[name] = None, kind
+                else:
+                    if value is None or (isinstance(value, float) and math.isnan(value)):
+                        values[name], failures[name] = None, "no_score"
+                    else:
+                        values[name] = float(value)
+                if log.overflow:
+                    raise ScoringError(log.overflow)
+                # Once a session, while the judge is surely loaded: after its first call.
+                if not polled and log.calls > calls_before:
+                    polled = True
+                    try:
+                        served_context = ollama_context(root, judge.model)
+                    except OllamaError as e:
+                        raise ScoringError(str(e)) from e
+                    if served_context is None:
+                        say(f"Note: Ollama's /api/ps does not report {judge.model}'s context; "
+                            f"its num_ctx was checked through /api/show only")
+                    elif served_context != settings.num_ctx:
+                        raise ScoringError(
+                            f"Ollama serves {judge.model} with a {served_context}-token "
+                            f"context, not its Modelfile's {settings.num_ctx}"
+                        )
+            scored.append(
+                ScoreItem(id=item.id, answerable=True, scores=values, failures=failures)
+            )
+            shown = ", ".join(
+                f"{name} {'-' if v is None else f'{v:.3f}'}" for name, v in values.items()
+            )
+            say(f"[{n}/{len(items)}] {item.id}: {shown}")
+        if store is not None:
+            store.append(
+                ScoreRecord(
+                    item=scored[-1],
+                    calls=log.calls,
+                    max_prompt=log.max_prompt,
+                    max_completion=log.max_completion,
+                    retried=dict(log.retried),
+                    served_context=served_context,
+                ).model_dump(mode="json"),
+                started_at=started_at,
+            )
 
+    if served_context is None:  # this session scored no answerable item
+        served_context = resume.served_context
     aggregate: dict[str, float | None] = {
         name: mean([i.scores.get(name) for i in scored if i.answerable]) for name in METRICS
     }
@@ -578,15 +692,7 @@ async def score(
             embedding_model=judge.embedding_model,
         ),
         versions=versions,
-        failures={
-            name: Failures(
-                parse=counts[name]["parse"],
-                truncated=counts[name]["truncated"],
-                no_score=counts[name]["no_score"],
-                retried=log.retried[name],
-            )
-            for name in METRICS
-        },
+        failures=failures_of(scored, log.retried),
         aggregate=aggregate,
         items=scored,
     )

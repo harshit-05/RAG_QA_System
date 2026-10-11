@@ -24,6 +24,8 @@ corpus/*.parquet
 downloads/
 # RAGAs run artifacts (Phase 2)
 eval_output/
+# a tier-2 run's checkpoint, until the run file it leads to is written (S2-5b)
+*.partial.jsonl
 # machine-specific overrides (SRS §8.3)
 config.local.yaml
 .env

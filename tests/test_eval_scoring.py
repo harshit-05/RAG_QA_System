@@ -19,10 +19,11 @@ from conftest import BASE_DIGEST, JUDGE_DIGEST, REAL_CONFIG, REPO_ROOT, FakeOlla
 
 from rag_qa.config import load_config
 from rag_qa.evaluation import fingerprint as fp
+from rag_qa.evaluation import gate
 from rag_qa.evaluation import ragas_scoring as rs
-from rag_qa.evaluation.cli import EXIT_CANNOT_RUN, main
+from rag_qa.evaluation.cli import EXIT_CANNOT_RUN, EXIT_OK, main
 from rag_qa.evaluation.dataset import GoldenItem, load_golden
-from rag_qa.evaluation.gate import AnswerItem, AnswersRun, Generator, write_run
+from rag_qa.evaluation.gate import AnswerItem, AnswersRun, Generator, load_scores, write_run
 from rag_qa.settings import ENV_DATA_PATH, ENV_VECTOR_STORE_PATH
 
 MARKER = "could not find the answer"
@@ -161,13 +162,18 @@ def scoring(
     Ollama: every refusal passes until the one a test breaks. Returns the config file."""
     monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
     monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
+    return checkout(tmp_path, fake_ollama, GOLDEN)
+
+
+def checkout(tmp_path: Path, fake_ollama: FakeOllama, records: list[dict[str, Any]]) -> Path:
+    """``scoring``'s checkout, for a golden set of ``records``."""
     data = yaml.safe_load(REAL_CONFIG.read_text())
     data["evaluation"]["judge"]["base_url"] = f"{fake_ollama.url}/v1"
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.safe_dump(data, sort_keys=False))
     eval_dir = tmp_path / "eval"
     eval_dir.mkdir()
-    (eval_dir / "eval_dataset.jsonl").write_text("".join(json.dumps(r) + "\n" for r in GOLDEN))
+    (eval_dir / "eval_dataset.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
     (eval_dir / "judge.Modelfile").write_text((REPO_ROOT / "eval" / "judge.Modelfile").read_text())
     golden = load_golden(eval_dir / "eval_dataset.jsonl")
     parts = fp.fingerprint(load_config(config_file), golden, parts=fp.GENERATION_PARTS)
@@ -176,7 +182,7 @@ def scoring(
         generator=Generator(ref="components.llms.mistral_ollama", model="mistral", digest=None),
         items=[AnswerItem(id=r["id"], question=r["question"], answerable=r["answerable"],
                           answer=REFUSAL, contexts=["c"], sources=[], ttft_ms=1.0, total_ms=2.0)
-               for r in GOLDEN],
+               for r in records],
     )
     write_run(answers, eval_dir / "runs" / "answers-latest.json")
     return config_file
@@ -406,6 +412,150 @@ def test_the_judge_digests_come_from_ollama(fake_ollama: FakeOllama) -> None:
     settings = fp.parse_modelfile((REPO_ROOT / "eval" / "judge.Modelfile").read_text())
     digests = rs.check_judge(fake_ollama.url, "rag-judge", "judge.Modelfile", settings)
     assert digests == (JUDGE_DIGEST, BASE_DIGEST)
+
+
+# ---- a whole run, with ragas faked: what a resumed run keeps (S2-5b) ----------------------
+
+#: Two answerable questions, so a run can stop after one; then one to decline.
+GOLDEN_3 = [
+    GOLDEN[0],
+    {"id": "report", "question": "What is the report about?", "ground_truth": "A report.",
+     "answerable": True, "expected_sources": [{"source": "sub/report.docx"}]},
+    GOLDEN[1],
+]
+
+
+class FakeJudge:
+    """What ragas and instructor are to ``score``: four metrics, each one judge call,
+    reported through the client's hooks as instructor reports them. The notes question
+    has the longer prompt, and its faithfulness call needs one retry; the ``broken``
+    (question, metric) call fails once, as a dropped connection would."""
+
+    def __init__(self, broken: tuple[str, str] | None = None) -> None:
+        self.hooks: dict[str, Callable[..., None]] = {}
+        self.calls: list[tuple[str, str]] = []
+        self.broken = broken
+
+    def namespace(self) -> types.SimpleNamespace:
+        judge = self
+
+        class Client:
+            mode = "Mode.JSON"
+
+            def on(self, event: str, handler: Callable[..., None]) -> None:
+                judge.hooks[event] = handler
+
+        class Metric:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            async def ascore(self, **inputs: Any) -> Any:
+                call = (inputs["user_input"], self.name)
+                judge.calls.append(call)
+                if call == judge.broken:
+                    judge.broken = None
+                    raise ConnectionError("Ollama went away")
+                notes = "notes" in inputs["user_input"]
+                if notes and self.name == "faithfulness":
+                    judge.hooks["parse:error"](ValueError("not json"), is_last_attempt=False)
+                usage = types.SimpleNamespace(prompt_tokens=3000 if notes else 200,
+                                              completion_tokens=10)
+                judge.hooks["completion:response"](types.SimpleNamespace(usage=usage))
+                return types.SimpleNamespace(value=0.5)
+
+        def metric(name: str) -> Callable[..., Metric]:
+            return lambda **settings: Metric(name)
+
+        return types.SimpleNamespace(
+            AsyncOpenAI=lambda **settings: object(),
+            llm_factory=lambda model, client, **sampling: types.SimpleNamespace(client=Client()),
+            HuggingFaceEmbeddings=lambda **settings: object(),
+            collections=types.SimpleNamespace(
+                **{spec["class"]: metric(name) for name, spec in fp.METRICS.items()}
+            ),
+            IncompleteOutputException=type("IncompleteOutput", (Exception,), {}),
+            InstructorRetryException=type("InstructorRetry", (Exception,), {}),
+            PARSE_ERRORS=(ValueError,),
+        )
+
+
+@pytest.fixture
+def judged(
+    tmp_path: Path, sample_corpus: Path, monkeypatch: pytest.MonkeyPatch, fake_ollama: FakeOllama
+) -> Path:
+    """``scoring``'s checkout over :data:`GOLDEN_3`, with the eval extra's versions
+    reported as pinned, whether or not it is installed."""
+    monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
+    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
+    pinned = {"ragas": fp.RAGAS_VERSION, "instructor": fp.INSTRUCTOR_VERSION, "openai": "x"}
+    monkeypatch.setattr(rs, "check_ragas", lambda: pinned)
+    return checkout(tmp_path, fake_ollama, GOLDEN_3)
+
+
+def judge_with(monkeypatch: pytest.MonkeyPatch, judge: FakeJudge) -> None:
+    monkeypatch.setattr(rs, "import_ragas", judge.namespace)
+
+
+def test_an_interrupted_score_resumes_with_its_totals(
+    judged: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = judged.parent / "scratch-scores.json"
+    kept = judged.parent / "scratch-scores.partial.jsonl"
+    judge_with(monkeypatch, FakeJudge(broken=("What is the report about?", "context_precision")))
+    assert score(judged) == EXIT_CANNOT_RUN
+    err = capsys.readouterr().err
+    assert "the judge call for context_precision on report failed: ConnectionError" in err
+    assert "scratch-scores.partial.jsonl: once the problem above is fixed" in err
+    assert not out.exists()
+    first = [json.loads(line) for line in kept.read_text().splitlines()][1:]
+    assert [record["item"]["id"] for record in first] == ["notes"]
+
+    again = FakeJudge()
+    judge_with(monkeypatch, again)
+    assert score(judged) == EXIT_OK
+    # Only what was not finished is judged again: the notes question is not.
+    assert {question for question, _ in again.calls} == {"What is the report about?"}
+    assert "Resuming" in capsys.readouterr().out
+    run = load_scores(out)
+    assert [item.id for item in run.items] == ["notes", "report", "capital"]
+    assert run.items[0].model_dump(mode="json") == first[0]["item"]
+    # The totals carry over from the first session: its longer prompt and its retry.
+    assert run.judge.max_prompt_tokens == 3000
+    assert run.failures["faithfulness"].retried == 1
+    assert run.aggregate["faithfulness"] == 0.5 and run.aggregate["decline_rate"] == 1.0
+    assert not kept.exists()
+
+
+def test_a_reference_edited_between_sessions_does_not_resume(
+    judged: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    judge_with(monkeypatch, FakeJudge(broken=("What is the report about?", "faithfulness")))
+    assert score(judged) == EXIT_CANNOT_RUN
+    dataset = judged.parent / "eval" / "eval_dataset.jsonl"
+    dataset.write_text(dataset.read_text().replace("Plain text notes.", "Plain notes."))
+    capsys.readouterr()
+    judge_with(monkeypatch, FakeJudge())
+    assert score(judged) == EXIT_CANNOT_RUN
+    err = capsys.readouterr().err
+    assert "it is of a run with another references" in err and "Delete it" in err
+
+
+def test_resume_state_rebuilds_from_the_last_record() -> None:
+    def record(item_id: str, calls: int, served: int | None) -> rs.ScoreRecord:
+        item = gate.ScoreItem(id=item_id, answerable=True, scores={"faithfulness": None},
+                              failures={"faithfulness": "parse"})
+        return rs.ScoreRecord(item=item, calls=calls, max_prompt=calls * 10,
+                              max_completion=calls, retried={"faithfulness": calls},
+                              served_context=served)
+
+    state = rs.resume_state([record("a", 4, 8192), record("b", 8, None)])
+    assert list(state.items) == ["a", "b"]
+    assert (state.calls, state.max_prompt, state.retried["faithfulness"]) == (8, 80, 8)
+    assert state.served_context == 8192  # the last one any session polled
+    assert rs.resume_state([]).items == {}
+    failures = rs.failures_of(list(state.items.values()), state.retried)
+    assert failures["faithfulness"] == gate.Failures(parse=2, retried=8)
+    assert failures["context_recall"] == gate.Failures()
 
 
 # ---- what needs the eval extra: skipped without it, as on CI -----------------------------

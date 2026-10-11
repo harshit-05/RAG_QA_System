@@ -2,7 +2,7 @@
 #
 # Gates run cheapest first and all block. Each gate is added by the story that
 # makes it passable: ruff + pytest here (S1-2), coverage (S1-5), mypy (S1-6),
-# pip-audit (S1-8), the tier-1 retrieval eval (S2-3).
+# pip-audit (S1-8), the tier-1 retrieval eval (S2-3), the tier-2 check (S2-5b).
 #
 # The check job is hermetic by design: no Ollama, no model download, no network in
 # the suite. HF_HUB_OFFLINE is the tripwire for that: a test that tries to fetch an
@@ -90,6 +90,16 @@ jobs:
           uv pip freeze --exclude-editable | sed 's/^\(torch==.*\)+cpu$/\1/' > "$RUNNER_TEMP/audit.txt"
           test -s "$RUNNER_TEMP/audit.txt"
           uv run --no-sync pip-audit --no-deps --disable-pip --progress-spinner off -r "$RUNNER_TEMP/audit.txt"
+
+      # Tier 2 of the quality bar (DEC-15, S2-5b): the committed run in eval/runs/ against
+      # eval/thresholds.yaml and this checkout. It needs no models, no Ollama and no eval
+      # extra, so it stays in this hermetic job. Exit 1: a floor is missed, or the run is
+      # stale, and the log names the re-run that fixes it (generate and score, or score
+      # only). Editing a hashed input (the prompt, the llm, retriever or reranker spec, the
+      # corpus, the splitter, the golden set, the judge's Modelfile) turns this red until
+      # tier 2 is run again. Exit 2: it could not run.
+      - name: Tier-2 check
+        run: uv run rag-eval check
 
   # Tier 1 of the quality bar (DEC-15, S2-3): retrieval scored against the golden set
   # (hit rate, MRR, recall), recomputed on every pull request and every push to main
