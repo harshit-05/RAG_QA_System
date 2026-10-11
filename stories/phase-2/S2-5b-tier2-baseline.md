@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | In progress (2026-10-07) |
 | **Closes** | FR-7 (tier 2 enforced) |
 | **Depends on** | S2-5 (the harness and the gate) |
 | **Model** | opus-fast |
