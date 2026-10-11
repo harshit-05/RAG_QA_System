@@ -5,7 +5,7 @@
 
 ## Now
 
-**Next action: push the first review's commits to PR #14 (S2-5b), and merge once CI is
+**Next action: push the second review's commit to PR #14 (S2-5b), and merge once CI is
 green. Then [S2-7](phase-2/S2-7-http-api.md).**
 
 **S2-5b is in review** (2026-10-11, PR #14, on Opus 5.5; the story says opus-fast). Tier 2
@@ -29,9 +29,10 @@ story file.
 - **The digest question is answered.** With Ollama 0.22.1 pinned, Colab's `ollama create`
   gives this host's `d85f8193c353`, so `check --with-ollama` passes here on a Colab-scored
   run.
-- **The hand check found the judge lenient.** It scored a made-up answer as faithful, and
-  gave context recall 1.0 three times where the contexts held only part of the reference
-  (the third was found in review). That is recorded, not fixed (backlog).
+- **The hand check found the judge lenient.** It scored two wrong answers as faithful (a
+  made-up expansion, and numbers moved between a table's rows), and gave context recall
+  1.0 four times where the contexts held only part of the reference. The reviews found
+  the last two credits and the second answer. That is recorded, not fixed (backlog).
 - **The maintainer kept the decline marker:** two honest refusals that paraphrase it count
   as misses (backlog).
 - **From now on, CI fails on any edit to a hashed input until tier 2 is re-run** (caveat
@@ -49,6 +50,18 @@ story file.
     reworded.
   - **`context_recall` stays gated.** The judge's errors all leaned generous, so a fall it
     reports is likely real.
+- **Second review (2026-10-12): no blockers; 2 findings.** It re-ran the gates (677
+  passed), recomputed the committed run from its items, and attacked the checkpoint with
+  crafted files. The resume code holds. CI was green on `8ba2d9f`.
+  - **`glider-flask-vs-gpt4o` is a misattribution the judge scored 1 / 0.92 / 1 / 1.** The
+    answer gives GLIDER GPT-4o's FLASK score, and GPT-4o its BigGen Bench one: the golden
+    record's own trap, and S0-6's misattributed scores. With both faithfulness misses
+    corrected, faithfulness would be about 0.83–0.84, below its floor. Fixed in the docs;
+    no floor changes.
+  - It scored high on every metric, so a hand check that picks low scores cannot find
+    errors like it. Hand-labelling all 20 can (backlog).
+  - **`check` trusts the run file's aggregates** rather than recomputing them from its
+    items (backlog).
 
 **S2-5 is done** (2026-10-07, PR #13, on Opus 5.5 in place of Fable). CI was green on
 `b6f4e74`. Tier 2's harness is code: `rag-eval generate`, `score` and `check`, the
@@ -527,7 +540,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-3](phase-2/S2-3-retrieval-eval.md) | Tier-1 retrieval eval and its CI job | FR-7 (tier 1) | S2-1, S2-2 | Done 2026-10-04 (PR #9) |
 | [S2-4](phase-2/S2-4-reranker.md) | Our own cross-encoder reranker, decided by the numbers | FR-4, ISS-03, DEC-5 step 2 | S2-1, S2-3 | Done 2026-10-05 (PR #11); reranker on |
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Done 2026-10-07 (PR #13) |
-| [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | In review 2026-10-11 (PR #14, CI green; first review done) |
+| [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | In review 2026-10-12 (PR #14, CI green on `8ba2d9f`; two reviews done) |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Todo |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
@@ -621,7 +634,8 @@ leads with one of two things:
   - `num_thread`, now 10;
   - the judge's `num_thread`, not set: the baseline scored on a GPU.
 
-  It opens two follow-ups from its hand check and its answers.
+  It opens three follow-ups: two from its hand check and its answers, and one from its
+  second review (`check` recomputing the aggregates).
 - **S2-6:** incremental ingestion (FR-2, ISS-14, NFR-4 in place, SRS §7.3, DEC-17).
   - Three backlog lines close with it: walk pruning, the §7.3 chunk metadata, and the
     embedder check on open.
@@ -767,23 +781,34 @@ leads with one of two things:
   - **Generation misses:**
     - `glider-name` refuses although its title chunk is in context;
     - `glider-slm` makes up "Summarization as Judge Model" (tier 1's one miss: page 2 is
-      not retrieved).
+      not retrieved);
+    - `glider-flask-vs-gpt4o` gives GLIDER GPT-4o's FLASK score, 0.610, and GPT-4o its
+      BigGen Bench one, 0.614 (second review). GLIDER's own row is in no retrieved chunk.
 
     The prompt, `min_score` and the DEC-2 revisit are the levers.
   - **The judge is lenient.**
-    - It scored `glider-slm`'s fabrication as faithful (1.0).
-    - It gave context recall 1.0 on three items whose contexts hold only part of the
-      reference: `glider-slm`, `lusk-overbeek-itp`, and `glider-purpose` (found in review).
+    - It scored two wrong answers as faithful (1.0): `glider-slm`'s fabrication, and
+      `glider-flask-vs-gpt4o`'s misattribution (found in the second review).
+    - It gave context recall 1.0 on four items whose contexts hold only part of the
+      reference: `glider-slm`, `lusk-overbeek-itp`, `glider-purpose` (first review) and
+      `glider-flask-vs-gpt4o` (second review).
     - It got 3 of the 20 hand-checked verdicts wrong, all too generous. So the baseline
       runs high, context recall sits at its ceiling, and the gate is a quieter alarm than
       its numbers suggest. The story file has the assessment.
     - **First, measure it:** hand-label faithfulness for the 20 answers (one to two hours
-      of reading) and compute the judge's agreement. No re-run needed.
+      of reading) and compute the judge's agreement. No re-run needed. It is the only way
+      to find errors among the perfect scores: `glider-flask-vs-gpt4o` scored 1 / 0.92 /
+      1 / 1.
     - **Then, if the agreement is poor:** a stronger judge (a 14B model at 4-bit should fit
       on a T4, not yet measured), or a second judge for spot checks, in the DEC-2 revisit or
       Phase 3. Either moves `judge` and needs a re-score.
   - **Answer relevancy is all-or-nothing on hedging.** ragas zeroes a "noncommittal"
     answer, so one hedge in an otherwise right answer costs about 0.04 of the mean.
+- **Backlog — `rag-eval check` recomputes the aggregates from the items** (S2-5b's second
+  review). It reads `aggregate` and `failures` from `generation-latest.json` as written.
+  `score` writes them consistently, and the baseline recomputes exactly. But a hand edit,
+  or a merge conflict in that file resolved by hand, could pass a gate its items fail. A
+  few lines in `run_check`: refuse a file whose aggregates disagree with its items.
 - **When a ragas release stops importing `langchain_community.chat_models.vertexai` —
   delete the import shim** in `ragas_scoring.import_ragas` (S2-5,
   vibrantlabsai/ragas#2741). `tests/test_eval_scoring.py` fails then and says so. A

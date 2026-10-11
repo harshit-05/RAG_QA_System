@@ -1037,9 +1037,10 @@ measurements._
 - **Ollama digests are portable across machines for the same Ollama version.** The same
   Modelfile on the same `gemma2:9b` blobs gave `d85f8193c353` on Colab and here, so
   `check --with-ollama` holds for a Colab-scored run. The recipe pins `OLLAMA_VERSION`.
-- **The judge is lenient, not noisy.** The hand check and the first review found that it:
-  - scored one fabricated answer as faithful;
-  - credited three references that the contexts held only in part.
+- **The judge is lenient, not noisy.** The hand check and the two reviews found that it:
+  - scored two wrong answers as faithful: a made-up expansion, and numbers moved between
+    a table's rows (S0-6's misattributed scores);
+  - credited four references that the contexts held only in part.
 
   The floors stand as regression gates for this judge; the absolute numbers run high.
   `context_recall` stays gated: the judge's errors all leaned generous, so a fall it

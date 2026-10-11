@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-11): PR #14, every verification shown below; CI green on `da4b96b`. First review: no blockers, 4 doc findings, fixed on the PR. Next: CI on the review commit, then merge |
+| **Status** | In review (2026-10-12): PR #14, every verification shown below; CI green on `8ba2d9f`. First review: no blockers, 4 doc findings, fixed on the PR. Second review: no blockers, 2 findings (the docs fixed on the PR, one code line to the backlog). Next: CI on the second review's commit, then merge |
 | **Closes** | FR-7 (tier 2 enforced) |
 | **Depends on** | S2-5 (the harness and the gate) |
 | **Model** | opus-fast |
@@ -199,6 +199,11 @@ differently, which is why the recipe pins it.
   - Mistral still answered that the context does not mention it.
   - Retrieval worked, and generation missed. The baseline's RAGAs numbers carry it.
   - Fixing it is a prompt or model change, which is out of scope here.
+- **A misattribution: `glider-flask-vs-gpt4o`** (found in the second review). The answer
+  says GLIDER beats GPT-4o on FLASK, then gives GLIDER 0.610 and GPT-4o 0.614. Both numbers
+  are GPT-4o's own row: 0.610 is its FLASK score, 0.614 its BigGen Bench one, which is the
+  golden record's documented trap. GLIDER's row (0.615 ± 0.01) is in no retrieved chunk:
+  the Table 1 chunk ends at FlowAI Judge. This is S0-6's "misattributed scores" again.
 
 ### Scoring on a Colab T4 (2026-10-11): the recipe as run
 
@@ -291,8 +296,9 @@ relevancy, context precision and context recall.
 - **The judge is lenient, not noisy.** It never misparsed, it repeated exactly, and it was
   right wherever the evidence was plain.
 - **It missed one fabrication** (faithfulness), and twice credited a reference the contexts
-  only half held (context recall). The review found a third such credit, `glider-purpose`
-  (Review, below).
+  only half held (context recall). The first review found a third such credit,
+  `glider-purpose`. The second found a misattribution scored as faithful,
+  `glider-flask-vs-gpt4o`, with a fourth such credit (Review, below).
 - **So the baseline is somewhat high.** Context recall's 1.000 on all 20 items is partly a
   ceiling.
 - **As a regression gate it still holds.** The same judge scores a later run the same way.
@@ -322,12 +328,20 @@ relevancy, context precision and context recall.
   - a fabrication that shares words with the context: "Summarization **as Judge Model**"
     against the context's "SLM-**as-judge model**". Word overlap is the likely cause, a
     known weakness of small judges;
-  - context recall: it saturates, at 1.0 on all 20 items, including three found only
-    partly supported by hand: two in the hand check, and `glider-purpose` in the review.
+  - numbers moved between a table's rows (second review): `glider-flask-vs-gpt4o` gives
+    GLIDER GPT-4o's FLASK score and GPT-4o its BigGen Bench one, and contradicts itself
+    ("higher", then 0.610 against 0.614). Faithfulness 1.0, where it should be about
+    0.33–0.67. Each number is in the context, only not where the answer puts it;
+  - context recall: it saturates, at 1.0 on all 20 items, including four found only
+    partly supported by hand: two in the hand check, `glider-purpose` in the first review
+    and `glider-flask-vs-gpt4o` in the second.
 - **On the hand-checked verdicts** (5 items × 4 metrics), 3 of 20 were clearly wrong,
   about 15%, all too generous: `glider-slm`'s faithfulness and context recall, and
   `lusk-overbeek-itp`'s context recall.
-  - The sample was chosen for anomalies, so the rate on a random item is likely lower.
+  - The sample was chosen for anomalies, by low scores. A lenient error sits among the
+    high scores, so that choice cannot find one: `glider-flask-vs-gpt4o` scored 1 / 0.92 /
+    1 / 1 with two verdicts wrong (second review). So the rate on a random item is not
+    known to be lower.
   - Five items cannot pin it down.
 
 **What it means for reading the gate:**
@@ -337,7 +351,10 @@ relevancy, context precision and context recall.
 - **The real cost is sensitivity.** A change that brought in `glider-slm`-style
   fabrications might not move faithfulness at all. A lenient judge is a quieter alarm.
 - **How to read each floor:**
-  - faithfulness and context precision: coarse alarms that catch large regressions;
+  - faithfulness and context precision: coarse alarms that catch large regressions.
+    Faithfulness passed both confabulations found (`glider-slm`, `glider-flask-vs-gpt4o`),
+    so it does not yet see S0-6's misattributed facts, the failure tier 2 was meant to
+    measure;
   - context recall: close to signal-free near the top; tier 1 gates retrieval directly;
   - answer relevancy: volatile on hedging.
 - **The absolute numbers are not quality claims.** "Faithfulness 0.91" overstates it; they
@@ -350,7 +367,8 @@ relevancy, context precision and context recall.
 **Follow-ups** (STATUS.md backlog, "After S2-5b"):
 
 - **Measure the judge first.** Hand-label faithfulness for the 20 answers, about one to two
-  hours of reading, and compute the judge's agreement. That turns "lenient" into a number.
+  hours of reading, and compute the judge's agreement. That turns "lenient" into a number,
+  and it is the only way to find the errors among the perfect scores (second review).
 - **Then spot-check with a stronger judge.** A 14B model at 4-bit should fit on a T4 (not
   measured: check its size and its context's memory first). The DEC-2 revisit is the
   natural place. A new judge moves `judge` and means a re-score.
@@ -442,6 +460,59 @@ the docs, fixed on the PR.**
 - A `null` floor would drop that alarm and still print the 1.000.
 - A re-score on other hardware risks a false alarm on all four metrics alike.
 - It is not read as retrieval coverage: tier 1 gates retrieval.
+
+**Second review (Opus 5.5, 2026-10-12, at `8ba2d9f`): no blockers; 2 findings.** It
+covered the risky half: the checkpoint and resume code, the CI gate, and the committed run.
+
+- **Checked and sound:**
+  - the gates, re-run: `ruff` and `mypy` clean; **677 passed, 4 xfailed**, coverage
+    97.91%. `rag-eval check`: exit 0, in 0.8 s. CI on `8ba2d9f` (run 38140303845): `check`
+    and `eval-retrieval` green;
+  - the committed run, recomputed from its items:
+    - the four RAGAs means and the failure counts match exactly;
+    - `decline_rate`, re-derived from the answers' text with the marker, is 3 of 5;
+    - the items are in golden order, neither file has a `--limit`, and the scores'
+      `answers` sha matches;
+  - the checkpoint, attacked with seven crafted files:
+    - a torn last line is cut;
+    - a whole last line without its newline is kept;
+    - a bad line before the last is refused;
+    - an empty or torn-at-birth file is refused. That loses nothing: the header and the
+      first record go out in one write;
+    - strict-mode restore of a nested `ScoreRecord` round-trips through JSON;
+  - the resume identity holds everything that decides a result:
+    - records are keyed by id, so a duplicate cannot reach a run file;
+    - `uncovered` refuses a duplicate or a partial run anyway;
+    - the judge's context is polled again in every session;
+  - two runs into the same `--out` at once share the checkpoint without a lock. The result
+    stays right (records keyed by id, a deterministic judge); only time is wasted. Not
+    worth a lock;
+  - the hashed surface is narrow: the query components, the prompt, the retriever and the
+    reranker. S2-7's new config keys will not move it. Nothing merges a machine-local
+    config yet, so a local `num_thread` override cannot turn `check` stale;
+  - no answer contains a number that is in neither its contexts nor its reference.
+- **Finding 1 (fixed on the PR, docs): a second faithfulness miss and a fourth
+  context-recall overcredit, `glider-flask-vs-gpt4o`.** A scan for reference numbers
+  absent from every context flagged two items: `glider-purpose` (the first review's) and
+  this one.
+  - **The answer moves numbers between a table's rows** (Generation, above).
+  - **The judge gave it 1 / 0.92 / 1 / 1.** Faithfulness should be about 0.33–0.67:
+    "higher" is supported, GLIDER's 0.610 is not, and GPT-4o's 0.614 is its BigGen
+    Bench score. Context recall should be about 0.67: the reference's 0.615 ± 0.01 is in no
+    chunk.
+  - **With both faithfulness misses corrected, faithfulness would be about 0.83–0.84,
+    below its 0.858 floor.** With all four recall overcredits corrected, context recall
+    would be about 0.92. Both numbers are relative to this judge, as the assessment says.
+  - **The item scored high on every metric.** So the hand check, which chose items by low
+    score, could not have found it. Hand-labelling all 20 is how errors like it surface.
+  - **No floor changes.** Faithfulness stays gated, for the reason context recall does:
+    its errors all lean generous, so a fall it reports is likely real.
+  - Corrected here, in STATUS.md, ARCHITECTURE.md and `thresholds.yaml`.
+- **Finding 2 (backlog, code): `check` trusts the run file's `aggregate` and `failures`.**
+  It never recomputes them from `items`. `score` writes them consistently, and this
+  baseline recomputes exactly. A hand edit, or a merge conflict in `generation-latest.json`
+  resolved by hand, could still pass a gate the items fail. The fix is a few lines in
+  `run_check`. It is S2-5's code, so it goes to the backlog.
 
 ## Deviation from plan
 

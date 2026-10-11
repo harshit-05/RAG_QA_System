@@ -33,9 +33,10 @@ retrieval:
 #   unmeasured.
 #   max_unscored 0.1 is 2 of 20 items: the larger of 0.1 and the worst share either
 #   scoring left unscored (0).
-#   The hand check and the first review found the judge lenient: it scored a made-up
-#   answer as faithful, and gave context recall 1.0 on three items whose contexts held
-#   only part of the reference. Detail in stories/phase-2/S2-5b-tier2-baseline.md.
+#   The hand check and two reviews found the judge lenient: it scored two wrong answers as
+#   faithful (a made-up expansion, and numbers moved between a table's rows), and gave
+#   context recall 1.0 on four items whose contexts held only part of the reference.
+#   Detail in stories/phase-2/S2-5b-tier2-baseline.md.
 generation:
   faithfulness: 0.858
   answer_relevancy: 0.668
