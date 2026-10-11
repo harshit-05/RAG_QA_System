@@ -26,6 +26,10 @@ a file it cannot write, a command-line usage error (as ``argparse`` uses), or an
 error while running (printed with its traceback). So exit 1 only ever means a measured
 verdict, which is how CI reads it (S2-3's second review). ``generate`` and ``score``
 never exit 1: they record, and ``check`` judges.
+
+``generate`` and ``score`` keep each finished item in a checkpoint beside the file they
+write (``answers-latest.partial.jsonl`` for ``answers-latest.json``). Run the same command
+again after an interruption, and it resumes (:mod:`.checkpoint`, S2-5b).
 """
 
 import argparse
@@ -34,13 +38,14 @@ import json
 import string
 import sys
 import traceback
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from rag_qa.chain import NoIndexError
 from rag_qa.config import ConfigError, load_config, resolve_config_path
+from rag_qa.evaluation.checkpoint import CheckpointError, checkpoint_path, discard
 from rag_qa.evaluation.dataset import ExpectedSource, GoldenItem, GoldenSetError, load_golden
 from rag_qa.evaluation.fingerprint import PARTS, FingerprintError, evaluation_of, fingerprint
 from rag_qa.evaluation.gate import (
@@ -345,6 +350,48 @@ def _write(run: Any, path: Path) -> None:
         raise _CannotRun(f"cannot write {path}: {e.strerror}") from e
 
 
+def _resume_hint(kept: Path) -> None:
+    """After a run stopped: where its finished items are, if any were kept."""
+    if kept.exists():
+        print(f"Finished items are kept in {_shown(kept.resolve())}: once the problem above "
+              f"is fixed, the same command resumes from them.", file=sys.stderr)
+
+
+def _resumable[RunT](
+    work: Callable[[], RunT], kept: Path, what: str, refusals: tuple[type[Exception], ...]
+) -> RunT | int:
+    """``work``'s run, or the exit status when it stopped, after saying why and where its
+    finished items are kept. Ctrl-C says where too, then goes on as Ctrl-C."""
+    try:
+        return work()
+    except CheckpointError as e:  # its message says what to do with the file
+        return _cannot_run(e)
+    except refusals as e:
+        status = _cannot_run(e)
+    # Deliberately broad: whatever stops the run (Ollama down, a model error) is "could not
+    # run", never a verdict.
+    except Exception as e:  # noqa: BLE001
+        status = _crashed(what, e)
+    except KeyboardInterrupt:
+        _resume_hint(kept)
+        raise
+    _resume_hint(kept)
+    return status
+
+
+def _finish(run: Any, out: Path, kept: Path) -> int | None:
+    """Write the run file, then delete the checkpoint it came from. The exit status if
+    the write failed: the checkpoint then still holds the whole run."""
+    try:
+        _write(run, out)
+    except _CannotRun as e:
+        status = _cannot_run(e)
+        _resume_hint(kept)
+        return status
+    discard(out)
+    return None
+
+
 def _ms(value: float | None) -> str:
     return "-" if value is None else f"{value / 1000:.1f} s"
 
@@ -364,18 +411,18 @@ def run_generate(args: argparse.Namespace) -> int:
         print(f"[{n}/{of}] {item.id}: ttft {_ms(item.ttft_ms)}, total {_ms(item.total_ms)}",
               flush=True)
 
-    try:
-        run = asyncio.run(generate(setup.config, setup.golden, limit=args.limit, progress=progress))
-    except (FingerprintError, NoIndexError, StaleIndexError) as e:
-        return _cannot_run(e)
-    # Deliberately broad: whatever stops generation (Ollama down, a model error) is "could
-    # not run", never a verdict.
-    except Exception as e:  # noqa: BLE001
-        return _crashed("generation", e)
-    try:
-        _write(run, out)
-    except _CannotRun as e:
-        return _cannot_run(e)
+    kept = checkpoint_path(out)
+    run = _resumable(
+        lambda: asyncio.run(generate(
+            setup.config, setup.golden, limit=args.limit, progress=progress, checkpoint=kept,
+            note=lambda line: print(line, flush=True),
+        )),
+        kept, "generation", (FingerprintError, NoIndexError, StaleIndexError),
+    )
+    if isinstance(run, int):
+        return run
+    if (failed := _finish(run, out, kept)) is not None:
+        return failed
     print(f"\nWrote {len(run.items)} answer(s) to {_shown(out.resolve())}. "
           f"Generator digest: {run.generator.digest or 'not recorded'}")
     return EXIT_OK
@@ -418,17 +465,18 @@ def run_score(args: argparse.Namespace) -> int:
         )
     out = Path(args.out) if args.out else setup.eval_dir / RUNS_DIR / SCORES_FILE
     print(f"Tier 2: scoring {_shown(answers_file.resolve())} with RAGAs")
-    request = ScoreRequest(setup.config, setup.golden, answers, setup.eval_dir, args.limit)
-    try:
-        run = asyncio.run(score(request, progress=lambda line: print(line, flush=True)))
-    except (ScoringError, FingerprintError) as e:
-        return _cannot_run(e)
-    except Exception as e:  # noqa: BLE001
-        return _crashed("scoring", e)
-    try:
-        _write(run, out)
-    except _CannotRun as e:
-        return _cannot_run(e)
+    kept = checkpoint_path(out)
+    request = ScoreRequest(
+        setup.config, setup.golden, answers, setup.eval_dir, args.limit, checkpoint=kept
+    )
+    run = _resumable(
+        lambda: asyncio.run(score(request, progress=lambda line: print(line, flush=True))),
+        kept, "scoring", (ScoringError, FingerprintError),
+    )
+    if isinstance(run, int):
+        return run
+    if (failed := _finish(run, out, kept)) is not None:
+        return failed
     _print_scores(run)
     print(f"\nWrote the scores to {_shown(out.resolve())}. rag-eval check holds them to the "
           f"floors.")

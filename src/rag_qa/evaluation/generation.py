@@ -18,12 +18,14 @@ whose manifest disagrees with the same corpus scan the fingerprint hashes.
 import dataclasses
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 
 from langchain_core.documents import Document
 from langchain_core.runnables import RunnableLambda
 
 from rag_qa.answering import Done, Sources, Token, stream_answer
 from rag_qa.chain import QueryPipeline, build_query_pipeline, check_index
+from rag_qa.evaluation.checkpoint import Checkpoint, CheckpointError
 from rag_qa.evaluation.dataset import GoldenItem
 from rag_qa.evaluation.fingerprint import GENERATION_PARTS, corpus_part, corpus_scan, fingerprint
 from rag_qa.evaluation.gate import (
@@ -160,26 +162,67 @@ async def generate(
     *,
     limit: int | None = None,
     progress: Callable[[int, int, AnswerItem], None] | None = None,
+    checkpoint: Path | None = None,
+    note: Callable[[str], None] | None = None,
 ) -> AnswersRun:
     """Answer the golden set's first ``limit`` questions (all, by default).
 
     The fingerprint covers the whole golden set either way; ``check`` refuses a run that
     does not cover every question. ``progress`` is called after each answer, with its
     1-based number and the total.
+
+    With a ``checkpoint`` path, each answer is also kept there as it is made, and the
+    questions it already holds are not asked again (:mod:`.checkpoint`). It resumes only a
+    run with the same generation parts, generator (digest included) and ``limit``;
+    otherwise it raises :class:`~.checkpoint.CheckpointError`. ``note`` hears that a run
+    resumed.
     """
     parts = prepare(config, golden)
     generator = generator_record(config)
     items = list(golden if limit is None else golden[:limit])
     generated_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    pipeline = build_query_pipeline(config)
+    store = None
+    done: dict[str, AnswerItem] = {}
+    if checkpoint is not None:
+        if checkpoint.exists() and generator.model is not None and generator.digest is None:
+            # The run recorded one, so the identity would differ; that is no reason to
+            # tell anyone to delete hours of answers (S2-5b's review).
+            raise CheckpointError(
+                f"cannot resume {checkpoint} yet: Ollama did not report {generator.model}'s "
+                f"digest, which the run recorded. Check that Ollama is up, then run the same "
+                f"command again"
+            )
+        store = Checkpoint(checkpoint, "answers", {
+            "fingerprint": parts, "generator": generator.model_dump(), "limit": limit,
+        })
+        resumed = store.load()
+        if resumed is not None:
+            generated_at = resumed.started_at
+            done = {
+                answered.id: answered
+                for answered in (store.restore(AnswerItem, r) for r in resumed.records)
+            }
+            if note is not None:
+                kept = sum(item.id in done for item in items)
+                note(f"Resuming {checkpoint}: {kept} of {len(items)} already answered")
     answers = []
+    pipeline = None  # built at the first question left to ask: none, if nothing is left
     try:
         for n, item in enumerate(items, 1):
-            answers.append(await answer(pipeline, item))
+            if item.id in done:
+                answers.append(done[item.id])
+                continue
+            if pipeline is None:
+                pipeline = build_query_pipeline(config)
+            answered = await answer(pipeline, item)
+            if store is not None:
+                store.append(answered.model_dump(mode="json"), started_at=generated_at)
+            answers.append(answered)
             if progress is not None:
-                progress(n, len(items), answers[-1])
+                progress(n, len(items), answered)
     finally:
-        await pipeline.aclose()
+        if pipeline is not None:
+            await pipeline.aclose()
     return AnswersRun(
         generated_at=generated_at,
         limit=limit,
