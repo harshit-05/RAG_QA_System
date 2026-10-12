@@ -297,3 +297,70 @@ def test_the_judge_section_is_closed() -> None:
     data["evaluation"]["judge"]["num_ctx"] = 8192
     with pytest.raises(ValidationError, match="unknown key 'num_ctx'"):
         RagConfig.model_validate(data)
+
+
+# --- trust_remote_code (S2-7, DEC-18) -------------------------------------------------------
+
+
+def with_entry(kind: str, name: str, entry: dict[str, Any]) -> dict[str, Any]:
+    data = copy.deepcopy(MINIMAL)
+    data["components"].setdefault(kind, {})[name] = entry
+    return data
+
+
+@pytest.mark.parametrize(
+    ("kind", "entry", "where"),
+    [
+        pytest.param(
+            "embedders",
+            {"_target_": "rag_qa.stub.Embedder", "trust_remote_code": True},
+            "embedders.evil.trust_remote_code",
+            id="top level",
+        ),
+        pytest.param(
+            "embedders",
+            {"_target_": "rag_qa.stub.Embedder", "model_kwargs": {"trust_remote_code": True}},
+            "embedders.evil.model_kwargs.trust_remote_code",
+            id="nested in model_kwargs",
+        ),
+        pytest.param(
+            "rerankers",
+            {"_target_": "rag_qa.stub.R", "config_kwargs": [{"trust_remote_code": 1}]},
+            "rerankers.evil.config_kwargs[0].trust_remote_code",
+            id="inside a list",
+        ),
+        pytest.param(
+            "llms",
+            {"_target_": "rag_qa.stub.LLM", "trust_remote_code": "false"},
+            "llms.evil.trust_remote_code",
+            id="the string false is truthy",
+        ),
+        pytest.param(
+            "retrievers",
+            {"search_kwargs": {"k": 5, "trust_remote_code": True}},
+            "retrievers.evil.search_kwargs.trust_remote_code",
+            id="a retriever's kwargs",
+        ),
+    ],
+)
+def test_a_truthy_trust_remote_code_anywhere_is_refused_and_located(
+    kind: str, entry: dict[str, Any], where: str
+) -> None:
+    # It runs Python from the model's repository; the allowlist cannot see kwargs (S1-2).
+    with pytest.raises(ValidationError, match=rf"{where.replace('[', r'\[')}: trust_remote_code"):
+        RagConfig.model_validate(with_entry(kind, "evil", entry))
+
+
+@pytest.mark.parametrize("value", [False, 0, None, ""])
+def test_a_falsy_trust_remote_code_loads(value: Any) -> None:
+    entry = {"_target_": "rag_qa.stub.Embedder", "model_kwargs": {"trust_remote_code": value}}
+    RagConfig.model_validate(with_entry("embedders", "fine", entry))
+
+
+def test_every_offending_entry_is_named_at_once() -> None:
+    data = with_entry("embedders", "a", {"_target_": "rag_qa.stub.E", "trust_remote_code": True})
+    data["components"]["llms"]["b"] = {"_target_": "rag_qa.stub.L", "trust_remote_code": True}
+    with pytest.raises(ValidationError) as exc:
+        RagConfig.model_validate(data)
+    assert "embedders.a.trust_remote_code" in str(exc.value)
+    assert "llms.b.trust_remote_code" in str(exc.value)
