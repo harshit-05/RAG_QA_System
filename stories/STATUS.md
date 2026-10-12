@@ -5,10 +5,34 @@
 
 ## Now
 
-**Next action: the two reviews of [S2-7](phase-2/S2-7-http-api.md), on PR #15.** CI is
-green on `5e96d1c` (run 38252812472), and Verification 1–6 are shown in the story. It ran
-on Opus 5.5 at max effort in place of Fable. Fix each review's findings on the PR, then
-merge.
+**Next action: commit both reviews' fixes to PR #15 ([S2-7](phase-2/S2-7-http-api.md)),
+and merge once CI is green.** CI was green on `164b498` (run 38254023254), and
+Verification 1–6 are shown in the story. It ran on Opus 5.5 at max effort in place of
+Fable.
+
+**Second review of S2-7 (2026-10-12): no blockers.** It re-ran the gates on the working
+tree (848 passed), the uvicorn tests five times on one core, and probed the reopen. Both
+findings are fixed on the PR.
+
+- **Code:** after a failed reopen, every request queued behind it tried again in turn:
+  five concurrent refreshes made five opens, one after another, and `/v1/health` needs no
+  token. Now a request that waited for an attempt takes its result. Reproduced with a test
+  first. **Your call:** a few seconds' back-off after a failure, so probes during an
+  outage cost nothing (not built).
+- **Docs:** README called `/docs` interactive, but a browser's "Try it out" POST sends
+  `Origin` and gets 403. The row now says "to read".
+
+**First review of S2-7 (2026-10-12): no blockers.** It re-ran the gates, the six uvicorn
+tests on one core, and the auth by probe. Both findings are fixed on the PR.
+
+- **Docs:** malformed JSON gets its 422 before the 403 and the 401, because FastAPI
+  parses the body before any dependency. The docs said a 422 comes last. They now describe
+  two 422s, and a test pins the order.
+- **Code:** a reopen that failed with anything but `NoIndexError` (a disk error, a failing
+  embedder) gave 500s on query, documents and health. Reproduced with a test first. The
+  server is now not ready with a fixed message, logs the exception, and tries again on the
+  next request.
+- **Backlog, reworded:** the body-size gap is pre-auth, so a token does not guard it.
 
 **S2-7 is in review** (2026-10-12): `rag-serve`, the HTTP API (FR-6, SRS §8.1, DEC-18).
 
@@ -574,7 +598,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Done 2026-10-07 (PR #13) |
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Done 2026-10-12 (PR #14) |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
-| [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | In review 2026-10-12 (PR #15, CI green; two reviews to follow) |
+| [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | In review 2026-10-12 (PR #15, CI green on `164b498`; two reviews done, fixes to commit) |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
 | [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Todo |
 
