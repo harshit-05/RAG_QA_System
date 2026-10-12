@@ -142,7 +142,7 @@ starts without an index too: it then reports not-ready until an ingest builds on
 | `GET /v1/documents` | what the index holds, from its manifest |
 | `GET /v1/health` | 200 when an index is served and Ollama answers; 503, saying what is missing |
 | `GET /v1/health/live` | 200 while the process runs |
-| `GET /docs`, `/openapi.json` | the interactive docs and the schema |
+| `GET /docs`, `/openapi.json` | the docs and the schema, to read: a browser's "Try it out" POST sends `Origin` and gets `403` |
 
 ```bash
 curl -N -X POST localhost:8000/v1/query -H 'content-type: application/json' \
