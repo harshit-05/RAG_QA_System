@@ -5,9 +5,10 @@
 
 ## Now
 
-**Next action: commit [S2-7](phase-2/S2-7-http-api.md), open its PR, and run its two
-reviews.** It is on `feat/s2-7-http-api`; Verification 1–5 have run and are shown in the
-story, and 6 (CI) waits for the PR. It ran on Opus 5.5 at max effort in place of Fable.
+**Next action: the two reviews of [S2-7](phase-2/S2-7-http-api.md), on PR #15.** CI is
+green on `5e96d1c` (run 38252812472), and Verification 1–6 are shown in the story. It ran
+on Opus 5.5 at max effort in place of Fable. Fix each review's findings on the PR, then
+merge.
 
 **S2-7 is in review** (2026-10-12): `rag-serve`, the HTTP API (FR-6, SRS §8.1, DEC-18).
 
@@ -573,7 +574,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Done 2026-10-07 (PR #13) |
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Done 2026-10-12 (PR #14) |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
-| [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | In review 2026-10-12 (Verification 1–5 shown; CI after the PR) |
+| [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | In review 2026-10-12 (PR #15, CI green; two reviews to follow) |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
 | [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Todo |
 

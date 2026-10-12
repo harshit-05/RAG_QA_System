@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-12): Verification 1–5 run and shown below; 6 (CI) waits for the PR. Two reviews to follow (Opus 5.5 in place of Fable). |
+| **Status** | In review (2026-10-12): PR #15, CI green on `5e96d1c`. Verification 1–6 run and shown below. Two reviews to follow (Opus 5.5 in place of Fable). |
 | **Closes** | FR-6, SRS §8.1; backlog: the API must never let a request supply components, the `trust_remote_code` load guard, the ChatOllama client (API half) |
 | **Depends on** | S2-1 (`stream_answer`, `QueryPipeline`), S2-6 (manifest, lock, incremental `ingest`) |
 | **Model** | fable |
@@ -366,7 +366,15 @@ gh run list --limit 2
      - `Origin` with a valid token: 403;
      - `/v1/health` stayed open (200).
    - No 500 or traceback in the server log.
-6. **CI:** after the push and the PR.
+6. **CI: green on PR #15.** Run 38252812472, on `5e96d1c`, took 5 min 14 s.
+   - **`check`:** lint, types, test, audit and the tier-2 check all passed.
+     - **841 passed, 4 skipped, 5 xfailed,** coverage 98.30%. The 4 skips are the ragas
+       tests that need the `eval` extra, which CI does not install; main's last run
+       skipped the same 4.
+     - On the runner, `test_api_uvicorn.py` gave six passes and the forced-window control's
+       expected failure.
+     - The committed tier-2 run matched the checkout.
+   - **`eval-retrieval`:** passed, recall 0.858 against its floor of 0.808.
 
 ## Deviation from plan
 
