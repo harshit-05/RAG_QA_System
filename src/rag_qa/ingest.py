@@ -240,7 +240,7 @@ def discover_files(data_path: Path) -> CorpusListing:
 _ABSOLUTE_PATH = re.compile(r"(?<![^\s'\"(<=\[])/[^\s'\"<>()\[\],:]+")
 
 
-def _describe(error: BaseException, config: RagConfig) -> str:
+def describe_error(error: BaseException, config: RagConfig) -> str:
     """``Type: message`` for the report and the log, with no absolute path in it.
 
     An ``OSError``'s text names the path it failed on, a FAISS error the file it could not
@@ -348,7 +348,7 @@ def scan_corpus(config: RagConfig, report: IngestReport) -> CorpusScan:
         try:
             sha256 = file_sha256(path)
         except OSError as e:
-            error = _describe(e, config)
+            error = describe_error(e, config)
             logger.warning("  - Cannot read %s: %s", name, error)
             report.failed.append((name, error))
             unhashed.add(name)
@@ -494,7 +494,7 @@ def _open_live(generation: Path, manifest: Manifest, config: RagConfig) -> OpenG
     # Deliberately broad: whatever stops the generation opening (a corrupt pickle, FAISS's
     # own errors, a count mismatch) means the same thing, a rebuild from the corpus.
     except Exception as e:  # noqa: BLE001
-        return f"the index cannot be opened ({_describe(e, config)})"
+        return f"the index cannot be opened ({describe_error(e, config)})"
     listed = manifest.chunk_ids()
     if opened.ids != listed:
         return (
@@ -548,7 +548,7 @@ def _load(
     # and its type are recorded, logged, and fail the run at the end.
     # KeyboardInterrupt and SystemExit are not Exceptions and still stop it.
     except Exception as e:  # noqa: BLE001
-        error = _describe(e, config)
+        error = describe_error(e, config)
         logger.warning("    Error loading %s: %s", file.name, error)
         report.failed.append((file.name, error))
         return None
@@ -680,7 +680,7 @@ def _update(config: RagConfig, plan: _Plan, report: IngestReport) -> None:
         recover(store)  # prune: the previous generation stays, older ones go
     except OSError as e:
         # Best effort: the new generation is live already, and the next run retries.
-        logger.warning("Could not remove an old generation: %s", _describe(e, config))
+        logger.warning("Could not remove an old generation: %s", describe_error(e, config))
 
 
 def ingest(config: RagConfig, *, rebuild: bool = False) -> IngestReport:
@@ -759,6 +759,24 @@ def _failure_note(report: IngestReport) -> str:
     )
 
 
+def outcome(report: IngestReport) -> tuple[int, str | None]:
+    """The exit status a finished run earns, and its error line, if any.
+
+    The rule ``rag-ingest`` exits by, shared with the API's ingest jobs (S2-7), which
+    report the same status as their ``exit_code``. The line names no path.
+    """
+    if report.failed:
+        return EXIT_RUN_FAILED, (
+            f"{len(report.failed)} file(s) could not be read (listed above). "
+            f"{_failure_note(report)}"
+        )
+    if not report.found:
+        return EXIT_RUN_FAILED, "No documents were loaded."
+    if report.rebuild is not None and report.published is None:
+        return EXIT_RUN_FAILED, "Nothing was indexed: no document had any text."
+    return EXIT_OK, None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point (``rag-ingest``). Returns the exit status; see the module docstring."""
     args = build_parser().parse_args(argv)  # --help and usage errors exit here, before any work
@@ -792,19 +810,10 @@ def _run(args: argparse.Namespace) -> int:
     print()
     print(report.summary())
     store = config.paths.vector_store
-    if report.failed:
-        print(
-            f"Error: {len(report.failed)} file(s) could not be read (listed above). "
-            f"{_failure_note(report)}",
-            file=sys.stderr,
-        )
-        return EXIT_RUN_FAILED
-    if not report.found:
-        print("Error: No documents were loaded.", file=sys.stderr)
-        return EXIT_RUN_FAILED
-    if report.rebuild is not None and report.published is None:
-        print("Error: Nothing was indexed: no document had any text.", file=sys.stderr)
-        return EXIT_RUN_FAILED
+    status, error = outcome(report)
+    if error is not None:
+        print(f"Error: {error}", file=sys.stderr)
+        return status
     if report.published is None:
         print(f"--- Ingestion Complete. Nothing changed; the index at '{store}' is up to date ---")
     else:

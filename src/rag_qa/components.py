@@ -13,6 +13,7 @@ modules happened to contain the same line; now it holds because there is one
 function, and it always reads ``pipeline.ingestion.embedder``.
 """
 
+import asyncio
 import inspect
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,28 @@ async def aclose_llm(llm: BaseChatModel) -> None:
         result = close()
         if inspect.isawaitable(result):
             await result
+
+
+async def llm_reachable(llm: BaseChatModel, timeout_s: float = 2.0) -> bool | None:
+    """Whether the chat model's server answers within ``timeout_s``: the API's readiness
+    check and ``rag-serve``'s start-up check (DEC-18).
+
+    For ``ChatOllama`` that is a list of its models (``GET /api/tags``), sent through the
+    model's own async client, so the host, its parsing and the client's settings are the
+    ones answers use. Reached through the private ``_async_client``, narrowly, as
+    :func:`aclose_llm` does. ``None`` for a model with no such client, which has no server
+    to ask.
+    """
+    list_models = getattr(getattr(llm, "_async_client", None), "list", None)
+    if list_models is None:
+        return None
+    try:
+        await asyncio.wait_for(list_models(), timeout_s)
+    # Deliberately broad: refused, timed out, a proxy's error page, an unexpected reply.
+    # Each means the same thing here, that answers would fail.
+    except Exception:  # noqa: BLE001
+        return False
+    return True
 
 
 def build_loader(config: RagConfig, path: Path) -> Any | None:

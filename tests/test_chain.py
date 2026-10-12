@@ -34,8 +34,10 @@ from rag_qa.chain import (
     build_retrieve,
     citation,
     format_docs,
+    open_retrieval,
 )
-from rag_qa.components import build_embedder
+from rag_qa.chain import live_generation as chain_live_generation
+from rag_qa.components import build_embedder, build_reranker
 from rag_qa.config import load_config
 from rag_qa.settings import ENV_VECTOR_STORE_PATH
 
@@ -110,22 +112,46 @@ def test_no_index_fails_before_any_model_is_built(
         build_query_pipeline(config)
 
 
-def test_without_require_index_the_llm_half_is_built_anyway(
-    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The API's start before its first ingest (S2-7).
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "no-index"))
-    pipeline = build_query_pipeline(load_config(make_config(use_fakes)), require_index=False)
-    assert pipeline.retrieve is None
-    assert answer_from(pipeline) == FAKE_ANSWER
-
-
-@pytest.mark.parametrize("require_index", [True, False])
-def test_with_an_index_both_halves_are_built(fake_rag: Path, require_index: bool) -> None:
-    pipeline = build_query_pipeline(load_config(fake_rag), require_index=require_index)
+def test_with_an_index_both_halves_are_built(fake_rag: Path) -> None:
+    pipeline = build_query_pipeline(load_config(fake_rag))
     assert pipeline.retrieve is not None
     assert 0 < len(pipeline.retrieve.invoke("How many staff?")) <= 5  # retriever k
     assert answer_from(pipeline) == FAKE_ANSWER
+
+
+def test_open_retrieval_names_the_generation_it_opened_and_its_manifest(
+    fake_rag: Path,
+) -> None:
+    # What the API serves, lists and reports (S2-7): the generation the link pointed to,
+    # with that generation's own manifest.
+    config = load_config(fake_rag)
+    opened = open_retrieval(config, build_embedder(config))
+    assert opened.generation == live_generation(config.paths.vector_store)
+    assert opened.generation == chain_live_generation(config)
+    assert opened.manifest.generation == opened.generation.name
+    assert "guide.pdf" in opened.manifest.documents
+    assert opened.retrieve.invoke("How many staff?")
+
+
+def test_without_an_index_there_is_no_live_generation(
+    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "no-index"))
+    assert chain_live_generation(load_config(make_config(use_fakes))) is None
+
+
+def test_a_reranker_passed_in_is_used_and_none_is_built(
+    fake_rag: Path, make_config: MakeConfig, stub_cross_encoder: type[StubCrossEncoder]
+) -> None:
+    # The API builds its reranker once and reuses it on every reopen (S2-4: 2.3 s and
+    # about 90 MB per build), so a reopen must never build another.
+    config = load_config(make_config(use_fakes_and_reranker))
+    reranker = build_reranker(config)
+    embeddings = build_embedder(config)
+    for _ in range(3):
+        chunks = build_retrieve(config, embeddings, reranker=reranker).invoke("Staff?")
+        assert len(chunks) == RERANK_TOP_N
+    assert len(stub_cross_encoder.built) == 1
 
 
 # --- an index the config cannot use (S2-6, DEC-17) ---------------------------------------
@@ -207,14 +233,6 @@ def test_an_index_from_another_embedder_is_refused_before_any_model_is_built(
         build_query_pipeline(load_config(make_config(other_embedder)))
 
 
-def test_without_require_index_an_unusable_index_counts_as_none(
-    fake_rag: Path, make_config: MakeConfig
-) -> None:
-    # The API starts anyway, and reports not-ready (DEC-18).
-    pipeline = build_query_pipeline(load_config(make_config(other_embedder)), require_index=False)
-    assert pipeline.retrieve is None
-
-
 def test_build_rag_chain_refuses_an_unusable_index_before_any_model_is_built(
     make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_models: None
 ) -> None:
@@ -252,16 +270,6 @@ def test_an_index_that_will_not_open_is_refused_not_a_traceback(
     (live_generation(config.paths.vector_store) / "index.pkl").write_bytes(b"not a pickle")
     with pytest.raises(IncompatibleIndexError, match=r"cannot open the index.*UnpicklingError"):
         build_query_pipeline(config)
-
-
-def test_without_require_index_a_dimension_mismatch_counts_as_none(fake_rag: Path) -> None:
-    # The dimension is checked once the embedder is built, after the LLM: without
-    # require_index, that refusal must still leave retrieve as None (first review).
-    config = load_config(fake_rag)
-    edit_manifest(config.paths.vector_store, lambda m: m["embedder"].update(dimension=9))
-    pipeline = build_query_pipeline(config, require_index=False)
-    assert pipeline.retrieve is None
-    assert answer_from(pipeline) == FAKE_ANSWER
 
 
 def test_a_dimension_the_index_does_not_hold_is_refused_before_the_reranker_loads(

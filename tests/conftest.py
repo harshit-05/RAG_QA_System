@@ -140,9 +140,11 @@ def sample_corpus(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A developer's exported RAG_* variables must not leak into any test."""
-    for name in (ENV_CONFIG, ENV_DATA_PATH, ENV_VECTOR_STORE_PATH):
-        monkeypatch.delenv(name, raising=False)
+    """A developer's exported RAG_* variables must not leak into any test: the paths, and
+    since S2-7 the server's RAG_API_* settings, a token included."""
+    for name in {ENV_CONFIG, ENV_DATA_PATH, ENV_VECTOR_STORE_PATH, *os.environ}:
+        if name.startswith("RAG_"):
+            monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
@@ -439,3 +441,73 @@ def fake_ollama() -> Iterator[FakeOllama]:
     finally:
         server.shutdown()
         server.server_close()
+
+
+# --- the HTTP API (S2-7) --------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_config(make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The fakes' config, with an empty corpus and an index path that holds nothing, in tmp.
+
+    For a server over :func:`fake_serving`: with no index at the path, it never reopens one.
+    """
+    from rag_qa.config import load_config
+
+    (tmp_path / "corpus").mkdir()
+    monkeypatch.setenv(ENV_DATA_PATH, str(tmp_path / "corpus"))
+    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
+    return load_config(make_config(use_fakes))
+
+
+def fake_serving(
+    config: Any, model: BaseChatModel, *, retrieve: Any = None, max_concurrent: int = 1
+) -> Any:
+    """What the API serves, over a fake pipeline: ``retrieve`` (by default, one fixed chunk)
+    and ``model``. The chunk's ``source`` is an absolute path under the corpus, as a v0.2
+    index stored it, so it must come out corpus-relative."""
+    from langchain_core.documents import Document
+    from langchain_core.embeddings import DeterministicFakeEmbedding
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.runnables import RunnableLambda
+
+    from rag_qa.api.state import Served, Serving
+    from rag_qa.chain import QueryPipeline
+
+    docs = [
+        Document(
+            page_content="Station Kestrel.",
+            metadata={"source": str(config.paths.data / "notes.txt")},
+        )
+    ]
+    prompt = ChatPromptTemplate.from_messages(
+        [("system", "Answer from the context."), ("human", "{context}\n\n{question}")]
+    )
+    pipeline = QueryPipeline(
+        retrieve=retrieve if retrieve is not None else RunnableLambda(lambda question: docs),
+        prompt=prompt,
+        llm=model,
+        corpus_root=config.paths.data,
+    )
+    return Serving(
+        config,
+        pipeline,
+        Served(generation=None, manifest=None, problem=None),
+        embeddings=DeterministicFakeEmbedding(size=8),
+        reranker=None,
+        max_concurrent=max_concurrent,
+    )
+
+
+def sse_events(body: str) -> list[tuple[str, Any]]:
+    """``(event, data)`` for each event in an SSE body; comments (``: ping``) skipped."""
+    events = []
+    for block in body.replace("\r\n", "\n").split("\n\n"):
+        lines = [line for line in block.split("\n") if line and not line.startswith(":")]
+        if lines:
+            (name,) = [line.removeprefix("event: ") for line in lines if line.startswith("event: ")]
+            data = "\n".join(
+                line.removeprefix("data: ") for line in lines if line.startswith("data: ")
+            )
+            events.append((name, json.loads(data)))
+    return events
