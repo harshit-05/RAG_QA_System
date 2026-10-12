@@ -22,12 +22,15 @@ dependencies = [
     "pyyaml>=6",
     "pydantic>=2.11",
     "pydantic-settings>=2.10",
+    "fastapi>=0.135",
+    "uvicorn>=0.32.1",
 ]
 
 [project.scripts]
 rag-ingest = "rag_qa.ingest:main"
 rag-query = "rag_qa.cli:main"
 rag-eval = "rag_qa.evaluation.cli:main"
+rag-serve = "rag_qa.api.server:main"
 
 [project.optional-dependencies]
 # Tier 2 of the quality bar (FR-7, DEC-15): `rag-eval score`, run offline, never in CI.
@@ -59,6 +62,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "pip-audit>=2.10.1",   # CI's Audit step (S1-8); see ci.yml for why it reads a freeze
     "types-pyyaml>=6.0.12.20260906",   # types the YAML boundary in config.py (S2-1)
+    "httpx>=0.28.1",
 ]
 
 # This host is CPU-only (no NVIDIA GPU). `explicit = true` is load-bearing on BOTH

@@ -904,22 +904,22 @@ def test_renaming_a_loader_entry_rewrites_the_manifest_without_embedding(
 def test_no_absolute_path_survives_in_a_described_error(scratch: Scratch) -> None:
     # Paths outside the corpus and the index's folder used to pass through: a moved
     # pickled class names its module's file, and FAISS names the file it read.
-    from rag_qa.ingest import _describe
+    from rag_qa.ingest import describe_error
 
     config = scratch.config()
     moved = AttributeError(
         "Can't get attribute 'X' on <module 'langchain_core.documents.base' from "
         "'/home/someone/project/.venv/lib/python3.12/site-packages/langchain_core/documents/base.py'>"
     )
-    described = _describe(moved, config)
+    described = describe_error(moved, config)
     assert "/home/someone" not in described
     assert "from 'base.py'>" in described
     read = f"{scratch.store.parent}/index.gen-1/index.faiss"
     faiss = RuntimeError(f"could not open {read} for reading")
-    assert _describe(faiss, config) == (
+    assert describe_error(faiss, config) == (
         "RuntimeError: could not open index.gen-1/index.faiss for reading"
     )
     elsewhere = OSError(13, "Permission denied", "/var/data/secret.txt")  # a PermissionError
-    assert _describe(elsewhere, config) == (
+    assert describe_error(elsewhere, config) == (
         "PermissionError: [Errno 13] Permission denied: 'secret.txt'"
     )

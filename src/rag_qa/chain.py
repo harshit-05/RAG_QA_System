@@ -34,7 +34,7 @@ from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrou
 from rag_qa.components import aclose_llm, build_embedder, build_llm, build_reranker
 from rag_qa.manifest import Manifest, embedder_identity
 from rag_qa.schema import RagConfig
-from rag_qa.vectorstore import NO_INDEX, in_the_way, live_index, open_store
+from rag_qa.vectorstore import NO_INDEX, generation_path, in_the_way, live_index, open_store
 
 
 class NoIndexError(Exception):
@@ -96,6 +96,16 @@ def check_index(config: RagConfig) -> tuple[Path, Manifest]:
     return generation, manifest
 
 
+def live_generation(config: RagConfig) -> Path | None:
+    """The generation the index path links to now, or ``None`` when it links to none.
+
+    A few system calls, with no file read: cheap enough for the API to call before every
+    request, to notice that an ingest run outside it flipped a new generation in (DEC-18).
+    The link is read however it is written, so a hand-made one never looks like a change.
+    """
+    return generation_path(config.paths.vector_store)
+
+
 def _check_dimension(embeddings: Embeddings, manifest: Manifest, store: Path) -> None:
     """The identity's backstop (DEC-17): the configured embedder must make vectors of the
     size the index holds. One probe embedding."""
@@ -112,9 +122,10 @@ def _check_dimension(embeddings: Embeddings, manifest: Manifest, store: Path) ->
 class QueryPipeline:
     """The parts of an answer, built once and shared by every question.
 
-    ``retrieve`` is ``None`` only when the pipeline was built with
-    ``require_index=False`` and there was no index (the API before its first ingest,
-    S2-7); :func:`rag_qa.answering.stream_answer` then raises :class:`NoIndexError`.
+    ``retrieve`` is ``None`` only in the API while it has no usable index (S2-7);
+    :func:`rag_qa.answering.stream_answer` then raises :class:`NoIndexError`. The API
+    swaps the retrieval half with ``dataclasses.replace``, so an answer in flight keeps the
+    one it started with.
     """
 
     retrieve: Runnable[str, list[Document]] | None
@@ -158,7 +169,22 @@ def format_docs(docs: Sequence[Document]) -> str:
     )
 
 
-def build_retrieve(config: RagConfig, embeddings: Embeddings) -> Runnable[str, list[Document]]:
+@dataclass(frozen=True)
+class Retrieval:
+    """A retrieval half, with the index generation it opened and that generation's
+    manifest: what the API serves, lists and reports (DEC-18)."""
+
+    retrieve: Runnable[str, list[Document]]
+    generation: Path  # the generation folder it opened, as live_generation() names it
+    manifest: Manifest
+
+
+def open_retrieval(
+    config: RagConfig,
+    embeddings: Embeddings,
+    *,
+    reranker: BaseDocumentCompressor | None = None,
+) -> Retrieval:
     """The retrieval half: the configured retriever over the index, then the reranker if any.
 
     Needs no LLM, so tier-1 evaluation runs it without Ollama, and the API can swap it
@@ -169,6 +195,10 @@ def build_retrieve(config: RagConfig, embeddings: Embeddings) -> Runnable[str, l
     place of its own ``k``, and the reranker cuts them to its ``top_n`` (DEC-16). One switch
     sets both, so the candidates never reach the prompt unreranked: 20 chunks would overflow
     the model's context window silently (caveat 7).
+
+    ``reranker`` is the config's own, built once by a caller that opens the index more
+    than once: the API reopens it after every ingest, and a cross-encoder takes seconds and
+    about 90 MB to load (S2-4). Left out, it is built here from the config.
 
     Raises :class:`NoIndexError` or :class:`IncompatibleIndexError` before the reranker
     loads (:func:`check_index`, then the dimension). ``embeddings`` is built by then, so
@@ -190,12 +220,24 @@ def build_retrieve(config: RagConfig, embeddings: Embeddings) -> Runnable[str, l
             f"rag-ingest to rebuild it."
         ) from e
     query = config.pipeline.query
-    reranker = build_reranker(config)
+    if reranker is None:
+        reranker = build_reranker(config)
     kwargs = config.retriever(query.retriever).kwargs()  # a fresh copy, so safe to change
     if reranker is not None:
         kwargs["search_kwargs"]["k"] = query.reranker_candidates
     retriever: Runnable[str, list[Document]] = index.as_retriever(**kwargs)
-    return retriever if reranker is None else _rerank_after(retriever, reranker)
+    retrieve = retriever if reranker is None else _rerank_after(retriever, reranker)
+    return Retrieval(retrieve=retrieve, generation=generation, manifest=manifest)
+
+
+def build_retrieve(
+    config: RagConfig,
+    embeddings: Embeddings,
+    *,
+    reranker: BaseDocumentCompressor | None = None,
+) -> Runnable[str, list[Document]]:
+    """:func:`open_retrieval`'s retrieval half alone, for callers that need nothing else."""
+    return open_retrieval(config, embeddings, reranker=reranker).retrieve
 
 
 def _rerank_after(
@@ -227,35 +269,28 @@ def build_prompt(config: RagConfig) -> ChatPromptTemplate:
     )
 
 
-def build_query_pipeline(config: RagConfig, *, require_index: bool = True) -> QueryPipeline:
-    """Build both halves of an answer from a loaded config.
+def build_query_pipeline(config: RagConfig) -> QueryPipeline:
+    """Build both halves of an answer from a loaded config (the CLI and evaluation).
 
-    With ``require_index`` (the CLI and evaluation), a missing index raises
-    :class:`NoIndexError`, and one the config cannot use :class:`IncompatibleIndexError`.
-    The manifest's refusals come before any model is built. The dimension and an index
-    that will not open need the embedder, but are still refused before the reranker and
-    the LLM: retrieval is built first, so a refusal never waits on Ollama. Without
-    ``require_index`` (the API), either leaves ``retrieve`` as ``None`` and the LLM half
-    is still built; with a usable index, both halves are built either way.
+    A missing index raises :class:`NoIndexError`, and one the config cannot use
+    :class:`IncompatibleIndexError`. The manifest's refusals come before any model is
+    built. The dimension and an index that will not open need the embedder, but are still
+    refused before the reranker and the LLM: retrieval is built first, so a refusal never
+    waits on Ollama. The API, which must start without an index, composes its pipeline
+    from :func:`open_retrieval`, :func:`build_prompt` and the LLM itself (S2-7).
 
     Cannot mutate ``config``: it is frozen, and every component dict used here is a
     fresh copy from ``spec()`` / ``kwargs()``. Deliberately silent (no progress
     prints); front ends print their own progress.
     """
-    retrieve = None
-    try:
-        check_index(config)  # files only, so nothing has loaded when it refuses
-        # The same embedder ingestion used — build_embedder is the one place that
-        # choice is made (see rag_qa.components).
-        retrieve = build_retrieve(config, build_embedder(config))
-    except NoIndexError:  # IncompatibleIndexError too: the API counts it as no index
-        if require_index:
-            raise
-    llm = build_llm(config)
+    check_index(config)  # files only, so nothing has loaded when it refuses
+    # The same embedder ingestion used — build_embedder is the one place that choice is
+    # made (see rag_qa.components).
+    retrieve = build_retrieve(config, build_embedder(config))
     return QueryPipeline(
         retrieve=retrieve,
         prompt=build_prompt(config),
-        llm=llm,
+        llm=build_llm(config),
         corpus_root=config.paths.data,
     )
 

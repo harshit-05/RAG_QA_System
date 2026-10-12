@@ -122,6 +122,95 @@ Three things to avoid:
   they hit the same trap. Install with `uv sync`, or with `uv export` for a
   requirements file; both honour the groups.
 
+## HTTP API
+
+`rag-serve` makes the same pipeline callable over HTTP. Answers stream as Server-Sent
+Events, and ingestion runs as a background job.
+
+```bash
+uv run rag-serve                       # http://127.0.0.1:8000; --host, --port, --config
+```
+
+It loads the models first, which takes a few seconds, and checks that Ollama answers. It
+starts without an index too: it then reports not-ready until an ingest builds one.
+
+| Method and path | Does |
+| --- | --- |
+| `POST /v1/query` `{"question": "..."}` | streams an answer: `sources`, then `token`…, then `done` (or `error`) |
+| `POST /v1/ingest` `{"rebuild": false}` | starts an ingest job, as `rag-ingest` (`--rebuild` with `true`); 202 with its `job_id` |
+| `GET /v1/ingest/{job_id}` | the job: `status`, `rag-ingest`'s `exit_code`, the `report` and the `log` |
+| `GET /v1/documents` | what the index holds, from its manifest |
+| `GET /v1/health` | 200 when an index is served and Ollama answers; 503, saying what is missing |
+| `GET /v1/health/live` | 200 while the process runs |
+| `GET /docs`, `/openapi.json` | the docs and the schema, to read: a browser's "Try it out" POST sends `Origin` and gets `403` |
+
+```bash
+curl -N -X POST localhost:8000/v1/query -H 'content-type: application/json' \
+     -d '{"question": "How does the YOLOv8 system detect crowds and threats?"}'
+```
+
+`-N` turns off curl's buffering, so events print as they arrive. From a run on this
+host's CPU (file names shortened, and four of the five sources left out):
+
+```text
+event: sources
+data: {"sources": [{"n": 1, "citation": "Batch22_...pdf, p. 10", "source": "Batch22_...pdf", "page": "10", "score": 8.016295433044434}, ...]}
+
+: ping
+
+event: token
+data: {"text": " The"}
+
+event: token
+data: {"text": " YO"}
+
+event: done
+data: {"ttft_ms": 157033.62593899964, "total_ms": 176273.471257}
+```
+
+`sources` comes first, after about a second of retrieval. While the model reads the prompt
+(minutes on CPU; 157 s above), the stream carries a `: ping` comment every 15 seconds.
+Each `token` is a chunk of the answer. A stream that ends with neither `done` nor `error`
+was cut off.
+
+How it behaves:
+
+- **One answer at a time.** A question that arrives while another is being answered gets
+  `503` with `Retry-After`, rather than waiting in a queue for minutes.
+  `RAG_API_MAX_CONCURRENT` raises the limit.
+- **Leaving stops the answer.** Closing the connection (Ctrl-C on `curl`) stops
+  generation, as Ctrl-C does in `rag-query`, and frees the slot at once. If it lands while
+  the model reads the prompt, Ollama may finish that step first (see Known limitations).
+- **Ingest jobs run one at a time** (`409` while one runs), and a running `rag-ingest`
+  holds them off as well. When a job publishes a new index, the server switches to it;
+  answers already streaming finish on the old one. An index that `rag-ingest` publishes
+  outside the server is picked up on the next request.
+- **A request cannot choose a component.** The query body is the question and nothing
+  else; an extra key such as `"llm"` is refused with `422`.
+- **No host paths in any response**: only corpus-relative ones.
+
+### Access
+
+| Variable | Default | |
+| --- | --- | --- |
+| `RAG_API_TOKEN` | unset | when set, every endpoint but the health probes needs `Authorization: Bearer <token>` |
+| `RAG_API_HOST`, `RAG_API_PORT` | `127.0.0.1`, `8000` | `--host` and `--port` override them |
+| `RAG_API_MAX_CONCURRENT` | `1` | answers streamed at once |
+
+- **Without a token, the server listens only on this machine.** `rag-serve` refuses any
+  other `--host`, and the server refuses requests whose `Host` header is not loopback,
+  which stops DNS rebinding.
+- **With a token, use plain HTTP only on a network you trust.** The token travels in
+  cleartext until Phase 3 adds TLS, and `rag-serve` warns about it when it listens beyond
+  this machine. Use a long random token, for example `openssl rand -hex 32`.
+- **Browsers are refused.** Any request with an `Origin` header gets `403`, and every POST
+  must be `application/json`. So a web page you visit cannot reach the server, even on
+  localhost. Scripts, `curl` and the CLI send no `Origin`.
+
+`rag-serve` exits 2, with the reason, when it cannot start: invalid settings, a
+non-loopback host without a token, a configuration error, Ollama not answering, or the
+port in use.
+
 ## Configuration
 
 All wiring lives in `config.yaml`, which has two halves. `components` is a library of
@@ -192,9 +281,10 @@ run where little changed takes seconds. Embedding the whole sample corpus (three
 - **The index is a pickle.** FAISS saves the index with Python's pickle format, which can
   run code when loaded. Only load indexes you built yourself with `rag-ingest`.
 - **The config is trusted like code.** The `_target_` allowlist limits which classes a
-  config can build, not the arguments it passes them; an embedder given
-  `trust_remote_code: true` and someone else's model repository runs that repository's
-  Python. Only use config files you wrote or reviewed.
+  config can build, not the arguments it passes them. A config that sets
+  `trust_remote_code` anywhere is refused at load, since that runs Python from someone
+  else's model repository. Other arguments are not checked, so only use config files you
+  wrote or reviewed. Nothing in an HTTP request can choose or change a component.
 
 ## Project layout
 
@@ -214,6 +304,8 @@ src/rag_qa/
   ingest.py        the rag-ingest command: updates the index with what changed
   chain.py         the retrieval and answer chain (LangChain LCEL)
   cli.py           the rag-query command
+  answering.py     one answer as a stream of events, for the CLI, the API and evaluation
+  api/             the rag-serve command: the HTTP API, its ingest jobs and its checks
   evaluation/      the rag-eval command: retrieval scores (tier 1), and generation
                    scored by RAGAs offline, then checked against the floors (tier 2)
 tests/             the test suite, including one regression case per Phase 0 bug

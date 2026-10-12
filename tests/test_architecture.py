@@ -1,6 +1,6 @@
 """Architecture rules as tests, so a violation fails CI instead of waiting for review.
 
-* ADR-009: ``rag_qa.ingest`` never imports ``rag_qa.chain``, and the config layer
+* ADR-009: ``rag_qa.ingest`` never imports ``rag_qa.chain`` or ``rag_qa.api``, and the config layer
   (``registry``, ``schema``, ``settings``, ``config``) imports no LangChain at all.
   Nor does ``evaluation.dataset``, which CI's model-free eval gate imports (S2-2), nor
   ``manifest``, whose identity functions S2-5's fingerprint reuses there (S2-6).
@@ -44,6 +44,8 @@ def test_ingest_never_loads_the_query_chain() -> None:
     loaded = modules_loaded_by("rag_qa.ingest")
     assert "rag_qa.chain" not in loaded
     assert "rag_qa.cli" not in loaded
+    # Nor the HTTP API (ARCHITECTURE.md §2.5): the API imports ingest, never the reverse.
+    assert sorted(m for m in loaded if m == "rag_qa.api" or m.startswith("rag_qa.api.")) == []
 
 
 @pytest.mark.parametrize(

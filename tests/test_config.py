@@ -300,3 +300,15 @@ def test_unrelated_rag_variables_are_ignored(
     # e.g. a leftover RAG_EMBED_DEVICE from the dropped device-setting idea (DEC-10)
     monkeypatch.setenv("RAG_EMBED_DEVICE", "cuda")
     assert isinstance(load_config(make_config()), RagConfig)
+
+
+def test_trust_remote_code_in_the_config_file_is_a_load_error_naming_where(
+    make_config: MakeConfig,
+) -> None:
+    # S2-7 (DEC-18): the real embedder entry, given someone else's code to trust.
+    def edit(c: dict[str, Any]) -> None:
+        c["components"]["embedders"]["minilm_cpu"]["model_kwargs"]["trust_remote_code"] = True
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(make_config(edit))
+    assert "components: embedders.minilm_cpu.model_kwargs.trust_remote_code" in str(exc.value)

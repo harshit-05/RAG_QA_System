@@ -1,0 +1,114 @@
+"""What the HTTP API accepts and returns (ARCHITECTURE.md §2.4).
+
+**A request never supplies a component** (DEC-18). Both request bodies are closed:
+``extra="forbid"`` turns a body that names a component (``"llm": …``) into a 422, so
+nothing a client sends reaches :func:`rag_qa.registry.build_object`. They are strict as
+well, so ``"rebuild": "yes"`` is refused instead of read as true.
+
+Responses carry corpus-relative paths and generation names only, never a host path.
+"""
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+#: The longest question accepted, in characters.
+MAX_QUESTION_CHARS = 2000
+
+JobStatus = Literal["queued", "running", "succeeded", "failed"]
+
+
+class _Request(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+
+class QueryRequest(_Request):
+    """``POST /v1/query``: the question, and nothing else."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    #: Surrounding whitespace is dropped, as the CLI drops it, so a blank question is empty.
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+
+
+class IngestRequest(_Request):
+    """``POST /v1/ingest``. ``rebuild`` is required: a POST with no JSON body must fail,
+    because a JSON content type is what a web page cannot send cross-site without a
+    preflight (DEC-18)."""
+
+    rebuild: bool
+
+
+class IndexHealth(BaseModel):
+    ready: bool
+    generation: str | None  # the index generation served, e.g. db_faiss.gen-…
+    documents: int | None
+    detail: str
+
+
+class LlmHealth(BaseModel):
+    ready: bool
+    detail: str
+
+
+class Health(BaseModel):
+    """``GET /v1/health``: 200 when ready, 503 when not."""
+
+    status: Literal["ready", "not ready"]
+    index: IndexHealth
+    llm: LlmHealth
+
+
+class DocumentInfo(BaseModel):
+    source: str  # corpus-relative
+    sha256: str
+    chunks: int
+    loader: str  # the config reference, e.g. components.loaders.pdf
+    ingested_at: str
+
+
+class Documents(BaseModel):
+    """``GET /v1/documents``: what the served index generation holds, from its manifest."""
+
+    documents: list[DocumentInfo]
+
+
+class IngestReportOut(BaseModel):
+    """:class:`rag_qa.ingest.IngestReport` as JSON. Its names are corpus-relative, and
+    its errors path-free (S2-6)."""
+
+    documents: int
+    chunks: int
+    found: int
+    added: int
+    changed: int
+    removed: int
+    unchanged: int
+    kept: int
+    rebuild: str | None
+    published: str | None
+    skipped: list[str]
+    symlinks: list[str]
+    ignored: int
+    failed: list[tuple[str, str]]
+
+
+class IngestAccepted(BaseModel):
+    """``POST /v1/ingest``'s 202."""
+
+    job_id: str
+    status: JobStatus
+
+
+class IngestJobOut(BaseModel):
+    """``GET /v1/ingest/{job_id}``. ``exit_code`` is what ``rag-ingest`` would have
+    returned, and ``log`` the run's log lines, path-free."""
+
+    job_id: str
+    status: JobStatus
+    started_at: datetime | None
+    finished_at: datetime | None
+    exit_code: int | None
+    report: IngestReportOut | None
+    log: list[str]

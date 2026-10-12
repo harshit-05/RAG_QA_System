@@ -1409,6 +1409,74 @@ Rejected:
 - **Detecting a CLI ingest by the manifest's `mtime_ns`**: it races a swap in progress,
   and coarse timestamps can hide one. The generation symlink cannot.
 
+_S2-7 (2026-10-12), as built on fastapi 0.143.0, starlette 1.7.0 and uvicorn 0.54.0. The
+story file has the spike's numbers._
+
+- **The disconnect goes through FastAPI's own producer task.** Native SSE does not hand
+  the route's generator to Starlette. It iterates the generator in a producer task, in a
+  task group entered on the request's exit stack.
+  - **How the cancel arrives.** On a disconnect, Starlette cancels its response task (spec
+    2.3), and the response returns. The request stack unwinds, and that cancels the
+    producer group: the cancel lands in `stream_answer`, as above.
+  - **What stays true.** No task of ours, and none outside the request's lifetime. A drop
+    during the prefill closed the model's stream in about 1 ms.
+  - **The window.** Each event the producer sends passes a checkpoint outside the route's
+    generator. A cancel landing there leaves the generator paused at a `yield`, in a
+    reference cycle, with the stream to Ollama open until garbage collection runs. That
+    happened in 1 of 300 mid-stream drops, and every time when forced.
+  - **So the slot holds the answer stream, and its teardown closes it.** That teardown is
+    the request's own; still no watcher.
+  - **The review note changes.** "Check that no task is spawned for generation" now reads:
+    no task _of ours_.
+- **The API opens the index itself.** `build_query_pipeline(require_index=False)` could
+  not say which generation it opened, give that generation's manifest, or say why there
+  was none. So the API:
+  - builds the LLM half from `build_llm` and `build_prompt`;
+  - opens the retrieval half with `chain.open_retrieval`, which returns the generation and
+    its manifest;
+  - and `require_index` is gone.
+
+  A reload compares `chain.live_generation` (the link, however it is written) with the
+  generation served. It retries once when a flip lands mid-open.
+- **One retrieval at a time, by a lock, not by holding the slot.** Every retrieval half
+  served takes a `threading.Lock` inside its worker thread.
+  - An orphaned rerank therefore delays the next retrieval rather than overlapping it, at
+    any `RAG_API_MAX_CONCURRENT`.
+  - The slot is freed at once, so a disconnect never turns into a 503.
+  - A waiter whose client left skips its work.
+  - Reopens take the same lock.
+- **An open that fails for another reason is not ready, and is retried** (S2-7's first
+  review). Only `NoIndexError` (and `IncompatibleIndexError`) says something about the
+  index. A disk error or a failing embedder during a reopen used to escape `refresh()` and
+  answer 500 on query, documents and health alike. Now the server is not ready with a
+  fixed message, the exception goes to the log, and no generation is recorded as seen, so
+  the next request opens it again. Requests that queued behind the failed attempt take its
+  result instead of each trying again (S2-7's second review).
+- **The refusals are dependencies, as above.**
+  - `Origin`, then `Host` (tokenless only), apply to every route; the token to all but the
+    two health probes; the slot and the index to the query.
+  - **Two 422s, in two places** (S2-7's first review). FastAPI parses the body before it
+    runs any dependency, so a body that is not valid JSON gets its 422 ahead of the 403 and
+    the 401. A body that parses but breaks the request model is validated after them, so
+    that 422 comes last. Nothing runs in either case, and a test pins the order.
+  - **So a body is read before the token is checked.** Nothing limits its size yet (Phase 3,
+     backlog), which a token does not protect against.
+  - The docs and the schema are re-added as routes, so they sit behind the token.
+  - A test sends every route a request without the token, so a route added unprotected
+    turns CI red.
+  - The Host check is 403, parsed by hand: Starlette's TrustedHost breaks on `[::1]`.
+- **`rag-serve` checks Ollama before uvicorn starts.** Starlette hands uvicorn a failed
+  lifespan's formatted traceback, which uvicorn prints, so "exit 2 with a hint, not a
+  traceback" needs the check before uvicorn starts. uvicorn runs with
+  `timeout_graceful_shutdown` 5 s, so stopping cancels an answer in flight.
+- **Ingest jobs run in a daemon thread.** anyio's worker threads are joined at exit, and
+  would hold a stopping server for the whole run. An abandoned run is safe (DEC-17). A
+  `rag-ingest` holding the lock fails the job at once with exit 2, not a 409: a route
+  cannot hold the `flock` on `ingest()`'s behalf.
+- **The SSE encoding was checked.** fastapi 0.136.1 split SSE data with
+  `str.splitlines()`, which would break JSON holding U+2028; 0.143.0 does not, and a test
+  pins it.
+
 ### 2.2 Layout at Phase 2 exit
 
 ```text
@@ -1532,12 +1600,13 @@ class QueryPipeline:
     corpus_root: Path                         # SourceRef.source is relative to it
     async def aclose(self) -> None: ...
 
-def build_retrieve(config: RagConfig, embeddings: Embeddings) -> Runnable[str, list[Document]]
-def build_query_pipeline(config: RagConfig, *, require_index: bool = True) -> QueryPipeline
-    # require_index=True (CLI, eval): no usable index raises NoIndexError or
-    # IncompatibleIndexError. require_index=False (API): with no usable index, retrieve is
-    # None and the LLM half is still built; with one, both halves are built. The API then
-    # `dataclasses.replace`s the retrieval half in after an ingest
+def build_retrieve(config: RagConfig, embeddings: Embeddings, *, reranker=None) -> Runnable[str, list[Document]]
+def open_retrieval(config, embeddings, *, reranker=None) -> Retrieval  # S2-7: + generation, manifest
+def build_query_pipeline(config: RagConfig) -> QueryPipeline
+    # CLI and eval: no usable index raises NoIndexError or IncompatibleIndexError.
+    # S2-7: the API composes its own pipeline (open_retrieval, build_prompt, build_llm),
+    # starts without an index, and `dataclasses.replace`s the retrieval half after an
+    # ingest; `require_index=False`, designed for it, was removed unused
 class NoIndexError(Exception)   # stream_answer raises it when pipeline.retrieve is None
 def build_rag_chain(config: RagConfig) -> Runnable    # §0.4 contract, same parts; invoke only
 

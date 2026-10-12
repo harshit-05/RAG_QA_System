@@ -1,12 +1,15 @@
 """The shared assembly layer (S1-3): one way to build each component."""
 
 import asyncio
+import socket
+import time
 from itertools import pairwise
 from pathlib import Path
 
 import pytest
 from conftest import (
     RERANK_TOP_N,
+    FakeOllama,
     MakeConfig,
     StubCrossEncoder,
     use_fakes,
@@ -22,6 +25,7 @@ from rag_qa.components import (
     build_loader,
     build_reranker,
     build_splitter,
+    llm_reachable,
 )
 from rag_qa.config import load_config
 from rag_qa.loaders import DocxLoader, PdfLoader, TextLoader
@@ -121,3 +125,34 @@ def test_aclose_llm_closes_chat_ollamas_http_clients() -> None:
 
 def test_aclose_llm_is_a_no_op_for_a_model_without_clients() -> None:
     asyncio.run(aclose_llm(FakeListChatModel(responses=["x"])))
+
+
+# --- llm_reachable: the API's readiness check and rag-serve's start-up check (S2-7) ---------
+
+
+def test_llm_reachable_asks_ollama_for_its_models(fake_ollama: FakeOllama) -> None:
+    llm = ChatOllama(model="mistral", base_url=fake_ollama.url)
+    assert asyncio.run(llm_reachable(llm)) is True
+    assert fake_ollama.requests == ["/api/tags"]
+
+
+def test_llm_reachable_is_false_when_nothing_listens() -> None:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+    assert asyncio.run(llm_reachable(ChatOllama(model="mistral", base_url=url))) is False
+
+
+def test_llm_reachable_is_false_when_the_server_does_not_answer_in_time() -> None:
+    # A socket that accepts connections (the kernel's backlog) and never replies.
+    with socket.socket() as silent:
+        silent.bind(("127.0.0.1", 0))
+        silent.listen()
+        llm = ChatOllama(model="mistral", base_url=f"http://127.0.0.1:{silent.getsockname()[1]}")
+        started = time.monotonic()
+        assert asyncio.run(llm_reachable(llm, timeout_s=0.3)) is False
+        assert time.monotonic() - started < 2
+
+
+def test_llm_reachable_is_none_for_a_model_with_no_server() -> None:
+    assert asyncio.run(llm_reachable(FakeListChatModel(responses=["x"]))) is None

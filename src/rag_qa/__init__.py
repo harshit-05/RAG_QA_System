@@ -14,6 +14,7 @@ Module layout is fixed by ARCHITECTURE.md §0.2 and §1.2:
 - ``chain``       ``build_query_pipeline(cfg) -> QueryPipeline``; ``build_rag_chain`` for invoke
 - ``answering``   ``stream_answer``: one answer as typed events, for every front end
 - ``cli``         interactive REPL over that stream
+- ``api``         ``rag-serve``: the HTTP API, SSE over that stream, ingest jobs (S2-7)
 - ``evaluate``    RAGAs harness (Phase 2); replaced by ``evaluation`` in S2-5
 - ``evaluation``  the golden set (``evaluation.dataset``) and, from S2-3, the eval gates
 

@@ -67,6 +67,23 @@ def iter_targets(node: Any, path: str = "") -> Iterator[tuple[str, Any]]:
             yield from iter_targets(item, f"{path}[{index}]")
 
 
+def iter_key(node: Any, key: str, path: str = "") -> Iterator[tuple[str, Any]]:
+    """Every value stored under ``key`` at any depth of a spec, with its location.
+
+    Locations read as :func:`iter_targets`' do: ``model_kwargs.trust_remote_code``, or
+    ``items[0].trust_remote_code`` inside a list.
+    """
+    if isinstance(node, dict):
+        for name, value in node.items():
+            here = f"{path}.{name}" if path else str(name)
+            if name == key:
+                yield here, value
+            yield from iter_key(value, key, here)
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            yield from iter_key(item, key, f"{path}[{index}]")
+
+
 class _Strict(BaseModel):
     """Frozen, closed model: an unknown key fails with the nearest valid key named.
 
@@ -172,6 +189,34 @@ class Components(_Strict):
                 f"loaders {', '.join(map(repr, stale))}: 'extensions' moved out of the loader "
                 f"entries into pipeline.ingestion.loaders (S1-3), which maps each extension "
                 f"to a loader, e.g. \".pdf\": components.loaders.pdf. Remove it here"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def check_trust_remote_code(self) -> "Components":
+        """No component may load a model's own code (DEC-18, the S1-2 second review).
+
+        ``trust_remote_code`` makes Hugging Face run Python from the model's repository.
+        The allowlist limits which classes a config builds, not the kwargs it passes them,
+        so this is the line it cannot draw. Every kind is walked, retrievers included, at
+        any depth. A truthy value is refused, so the string ``"false"`` is too: it is
+        truthy where it is used.
+        """
+        found = []
+        for kind in type(self).model_fields:
+            entries: Mapping[str, ComponentSpec | RetrieverSpec] = getattr(self, kind)
+            for name, entry in entries.items():
+                spec = entry.spec() if isinstance(entry, ComponentSpec) else entry.kwargs()
+                found += [
+                    f"{kind}.{name}.{where}"
+                    for where, value in iter_key(spec, "trust_remote_code")
+                    if value
+                ]
+        if found:
+            raise ValueError(
+                f"{', '.join(found)}: trust_remote_code is set. It runs Python from the "
+                f"model's repository on this host, so no config may enable it. Remove it, "
+                f"or set it to false"
             )
         return self
 

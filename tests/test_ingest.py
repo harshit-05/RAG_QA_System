@@ -23,6 +23,7 @@ from rag_qa.ingest import (
     discover_files,
     ingest,
     main,
+    outcome,
     scan_corpus,
 )
 from rag_qa.loaders import PdfLoader
@@ -251,3 +252,31 @@ def test_the_summary_accounts_for_everything_not_indexed(
     summary = report.summary()
     assert "Skipped 1 symlink(s) (not followed)." in summary
     assert "Ignored 3 hidden or lock file(s) and folder(s)." in summary
+
+
+@pytest.mark.parametrize(
+    ("report", "status", "line"),
+    [
+        (IngestReport(found=3, published="g"), EXIT_OK, None),
+        (IngestReport(found=3), EXIT_OK, None),  # nothing changed
+        (
+            IngestReport(found=2, failed=[("a.pdf", "PdfReadError: bad")], published="g"),
+            EXIT_RUN_FAILED,
+            (
+                "1 file(s) could not be read (listed above). The index was updated; the failed "
+                "documents kept their previous chunks, if they had any, and are retried next run."
+            ),
+        ),
+        (IngestReport(), EXIT_RUN_FAILED, "No documents were loaded."),
+        (
+            IngestReport(found=1, rebuild="--rebuild was given"),
+            EXIT_RUN_FAILED,
+            "Nothing was indexed: no document had any text.",
+        ),
+    ],
+)
+def test_outcome_is_the_rule_rag_ingest_exits_by(
+    report: IngestReport, status: int, line: str | None
+) -> None:
+    # Shared with the API's ingest jobs, whose exit_code it sets (S2-7).
+    assert outcome(report) == (status, line)
