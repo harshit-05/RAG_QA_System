@@ -5,11 +5,39 @@
 
 ## Now
 
-**Next action: [S2-7](phase-2/S2-7-http-api.md), the HTTP API.** It is plan-first, on
-`feat/s2-7-http-api`. Its story routes it to Fable, so it runs on Opus 5.5 at max effort
-with two reviews, and records the substitution under Deviation (CLAUDE.md). Mind caveat
-24: tier 2 turns CI red on any edit to the prompt, the llm, retriever or reranker specs,
-the corpus or the golden set.
+**Next action: commit [S2-7](phase-2/S2-7-http-api.md), open its PR, and run its two
+reviews.** It is on `feat/s2-7-http-api`; Verification 1–5 have run and are shown in the
+story, and 6 (CI) waits for the PR. It ran on Opus 5.5 at max effort in place of Fable.
+
+**S2-7 is in review** (2026-10-12): `rag-serve`, the HTTP API (FR-6, SRS §8.1, DEC-18).
+
+- **What it serves.**
+  - Answers stream as SSE: `sources`, `token`…, then `done` or `error`, with `: ping`
+    keep-alives during the prefill.
+  - Ingest runs as background jobs, one at a time.
+  - There is a document listing, and two health probes.
+  - The server starts without an index, and picks up any new generation, its own jobs' or
+    a CLI's.
+- **A disconnect stops generation.** Against real Ollama, our connection closed **0.03 s**
+  after curl left, mid-stream and during the prefill alike.
+  - Mid-stream, the runner idled within 1.1 s.
+  - During the prefill, Ollama finished the prompt evaluation first (188 s), as caveat 21
+    predicts.
+- **The spike changed one mechanism.** FastAPI's native SSE runs the route's generator in
+  a producer task of its own. A drop between events left the stream to Ollama open until
+  garbage collection: 1 of 300 drops, and every time when forced. The slot's teardown now
+  closes it, and a test forces that window. DEC-18 has the dated note.
+- **Access.**
+  - **Without a token:** loopback only, and a request whose `Host` is not loopback is
+    refused.
+  - **With `RAG_API_TOKEN`:** a bearer token, compared in constant time on bytes.
+  - **Always:** `Origin` gives 403, a POST that is not JSON gives 422, and a request
+    cannot name a component.
+- **Breaking (config):** a truthy `trust_remote_code` anywhere in `components` no longer
+  loads. The real config does not set it.
+- **Caveat 24 held:** `rag-eval check` was clean; no hashed input moved.
+- **The suite:** 845 passed, 5 xfailed, coverage 98.30%. New main dependencies: fastapi
+  0.143.0, starlette 1.7.0, uvicorn 0.54.0, and opentelemetry-api 1.45.1 through FastAPI.
 
 **S2-5b is done** (2026-10-12, PR #14, merged as `e88c6f2`; on Opus 5.5, where the story
 says opus-fast). CI was green on its last commit, `edd933b`. Tier 2 is enforced: the
@@ -545,7 +573,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Done 2026-10-07 (PR #13) |
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Done 2026-10-12 (PR #14) |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
-| [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Todo |
+| [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | In review 2026-10-12 (Verification 1–5 shown; CI after the PR) |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
 | [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Todo |
 
@@ -590,7 +618,7 @@ from the numbering in one place, and the Depends column is satisfied throughout:
 | DEC-15 | Phase 2 quality gate: what runs in CI when RAGAs on CPU takes hours | **Resolved 2026-10-02: two tiers** (maintainer) | **Tier 1:** retrieval hit rate, MRR and recall against `expected_sources`, recomputed on every pull request and every push to `main` by a CI job that caches the HF models. That job is CI's only network use. **Tier 2:** RAGAs with a `gemma2:9b` judge through Ollama's OpenAI endpoint, run offline (scoring can go to Colab/Kaggle) and committed with a fingerprint. `rag-eval check` fails CI on a floor breach **or a stale run** (maintainer: fail, not warn). Rejected: a hosted judge in CI; offline-only. **Second review:** the fingerprint has six parts (`query` with a rendered-prompt probe, `ingestion`, `corpus`, `questions`, `references`, `judge`) in `evaluation/fingerprint.py`; Ollama digests are recorded, not hashed; the judge is `rag-judge` from `eval/judge.Modelfile` (8k context, caveat 22); the tier-2 tolerance comes from two scorings. S2-2, S2-3, S2-5, S2-5b. |
 | DEC-16 | Reranker: `langchain_classic`'s `ContextualCompressionRetriever`, or our own | **Resolved 2026-10-02: our own `CrossEncoderReranker` on `sentence-transformers`** (DEC-5 step 2) | A `langchain_core` `BaseDocumentCompressor` that writes `rerank_score` into metadata. k=20 candidates are cut to `top_n` 5, and tier-1 numbers decide whether it is on. `langchain_classic.` and `langchain_community.` leave `ALLOWED_PREFIXES`. The `min_score` knob is for the Sources-relevance backlog line. S2-4. **Outcome (S2-4, 2026-10-04): on.** Hit rate 0.950, MRR 0.7958, recall 0.8583, against dense 0.800, 0.5875, 0.7167; 8 questions won, 4 lost (still hits), 1.4 s per answer on CPU. |
 | DEC-17 | Incremental ingestion: change detection, failure handling, write safety | **Resolved 2026-10-02: a sha256 manifest beside the index, generation directories published by an atomic symlink flip, one writer** (the flip replaced a two-rename swap in the second review) | **Updates:** only added and changed documents are re-embedded. A failed document keeps its chunks, which dissolves DEC-13. **Full rebuild** when the embedder identity or the splitter changes. Device keys are left out of the identity, so Colab's `_cuda` equals local `_cpu`. **IDs and metadata:** uuid5 chunk IDs, ready for Qdrant (DEC-3). `source` becomes corpus-relative, plus `source_sha256` and `ingested_at` (SRS §7.3). **Query side:** `rag-query` refuses a mismatched index. **Breaking:** re-ingest once. S2-6. **As implemented (2026-10-05):** `multi_process` stays in the identity, since langchain-huggingface 1.2.2's multi-process path drops `encode_kwargs` (maintainer). An empty `model_kwargs` counts as none. Generation stamps carry microseconds and always sort after the live one. Only a folder holding exactly `index.faiss` and `index.pkl` is migrated as v0.2, and anything else at the path exits 2. Every update opens the live index, and an update probes the embedder's dimension. ARCHITECTURE.md DEC-17 has the dated notes. |
-| DEC-18 | HTTP API shape: SSE library, auth, concurrency, ingest jobs | **Resolved 2026-10-02: FastAPI ≥ 0.135 native SSE; a token is required off localhost (maintainer); one generation at a time** | **Surface:** `rag-serve`. `QueryRequest` is `{question}` with `extra="forbid"`, so the API never supplies components, and a `trust_remote_code` load guard comes with it. **Load:** 503 with `Retry-After` when busy. A disconnect cancels generation: under uvicorn (ASGI 2.3) Starlette cancels the stream, and `stream_answer` runs inside it, with no producer task (second review). Requests with an `Origin` header are refused. **Ingest:** single-flight jobs in memory, which swap only the retrieval half. **Privacy:** no host paths over HTTP. S2-7. |
+| DEC-18 | HTTP API shape: SSE library, auth, concurrency, ingest jobs | **Resolved 2026-10-02: FastAPI ≥ 0.135 native SSE; a token is required off localhost (maintainer); one generation at a time** | **Surface:** `rag-serve`. `QueryRequest` is `{question}` with `extra="forbid"`, so the API never supplies components, and a `trust_remote_code` load guard comes with it. **Load:** 503 with `Retry-After` when busy. A disconnect cancels generation: under uvicorn (ASGI 2.3) Starlette cancels the stream, and `stream_answer` runs inside it, with no producer task (second review). Requests with an `Origin` header are refused. **Ingest:** single-flight jobs in memory, which swap only the retrieval half. **Privacy:** no host paths over HTTP. S2-7. **As built (S2-7, 2026-10-12):** FastAPI's native SSE runs the generator in its own producer task. The cancel still reaches `stream_answer`, and the slot's teardown closes a stream that a drop between events left paused (the spike's window). Retrieval is serialized by a lock, not the slot. The API opens the index itself (`chain.open_retrieval`), and `require_index` is gone. `rag-serve` checks Ollama before uvicorn starts. ARCHITECTURE.md DEC-18 has the dated notes. |
 
 ## Backlog
 
@@ -639,6 +667,13 @@ leads with one of two things:
 
   It opens three follow-ups: two from its hand check and its answers, and one from its
   second review (`check` recomputing the aggregates).
+- **S2-7 (in review):** the HTTP API (FR-6, SRS §8.1, DEC-18). It closes three lines below:
+  requests never supply components (with the `trust_remote_code` guard), a disconnect
+  stays a cancel, and ChatOllama's client closed at shutdown (the API half).
+  - It opens two: request size and health-check load (Phase 3), and the `eval` extra's
+    langchain advisory.
+  - S2-8 can reuse its start-up check for `rag-query`.
+  - S2-9 owes README's status line, §2.2's module list and §2.8.
 - **S2-6:** incremental ingestion (FR-2, ISS-14, NFR-4 in place, SRS §7.3, DEC-17).
   - Three backlog lines close with it: walk pruning, the §7.3 chunk metadata, and the
     embedder check on open.
@@ -692,8 +727,10 @@ leads with one of two things:
   validator on `Prompt`. S1-5 left it open, as the board allowed. It belongs with
   the Phase 2 evaluation harness, which is what would catch an ungrounded
   answer anyway. Its rules are in ARCHITECTURE.md §2.3.
-- **S2-7 — the API must never let a request supply or override components
-  (S1-2 second review).** A constraint for the Phase 2 architecture pass, with
+- **Closed by S2-7 (2026-10-12) — the API must never let a request supply or override
+  components (S1-2 second review).** `QueryRequest` is `{question}` with `extra="forbid"`,
+  and config load refuses a truthy `trust_remote_code` anywhere in `components`. The
+  history below is kept. A constraint for the Phase 2 architecture pass, with
   the optional load-time guard that rejects `trust_remote_code` anywhere in the
   config. Re-deferred because it only matters once the config is reachable from
   outside the host. Designed in DEC-18: `QueryRequest` forbids extra keys, and the
@@ -704,7 +741,8 @@ leads with one of two things:
     (`validate_model_on_init`) and Ctrl-C while models load both print a
     traceback. One startup try/except with a clean message. Since S2-4 it also
     covers the reranker's model missing from the HF cache on an offline machine:
-    "run once with network" (S2-4, Discovered).
+    "run once with network" (S2-4, Discovered). S2-7 built this for `rag-serve`:
+    `rag_qa.api.server.preflight` and `OLLAMA_HINT`. Reuse them.
   - The connection error doesn't name Ollama (`ConnectError: [Errno 111]`). Add
     the hint "Is Ollama running? `systemctl status ollama`", and stop the empty
     `Answer:` header printing before the error.
@@ -732,7 +770,11 @@ leads with one of two things:
   It walks all of `.git` before discarding it. Performance only. Phase 2's
   incremental ingestion rewrites discovery around the manifest, so prune there
   (`Path.walk` is top-down, and pruning `folders[:]` in place fixes it).
-- **S2-7 — keep a client disconnect a cancel (found in S2-1).** Closing `stream_answer`
+- **Closed by S2-7 (2026-10-12) — keep a client disconnect a cancel (found in S2-1).** It
+  is a cancel, through FastAPI's own SSE producer task. The slot's teardown closes a
+  stream that a drop between events left paused; the spike found that window. Against
+  real Ollama, our connection closed 0.03 s after the client left. The history below is
+  kept. Closing `stream_answer`
   at a `yield` does not close the model stream before `aclose()` returns: langchain-core
   1.6.3 never closes a chat model's inner generator, and the loop's finalizer closes it a
   loop iteration or two later. A cancel, which DEC-18 already relies on, closes it at once:
@@ -807,6 +849,10 @@ leads with one of two things:
       Phase 3. Either moves `judge` and needs a re-score.
   - **Answer relevancy is all-or-nothing on hedging.** ragas zeroes a "noncommittal"
     answer, so one hedge in an otherwise right answer costs about 0.04 of the mean.
+- **Backlog — the `eval` extra's `langchain` 1.3.2 has PYSEC-2026-2192** (fixed in 1.3.9;
+  found in S2-7's audit). ragas pulls it in. CI never installs the extra, so its audit
+  never sees it. Bump it with the next ragas change (which re-scores), or decide whether
+  the extra should be audited at all (the audit-gate policy line above).
 - **Backlog — `rag-eval check` recomputes the aggregates from the items** (S2-5b's second
   review). It reads `aggregate` and `failures` from `generation-latest.json` as written.
   `score` writes them consistently, and the baseline recomputes exactly. But a hand edit,
@@ -889,9 +935,15 @@ leads with one of two things:
   knob (DEC-16), off by default. It is in the model's own units: logits, from -6.42 to
   8.38 over the kept chunks of the golden questions. Tuning it with the eval harness
   comes after the tier-2 baseline exists.
-- **S2-7 —** `ChatOllama` leaves its HTTP client open
+- **Closed by S2-7 (2026-10-12) —** `ChatOllama` leaves its HTTP client open
   (`ResourceWarning: unclosed socket` at exit). S2-1 closed the CLI half: `aclose_llm`,
-  called at exit. S2-7's API lifespan owns the client and closes it at shutdown.
+  called at exit. The API's lifespan owns the client and closes it at shutdown.
+- **Phase 3 — request size and health-check load** (found in S2-7).
+  - FastAPI reads a request body whole before validating it, so a huge body costs memory
+    before the 422.
+  - `/v1/health` is unauthenticated and asks Ollama on every call.
+
+  Both belong with the rate limiting.
 - **DEC-5 exit tasks, one per phase:**
   - own loaders (**Phase 1 → S1-3**);
   - the cross-encoder via `sentence-transformers` (**Phase 2 → S2-4**, done 2026-10-05);

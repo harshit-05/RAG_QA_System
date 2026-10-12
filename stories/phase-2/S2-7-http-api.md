@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | In review (2026-10-12): Verification 1–5 run and shown below; 6 (CI) waits for the PR. Two reviews to follow (Opus 5.5 in place of Fable). |
 | **Closes** | FR-6, SRS §8.1; backlog: the API must never let a request supply components, the `trust_remote_code` load guard, the ChatOllama client (API half) |
 | **Depends on** | S2-1 (`stream_answer`, `QueryPipeline`), S2-6 (manifest, lock, incremental `ingest`) |
 | **Model** | fable |
@@ -225,8 +225,183 @@ gh run list --limit 2
 
 ## Discovered
 
-(Filled during implementation.)
+- **Resolved versions (2026-10-12):**
+  - fastapi 0.143.0, starlette 1.7.0 and uvicorn 0.54.0. uvicorn is plain, not
+    `[standard]`, so it serves over h11 with no uvloop or httptools.
+  - httpx 0.28.1 is in the dev group; it was already present, through ollama.
+  - FastAPI pulls in one new package: opentelemetry-api 1.45.1, a base dependency of
+    FastAPI's.
+  - torch 2.14.0+cpu and langchain-core 1.6.3 are unchanged.
+- **FastAPI's native SSE runs the path generator in its own producer task**
+  (`fastapi/routing.py`, `_sse_producer_cm`). The task runs in a task group that is
+  entered on the request's exit stack.
+  - On a disconnect, Starlette cancels its response task (uvicorn reports ASGI spec 2.3),
+    and the response returns. The request stack then unwinds, and that cancels the
+    producer group.
+  - So the cancel does reach `stream_answer`, but not as DEC-18 put it ("Starlette
+    cancels the stream that `stream_answer` runs inside"). It is still no task of ours,
+    and none is spawned outside the request's lifetime.
+  - **The window:** each send from the producer passes anyio's `checkpoint()` outside
+    our generator. A cancel that lands there leaves the generator paused at a `yield`.
+- **The spike** ran real uvicorn, the real `stream_answer` and a fake model whose
+  `finally` records the time. The client dropped over a raw socket.
+
+  | Case | Trials | Result |
+  | --- | --- | --- |
+  | S1: a drop during a 10 s prefill | 5 | closed in 0.6–1.4 ms, by a cancel inside the read; slot freed; `spec_version` 2.3; the generator's `finally` ran before the dependency teardown |
+  | S2: a drop mid-stream, 5 ms per token, one core | 300 | 299 closed by the cancel (median 0.67 ms, max 17 ms); **1 left the model's stream open for more than 5 s** |
+  | S3: the window forced (the producer blocked in its send of a token) | 5 | **5 of 5 open for more than 5 s.** Each was freed only when the cycle collector ran during a later request |
+  | S3 with the teardown closing the answer stream | 5 | 5 of 5 closed in 1.1–1.75 ms (`GeneratorExit` at the paused `yield`) |
+
+  - So the generator sits in a reference cycle once the window is hit. An idle server
+    would leave Ollama generating until garbage collection happened to run.
+  - **Decision:** the slot dependency holds the answer stream, and its teardown
+    `aclose()`s it. That is cleanup inside the request's own structured teardown: no
+    task and no watcher. No watcher was needed for the drop during the prefill, which is
+    the story's own rule.
+- **The suspected SSE encoding bug is not in 0.143.0.** fastapi 0.136.1 split SSE data
+  with `str.splitlines()`, which would break a JSON string holding U+2028 or U+0085.
+  0.143.0 splits only on `\n`, `\r\n` and `\r`. A test pins the round trip.
+- **A lifespan failure under uvicorn always prints a traceback.** Starlette sends
+  `lifespan.startup.failed` with `traceback.format_exc()`. So `rag-serve` checks Ollama
+  before uvicorn starts.
+- **anyio's worker threads are not daemon threads.** An ingest job on one would hold
+  shutdown for minutes, so jobs run in a daemon thread. DEC-17 makes an abandoned run
+  safe.
+- **`build_query_pipeline(require_index=False)` cannot tell the API what it opened.** It
+  gives no generation, no manifest, and no reason when there is none (it swallows the
+  `NoIndexError`). The API opens the index through `chain.open_retrieval` instead, and
+  `require_index` is removed: no production code called it.
+- **FastAPI 0.143 keeps included routers whole in `app.routes`** (`_IncludedRouter`),
+  rather than copying their routes in. The app's own dependencies still apply. The test
+  that checks every route needs the token walks the routes as FastAPI's OpenAPI code
+  does, with `fastapi.routing.iter_route_contexts`.
+- **Ollama answers a disconnected chat request with 500, at once, in its log.** Its runner
+  still finished the abandoned prompt evaluation: 188 s at full CPU (Verification 4). That
+  is caveat 21, now seen through the API.
+- **Verification 4's `--max-time 30` would still be in mistral's prefill.** Time to first
+  token is about 157 s at `num_thread` 10. So the mid-stream drop killed curl after 5
+  tokens, on the question just answered, whose prompt Ollama still had cached.
+- **A tee'd server log loses its shutdown lines.** Ctrl-C reaches the whole foreground
+  pipeline, so `tee` dies with the server. `tee -i` ignores the interrupt; use it for
+  S2-9's end-to-end run.
+- **`uv sync` is exact: it removed the local `eval` extra** (ragas and 24 others) that this
+  `.venv` had; a plain `uv run` is inexact and keeps it. Restored with
+  `uv sync --extra eval`.
+- **Out of scope, for the backlog:**
+  - the `eval` extra's `langchain` 1.3.2 has PYSEC-2026-2192, fixed in 1.3.9. CI never
+    installs the extra, so its audit never sees it. CI's own set, with the four new
+    packages, audits clean;
+  - request bodies are not size-limited (FastAPI reads a body whole before validating it),
+    and `/v1/health` asks Ollama on every call, unauthenticated. Both belong with Phase 3's
+    rate limiting;
+  - a browser tab on `/` gets 404. There is no landing page, by design.
+- **For S2-8:** `rag_qa.api.server.preflight` and `OLLAMA_HINT` are what `rag-query`'s
+  unguarded start-up needs (its backlog line: Ollama down, the hint).
+- **For S2-9:**
+  - README's status line still calls the HTTP API planned;
+  - §2.2 lists four `api` modules, and there are six;
+  - §2.8 should fold in DEC-18's S2-7 notes.
+
+## Verification record (2026-10-12)
+
+1. **The gates:** `ruff check` and `mypy` were clean (30 source files), and `pytest
+   --cov=rag_qa` gave **845 passed, 5 xfailed**, coverage 98.30%.
+   - The `api` package is fully covered except `server.py`'s `if __name__` line.
+   - The new xfail is the strict negative control for the forced window.
+   - **Extras run:**
+     - **Caveat 23:** the same suite under `HF_HOME=<empty dir> HF_HUB_OFFLINE=1` gave the
+       same result, and the folder stayed empty.
+     - **Caveat 24:** `uv run rag-eval check` exited 0, with all six fingerprint parts ok
+       and every floor met. No hashed input moved.
+     - **The audit:** CI's 120 packages showed no known vulnerabilities.
+     - **Stability:** the timing-based tests (the uvicorn file, the lock, the refresh and
+       the slot) ran 15 times, then 15 more pinned to one core: 13 passed and 1 xfailed
+       every time.
+2. **`uv run rag-serve --host 0.0.0.0; echo "exit $?"`** printed "Error: refusing to listen
+   on 0.0.0.0 without a token…" and **exit 2**, with no traceback.
+3. **Against scratch paths.** The maintainer's terminal ran the server, with
+   `RAG_DATA_PATH` and `RAG_VECTOR_STORE_PATH` both set to scratch, on mistral from the
+   real config. It started without an index, and its log gave the reason. The preflight
+   showed in Ollama's log as the expected `/api/tags` calls.
+   - **The ingest job ran before the query,** because the scratch index was empty: a
+     query first would only 503.
+   - `/v1/health` was **503** "no index yet", with the llm ready.
+   - `POST /v1/ingest {"rebuild": false}` gave **202** with a `location`. The job
+     **succeeded** in 115 s with `exit_code` 0: 561 pages, 1,708 chunks, the two parquet
+     files skipped, and no path in the report or the log.
+   - Then `/v1/health` was **200** ready, serving `index.gen-…`, 3 documents, and
+     `/v1/documents` listed the three PDFs from the manifest.
+   - **The query:**
+     - `sources` came at **1.0 s**, five chunks of the YOLOv8 paper, reranked;
+     - a `: ping` came every 15 s through the prefill;
+     - then 85 `token` events, and `done` at 176.3 s (`ttft_ms` 157,034);
+     - the answer was on topic, with no `error` event.
+   - **The refusals:**
+     - the `llm=` body: **422**;
+     - `Origin`: **403**;
+     - `text/plain`: **422**, and neither refused ingest started a job.
+   - No host path appeared in any body.
+4. **The drops.** Each was timed from curl leaving. The script polled `ss` for the
+   connection that request opened, and read the runner's CPU from `/proc`.
+
+   | Drop | Our connection to Ollama | Ollama's log | The runner |
+   | --- | --- | --- | --- |
+   | mid-stream, after 5 tokens | closed **0.03 s** after | `/api/chat` 200 after 1.04 s | 708% at 0.5 s, **idle by 1.1 s** |
+   | during the prefill, at 3 s | closed **0.03 s** after | `/api/chat` **500** after 1.88 s, at once | busy (950–985%) for **188 s**, then idle: it finished the prompt evaluation |
+
+   - A query right after each drop got **200**, a slot and not a 503. Each check left
+     during retrieval, so it never reached Ollama.
+   - The server logged "Answer cancelled: its client disconnected" for every drop.
+5. **The token** (restarted with `RAG_API_TOKEN=s3cret --port 8001`, now serving the
+   index):
+   - **401** without the header;
+   - **401, not 500** for `Bearer sécret`;
+   - **200** for `/v1/health/live`.
+   - **Extras:**
+     - 401 for a wrong token and for Basic, with `www-authenticate: Bearer`;
+     - `/docs` gave 401, then 200 with the token;
+     - `/v1/documents` gave 200 with it;
+     - a query with it got a slot;
+     - `Origin` with a valid token: 403;
+     - `/v1/health` stayed open (200).
+   - No 500 or traceback in the server log.
+6. **CI:** after the push and the PR.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **Model:** Opus 5.5 at max effort, not Fable, which the story names. Fable is unavailable
+  from 2026-10-04 (CLAUDE.md, "Model routing"). The two reviews follow.
+- **The disconnect path differs from DEC-18's wording** (Discovered). The cancel reaches
+  `stream_answer` through FastAPI's own producer task. The slot dependency holds the
+  answer stream, and its teardown closes it, because the spike found a window where
+  nothing else does. DEC-18 has a dated note.
+- **Choices the story left to the plan** (confirmed 2026-10-12):
+  - **Retrieval lock, not holding the slot.** A lock taken inside the retrieval thread
+    covers `RAG_API_MAX_CONCURRENT` above 1, and frees the slot at once.
+  - **A CLI-held writer lock fails the job** (exit 2, `rag-ingest`'s message) rather than
+    giving a 409. A route cannot hold the `flock` for `ingest()`.
+  - **The Host refusal is 403,** like the `Origin` one.
+- **Changed from the story's letter:**
+  - **The API does not use `build_query_pipeline(require_index=False)`.** It composes its
+    pipeline from `open_retrieval`, `build_prompt` and `build_llm`, so it knows which
+    generation it serves, and why when none. `require_index` is removed, and its four
+    tests became API tests.
+  - **Two more `api` modules,** `state.py` and `jobs.py`.
+  - **`rag-serve` checks Ollama before uvicorn starts.** It builds the model, pings it,
+    then closes it: a failure inside uvicorn's start-up would print a traceback.
+  - **Ingest jobs run in a daemon thread.**
+  - **uvicorn's graceful shutdown is 5 s,** so stopping the server cancels an answer in
+    flight.
+  - **Verification ran in a different order.** Step 3 ran the ingest before the query
+    (empty scratch index). Step 4's mid-stream drop came after 5 tokens, not at
+    `--max-time 30`.
+- **Outside the Scope list, each needed by the above:**
+  - `chain.live_generation` and `components.llm_reachable`;
+  - `ingest.outcome()`, which `rag-ingest` now uses too (same output), and `_describe` made
+    public as `describe_error`;
+  - conftest isolates every `RAG_*` variable, and holds the API's fake pipeline;
+  - the architecture test: `ingest` never loads `rag_qa.api`;
+  - the module map in `rag_qa/__init__.py`;
+  - README's layout and the `trust_remote_code` limitation line;
+  - dated notes on DEC-18 and §2.4 in ARCHITECTURE.md.
