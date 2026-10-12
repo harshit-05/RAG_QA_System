@@ -11,6 +11,9 @@ it started with, and the LLM and its clients are never rebuilt.
 
 - A reopen runs the same checks as start-up. An index from another embedder is never
   served: the server goes not-ready until an ingest fixes it.
+- An open that fails for another reason (a disk error, a failing embedder) is not a verdict
+  on the index. The server goes not-ready with a fixed message, logs the exception, and
+  tries again on the next request, rather than answer 500 (S2-7's first review).
 - The embedder and the reranker are built once and reused on every reopen. The reranker
   alone takes seconds and about 90 MB to load (S2-4).
 
@@ -59,6 +62,10 @@ logger = logging.getLogger(__name__)
 #: Why nothing is served. Fixed text, because it goes over HTTP; the exceptions behind
 #: it name the index's location, so they go to the server log only (DEC-18).
 NO_INDEX_YET = "no index yet: run an ingest (POST /v1/ingest)"
+UNAVAILABLE = (
+    "the index could not be opened just now; the server log says why, and the next "
+    "request tries again"
+)
 REINGEST = (
     "the index cannot be used with this configuration: re-ingest with --rebuild "
     '(POST /v1/ingest with {"rebuild": true}); the server log says why'
@@ -98,6 +105,10 @@ def open_served(
         logger.warning("Not serving an index: %s", opened)  # the server log may name paths
         problem = REINGEST if isinstance(opened, IncompatibleIndexError) else NO_INDEX_YET
         return None, Served(generation=seen, manifest=None, problem=problem)
+    if isinstance(opened, Exception):
+        # Not a verdict on the index (S2-7's first review): a disk error, a failing embedder.
+        # No generation is recorded as seen, so the next request tries again.
+        return None, Served(generation=None, manifest=None, problem=UNAVAILABLE)
     logger.info(
         "Serving index %s (%d documents).",
         opened.generation.name,
@@ -108,10 +119,18 @@ def open_served(
 
 def _try_open(
     config: RagConfig, embeddings: Embeddings, reranker: BaseDocumentCompressor | None
-) -> Retrieval | NoIndexError:
+) -> Retrieval | Exception:
+    """The index opened, or why not: a :class:`NoIndexError` (``IncompatibleIndexError``
+    too) when the index is missing or unusable, any other exception when opening it failed
+    for a reason that says nothing about the index. That one is logged here, in full."""
     try:
         return open_retrieval(config, embeddings, reranker=reranker)
     except NoIndexError as e:  # IncompatibleIndexError too
+        return e
+    # Deliberately broad: a reopen runs inside a request (and inside health), and an error
+    # escaping it would answer 500 to each of them, again on every request.
+    except Exception as e:
+        logger.exception("Could not open the index")  # the server log may name paths
         return e
 
 
@@ -229,6 +248,7 @@ class Serving:
         self.jobs = IngestJobs(config, after=self.refresh)
         self.retrieval_lock = threading.Lock()
         self._reopen_lock = asyncio.Lock()
+        self._reopens = 0  # attempts finished: a request that waited for one takes its result
         self.served = served
         self.pipeline = replace(pipeline, retrieve=self._serialized(pipeline.retrieve))
 
@@ -269,14 +289,18 @@ class Serving:
 
         A few system calls when nothing changed. A reopen runs in a thread, under the
         retrieval lock, so it never overlaps a retrieval that uses the same embedder and
-        reranker. Concurrent requests reopen once.
+        reranker. Concurrent requests reopen once, whether the open succeeds or fails: a
+        failed one records no generation as seen, so without the attempt count each request
+        queued behind it would try again in turn (S2-7's second review).
         """
         if live_generation(self.config) == self.served.generation:
             return
+        attempts = self._reopens
         async with self._reopen_lock:
-            if live_generation(self.config) == self.served.generation:
-                return  # another request reopened it while this one waited
+            if self._reopens != attempts or live_generation(self.config) == self.served.generation:
+                return  # another request reopened it, or tried, while this one waited
             retrieve, served = await asyncio.to_thread(self._reopen)
+            self._reopens += 1
             self.served = served
             self.pipeline = replace(self.pipeline, retrieve=self._serialized(retrieve))
 
