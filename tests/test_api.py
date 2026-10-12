@@ -339,6 +339,35 @@ def test_a_post_that_is_not_json_is_refused(
     assert model.prompts == []
 
 
+def test_a_body_that_is_not_json_is_refused_before_the_dependencies(
+    fake_config: RagConfig, tmp_path: Path
+) -> None:
+    # FastAPI parses the body before it runs any dependency, so malformed JSON gets its 422
+    # ahead of the 401 and the 403. A body that parses but breaks the model is validated
+    # after them. Nothing runs either way (S2-7's first review). If FastAPI changes this
+    # order, ARCHITECTURE.md §2.4 and routes.py's docstring need the same change.
+    as_json = {"content-type": "application/json"}
+    from_a_page = {"origin": "https://example.com"}
+    model = StreamingFakeChatModel()
+    with serve(fake_config, tmp_path, fake_serving(fake_config, model), token=TOKEN) as (
+        client,
+        serving,
+    ):
+        for path in ("/v1/query", "/v1/ingest"):
+            for headers in (as_json, {**as_json, **from_a_page}):
+                assert client.post(path, content=b"{not json", headers=headers).status_code == 422
+        # A valid body gets the documented order: Origin, then the token.
+        valid = {"question": "q"}
+        assert client.post("/v1/query", json=valid).status_code == 401
+        assert client.post("/v1/query", json=valid, headers=from_a_page).status_code == 403
+        # A JSON body that breaks the model is validated after the token.
+        assert client.post("/v1/query", json={"question": ""}).status_code == 401
+        assert client.post("/v1/query", json={"question": ""}, headers=AUTH).status_code == 422
+        assert serving.jobs.running is None
+        assert serving.slots.in_use == 0
+    assert model.prompts == []
+
+
 @pytest.mark.parametrize(
     "body",
     [{}, {"rebuild": "true"}, {"rebuild": 1}, {"rebuild": None}, {"rebuild": False, "config": "x"}],
@@ -905,6 +934,74 @@ def test_an_open_that_fails_with_no_flip_is_not_retried(
     embeddings = DeterministicFakeEmbedding(size=8)
     retrieve, served = api_state.open_served(scratch_config, embeddings, None)
     assert (calls, retrieve, served.problem) == (["open"], None, REINGEST)
+
+
+def test_an_open_that_fails_for_another_reason_is_not_ready_and_tried_again(
+    scratch_config: RagConfig,
+    sample_corpus: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # S2-7's first review: only NoIndexError was caught, so an OSError or an embedder
+    # failure during a reopen made every route that refreshes answer 500, health included.
+    # It is not ready instead, says so without the error's text (which names paths), and
+    # the next request tries again, since such a failure is likelier to pass than not.
+    ingest(scratch_config)
+    with serve(scratch_config, tmp_path) as (client, _):
+        real_open = api_state.open_retrieval
+        failing = [True]
+
+        def flaky_open(config: RagConfig, embeddings: Any, *, reranker: Any) -> Any:
+            if failing[0]:
+                raise OSError(f"cannot read {tmp_path}/index/manifest.json: the disk went away")
+            return real_open(config, embeddings, reranker=reranker)
+
+        monkeypatch.setattr(api_state, "open_retrieval", flaky_open)
+        (sample_corpus / "added.txt").write_text("A new note.\n")
+        ingest(scratch_config)  # a rag-ingest outside the server flips a new generation in
+
+        health = client.get("/v1/health")
+        assert health.status_code == 503
+        assert health.json()["index"]["detail"] == api_state.UNAVAILABLE
+        for response in refused(client):
+            assert response.status_code == 503
+            assert response.json()["detail"] == api_state.UNAVAILABLE
+        assert "the disk went away" in caplog.text  # in the server log only
+
+        failing[0] = False
+        assert client.get("/v1/health").status_code == 200
+        assert client.post("/v1/query", json={"question": "q"}).status_code == 200
+
+
+def test_concurrent_requests_share_one_failed_reopen(
+    scratch_config: RagConfig, sample_corpus: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # S2-7's second review: a failed open records no generation as seen, so every request
+    # queued behind it tried again in turn, one after another: five concurrent refreshes
+    # made five opens. A request that waited for another's attempt now takes its result,
+    # and a later request still tries again.
+    ingest(scratch_config)
+    with serve(scratch_config, tmp_path) as (client, serving):
+        opens: list[str] = []
+
+        def failing_open(config: RagConfig, embeddings: Any, *, reranker: Any) -> Any:
+            opens.append("open")
+            time.sleep(0.2)  # long enough for the other refreshes to queue on the lock
+            raise OSError("the disk went away")
+
+        monkeypatch.setattr(api_state, "open_retrieval", failing_open)
+        (sample_corpus / "added.txt").write_text("A new note.\n")
+        ingest(scratch_config)
+
+        async def five_refreshes() -> None:
+            await asyncio.gather(*(serving.refresh() for _ in range(5)))
+
+        client.portal.call(five_refreshes)  # type: ignore[union-attr]
+        assert serving.served.problem == api_state.UNAVAILABLE
+        assert opens == ["open"]
+        assert client.get("/v1/health").status_code == 503
+        assert opens == ["open", "open"]
 
 
 def test_concurrent_requests_reopen_a_new_generation_once(

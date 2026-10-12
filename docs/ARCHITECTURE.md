@@ -1445,10 +1445,22 @@ story file has the spike's numbers._
   - The slot is freed at once, so a disconnect never turns into a 503.
   - A waiter whose client left skips its work.
   - Reopens take the same lock.
+- **An open that fails for another reason is not ready, and is retried** (S2-7's first
+  review). Only `NoIndexError` (and `IncompatibleIndexError`) says something about the
+  index. A disk error or a failing embedder during a reopen used to escape `refresh()` and
+  answer 500 on query, documents and health alike. Now the server is not ready with a
+  fixed message, the exception goes to the log, and no generation is recorded as seen, so
+  the next request opens it again. Requests that queued behind the failed attempt take its
+  result instead of each trying again (S2-7's second review).
 - **The refusals are dependencies, as above.**
   - `Origin`, then `Host` (tokenless only), apply to every route; the token to all but the
     two health probes; the slot and the index to the query.
-  - FastAPI validates the body after the dependencies, so a 422 comes last.
+  - **Two 422s, in two places** (S2-7's first review). FastAPI parses the body before it
+    runs any dependency, so a body that is not valid JSON gets its 422 ahead of the 403 and
+    the 401. A body that parses but breaks the request model is validated after them, so
+    that 422 comes last. Nothing runs in either case, and a test pins the order.
+  - **So a body is read before the token is checked.** Nothing limits its size yet (Phase 3,
+     backlog), which a token does not protect against.
   - The docs and the schema are re-added as routes, so they sit behind the token.
   - A test sends every route a request without the token, so a route added unprotected
     turns CI red.

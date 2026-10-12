@@ -11,9 +11,12 @@ late. Each check is therefore a dependency, and they run in this order:
 4. ``POST /v1/query`` only: no free slot, 503 with ``Retry-After`` (:func:`take_slot`).
 5. ``POST /v1/query`` only: no index the config can use, 503 (:func:`served_pipeline`).
 
-FastAPI validates the body after the dependencies, so an invalid body (422) is reported
-last. It also refuses a POST whose body is not ``application/json`` (strict content
-type), which is what a web page cannot send cross-site without a CORS preflight.
+**The body comes in two steps** (S2-7's first review). FastAPI parses it before it runs any
+dependency, so a body that is not valid JSON gets its 422 ahead of the 403 and the 401
+above; nothing runs, but the body has been read before the token is checked. A body that
+parses but breaks the request model is validated after the dependencies, so that 422 is
+reported last. FastAPI also refuses a POST whose body is not ``application/json`` (strict
+content type), which is what a web page cannot send cross-site without a CORS preflight.
 
 **The answer stream** (``POST /v1/query``) is Server-Sent Events: ``sources``, then
 ``token``…, then ``done``, or ``error`` if the answer fails after the stream began.
