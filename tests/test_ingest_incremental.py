@@ -300,7 +300,7 @@ def test_a_corpus_with_no_text_at_all_publishes_nothing_and_exits_1(
     assert "no document had any text" in err
     # Not "Rebuilt the index in full", nor "1 added": nothing was (second review).
     assert "A full rebuild was due (there is no index yet), but published nothing." in out
-    assert "Documents: 0 added" in out
+    assert "Documents:" not in out  # every count is zero, so the line is left out (S2-8)
     assert not scratch.store.exists()
 
 

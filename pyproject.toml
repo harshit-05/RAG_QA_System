@@ -24,6 +24,7 @@ dependencies = [
     "pydantic-settings>=2.10",
     "fastapi>=0.135",
     "uvicorn>=0.32.1",
+    "requests>=2.34.2",   # scripts/fetch_dataset.py; declared, not left transitive (S2-8)
 ]
 
 [project.scripts]

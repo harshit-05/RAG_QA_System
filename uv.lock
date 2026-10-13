@@ -1855,6 +1855,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pypdf" },
     { name = "pyyaml" },
+    { name = "requests" },
     { name = "sentence-transformers" },
     { name = "uvicorn" },
 ]
@@ -1901,6 +1902,7 @@ requires-dist = [
     { name = "pypdf", specifier = ">=6" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "ragas", marker = "extra == 'eval'", specifier = ">=0.4" },
+    { name = "requests", specifier = ">=2.34.2" },
     { name = "sentence-transformers", specifier = ">=5" },
     { name = "uvicorn", specifier = ">=0.32.1" },
 ]

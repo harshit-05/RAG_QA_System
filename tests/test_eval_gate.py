@@ -343,6 +343,27 @@ def test_a_corpus_rag_ingest_cannot_read_has_no_fingerprint(world: World) -> Non
         bad.chmod(0o644)
 
 
+def test_an_unreadable_corpus_root_has_no_fingerprint_and_no_traceback(
+    world: World, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # S2-8's second review: S2-8 made the walk refuse an unreadable root with
+    # CorpusUnreadableError, which corpus_scan did not catch, so rag-eval printed a traceback
+    # where it used to name the folder to fix. The exit status was 2 either way.
+    commit(world, *runs_for(world))
+    world.corpus.chmod(0)
+    try:
+        if os.access(world.corpus, os.R_OK):
+            pytest.skip("running as root: chmod 000 is still readable")
+        with pytest.raises(fp.FingerprintError, match="Corpus directory not readable"):
+            world.parts()
+        assert check(world) == EXIT_CANNOT_RUN
+        captured = capsys.readouterr()
+        assert "Corpus directory not readable" in captured.err
+        assert "Traceback" not in captured.out + captured.err
+    finally:
+        world.corpus.chmod(0o755)
+
+
 def test_a_missing_modelfile_has_no_judge_part(world: World) -> None:
     world.write()
     (world.eval_dir / "judge.Modelfile").unlink()

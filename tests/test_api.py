@@ -62,7 +62,7 @@ from rag_qa.api.models import IngestReportOut, QueryRequest
 from rag_qa.api.state import NO_INDEX_YET, REINGEST, Serving, serialized
 from rag_qa.chain import IncompatibleIndexError, NoIndexError
 from rag_qa.config import load_config
-from rag_qa.ingest import IngestionRunningError, IngestReport, ingest
+from rag_qa.ingest import CorpusUnreadableError, IngestionRunningError, IngestReport, ingest
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_DATA_PATH, ENV_VECTOR_STORE_PATH, ServerSettings
 
@@ -688,7 +688,7 @@ def test_a_real_job_over_an_unreadable_file_reports_it_without_a_host_path(
             assert name == "secret.txt"
             assert error.startswith("PermissionError:")
             assert any("secret.txt" in line for line in job["log"])
-            assert job["log"][-1].startswith("Error: 1 file(s) could not be read")
+            assert job["log"][-1].startswith("Error: 1 item(s) could not be read")
             # The rest was indexed, and is served.
             assert job["report"]["published"] is not None
             assert client.get("/v1/health").status_code == 200
@@ -701,6 +701,7 @@ def test_a_real_job_over_an_unreadable_file_reports_it_without_a_host_path(
     [
         (IngestionRunningError("another ingestion is running (index.lock is locked)"), 2),
         (FileNotFoundError("Corpus directory not found: {corpus} (set by paths.data)"), 2),
+        (CorpusUnreadableError("Corpus directory not readable: {corpus} (Permission denied)"), 2),
         (RuntimeError("unexpected, at {corpus}/x.pdf"), 1),
     ],
 )

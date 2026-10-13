@@ -6,6 +6,7 @@ Both RAG_DATA_PATH and RAG_VECTOR_STORE_PATH always point at scratch: the real
 index must never be touched by a test.
 """
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -70,7 +71,7 @@ def test_one_corrupt_document_is_reported_does_not_abort_and_fails_the_run(
     assert status == EXIT_RUN_FAILED
     assert store_exists(index)                       # rebuilt from the rest
     assert "Loaded 7 document pages/sections" in out  # 3 PDF pages + 4 single-doc files
-    assert "Failed 1 file(s)." in out
+    assert "Failed 1 item(s)." in out
     # The exception type is recorded. Which pypdf error it is (PdfStreamError here)
     # is pypdf's detail and can change between versions, so match the shape only.
     assert re.search(r"broken\.pdf: \w+Error: ", out)
@@ -103,6 +104,23 @@ def test_missing_corpus_directory_exits_2(run: Any, tmp_path: Path, capsys: Any)
     status, _ = run(tmp_path / "nope")
     assert status == EXIT_CANNOT_START
     assert "Corpus directory not found" in capsys.readouterr().err
+
+
+def test_an_unreadable_corpus_directory_exits_2_like_a_missing_one(
+    run: Any, tmp_path: Path, unreadable: Any, capsys: Any
+) -> None:
+    # Before S2-8 the walk reported the root itself as "./: PermissionError" and exited 1,
+    # as if one document were bad.
+    corpus = tmp_path / "locked"
+    corpus.mkdir()
+    unreadable(corpus)
+    status, index = run(corpus)
+    out, err = capsys.readouterr()
+    assert status == EXIT_CANNOT_START
+    assert f"Error: Corpus directory not readable: {corpus} (Permission denied; set by " in err
+    assert "Traceback" not in err
+    assert "./" not in out
+    assert not index.parent.joinpath("index.lock").exists()  # refused before the lock
 
 
 def test_a_loader_that_cannot_be_built_is_a_config_error_not_a_document_failure(
@@ -255,6 +273,95 @@ def test_the_summary_accounts_for_everything_not_indexed(
 
 
 @pytest.mark.parametrize(
+    ("report", "summary"),
+    [
+        pytest.param(IngestReport(), "", id="nothing at all"),
+        pytest.param(
+            IngestReport(found=3, unchanged=3, ignored=1),
+            "Documents: 3 unchanged.\nIgnored 1 hidden or lock file(s) and folder(s).",
+            id="nothing changed",
+        ),
+        pytest.param(
+            IngestReport(
+                documents=1, chunks=1, found=1, added=1, rebuild="there is no index yet",
+                published="g",
+            ),
+            "Loaded 1 document page/section, split into 1 chunk.\n"
+            "Rebuilt the index in full: there is no index yet.\n"
+            "Documents: 1 added.",
+            id="one text file",
+        ),
+        pytest.param(
+            IngestReport(
+                documents=4, chunks=9, found=5, added=1, changed=1, unchanged=2, kept=1,
+                skipped=["a.png"], symlinks=["l.md"],
+                failed=[("b.pdf", "PdfReadError: bad"), ("locked/", "PermissionError: no")],
+                published="g",
+            ),
+            "Loaded 4 document pages/sections, split into 9 chunks.\n"
+            "Documents: 1 added, 1 changed, 2 unchanged; 1 failed and kept their previous "
+            "chunks.\n"
+            "Skipped 1 file(s) with no configured loader.\n"
+            "Skipped 1 symlink(s) (not followed).\n"
+            "Failed 2 item(s).\n"
+            "  - b.pdf: PdfReadError: bad\n"
+            "  - locked/: PermissionError: no",
+            id="an update with failures",
+        ),
+    ],
+)
+def test_the_summary_leaves_out_every_zero_count(report: IngestReport, summary: str) -> None:
+    # "Skipped 0 symlink(s)" and its kind printed on every run (S1-4), and S2-6 added a
+    # "Documents:" line of up to five zeros. "item(s)": a folder can fail too.
+    assert report.summary() == summary
+
+
+def test_no_line_of_a_real_run_prints_a_zero_count(
+    run: Any, sample_corpus: Path, capsys: Any
+) -> None:
+    # Verification 4's grep, over a full rebuild, a run that changes nothing and an update.
+    outputs = []
+    for change in [None, None, "added.txt"]:
+        if change:
+            (sample_corpus / change).write_text("One more document.\n")
+        status, _ = run(sample_corpus)
+        assert status == EXIT_OK
+        outputs.append(capsys.readouterr().out)
+    for out in outputs:
+        assert re.findall(r".* 0 .*", out) == []
+    assert "Nothing changed" in outputs[1]
+    assert "Updating the index: 1 added, 5 unchanged." in outputs[2]
+    # A text file is one section, not "1 pages/sections" (found in S2-6).
+    assert "    1 page/section\n" in outputs[0]
+    assert re.search(r"\b1 (document )?pages/sections", "".join(outputs)) is None
+
+
+def test_a_corrupt_pdf_prints_the_clean_error_without_pypdfs_own_warnings(
+    run: Any,
+    sample_corpus: Path,
+    make_config: MakeConfig,
+    caplog: pytest.LogCaptureFixture,
+    capsys: Any,
+) -> None:
+    (sample_corpus / "broken.pdf").write_bytes(b"not a pdf at all\n")
+    with caplog.at_level(logging.WARNING):
+        status, _ = run(sample_corpus)
+    assert status == EXIT_RUN_FAILED
+    assert re.search(r"broken\.pdf: \w+Error: ", capsys.readouterr().out)
+    assert [r.getMessage() for r in caplog.records if r.name.startswith("pypdf")] == []
+    assert logging.getLogger("pypdf").level == logging.NOTSET  # for rag-ingest's run only
+
+    # The control: without rag-ingest's setting, the same file does log pypdf's warnings,
+    # so the check above could have failed.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        ingest(load_config(make_config(use_fake_embedder)))
+    assert "invalid pdf header: b'not a'" in [
+        r.getMessage() for r in caplog.records if r.name.startswith("pypdf")
+    ]
+
+
+@pytest.mark.parametrize(
     ("report", "status", "line"),
     [
         (IngestReport(found=3, published="g"), EXIT_OK, None),
@@ -263,7 +370,7 @@ def test_the_summary_accounts_for_everything_not_indexed(
             IngestReport(found=2, failed=[("a.pdf", "PdfReadError: bad")], published="g"),
             EXIT_RUN_FAILED,
             (
-                "1 file(s) could not be read (listed above). The index was updated; the failed "
+                "1 item(s) could not be read (listed above). The index was updated; the failed "
                 "documents kept their previous chunks, if they had any, and are retried next run."
             ),
         ),

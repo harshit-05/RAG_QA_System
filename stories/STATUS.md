@@ -5,13 +5,40 @@
 
 ## Now
 
-**Next action: [S2-8](phase-2/S2-8-cli-polish.md), the CLI polish batch.**
+**Next action: commit the second review's fix to PR #16 ([S2-8](phase-2/S2-8-cli-polish.md),
+the CLI polish batch), and merge once CI is green.** Both reviews are done.
 
-- Low risk and opus-fast, not plan-first, on `fix/s2-8-cli-polish`.
-- Its unguarded `rag-query` start-up can reuse S2-7's `rag_qa.api.server.preflight` and
-  `OLLAMA_HINT`.
-- Mind caveat 24, as S2-7 did: leave the prompt, the llm, retriever and reranker specs,
-  the corpus and the golden set alone.
+- **Second review (2026-10-13): no blockers, one code finding, fixed test first.** S2-8's
+  new `CorpusUnreadableError` escaped tier 2's corpus scan, so `rag-eval check` and
+  `generate` printed a traceback for an unreadable corpus. On `main` that was one line.
+  The exit code was 2 both times. `corpus_scan` now catches it, and the suite is 888
+  passed.
+- **The prompt under readline holds.** In a pseudo-terminal, Ctrl-C at the prompt, after
+  typing and during the prefill, and Ctrl-D, all left the terminal sane. After the
+  cancel, the prompt and its history still worked.
+
+- **CI is green** on `b3bec07`, the PR's head (run 38341250960): `check` and
+  `eval-retrieval` (2026-10-13). There are five commits, `742c075` … `b3bec07`, one per
+  area. Each intermediate state was checked green before committing.
+- **Shown in the story:** Verification 1–6. The suite gave 887 passed, 5 xfailed,
+  coverage 98.31%, after the first review's fixes. `rag-eval check` passed, so caveat 24
+  held. Verification 3 passed by the maintainer's hand: arrow keys, history, and Ctrl-C
+  while loading.
+- **The PR's title is fixed:** it reads `fix!: polish the command-line tools`. zsh had
+  expanded `!:` in the recipe's double quotes; use single quotes for any `!`.
+- **`preflight` and `OLLAMA_HINT` moved** from `api/server.py` to `components` (maintainer),
+  so `rag-query` shares `rag-serve`'s start-up check without importing the `api` package.
+  ARCHITECTURE.md §2.2 has a dated note, and an architecture test holds the rule.
+- **New main dependency:** `requests`, declared rather than transitive. Its locked version
+  did not change.
+- **Breaking (exit code):** an unreadable corpus root makes `rag-ingest` exit **2**, where
+  it exited 1, and an API ingest job reports the same `exit_code`. Its summary also drops
+  the zero-count lines. The `rag-ingest` commit carries `!` and a `BREAKING-CHANGE:`
+  trailer.
+- **First review (2026-10-13): no blockers.** It re-ran the gates and Verification 2, 4 and
+  5, and drove the prompt in a pseudo-terminal. Two code findings are fixed, test first: an
+  `OSError` from the index check was blamed on the Hugging Face cache, and a read timeout
+  got "Is Ollama running?". The suite is now 887 passed.
 
 **S2-7 is done** (2026-10-12, PR #15, merged as `1ef599f`; on Opus 5.5 in place of
 Fable).
@@ -614,7 +641,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Done 2026-10-12 (PR #14) |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Done 2026-10-12 (PR #15) |
-| [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
+| [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | In review 2026-10-13 (PR #16; two reviews done, one fix to commit) |
 | [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Todo |
 
 **Order.** S2-1, S2-2, S2-3, S2-4, **S2-6**, S2-5, S2-5b, S2-7, S2-8, S2-9. It differs
@@ -806,6 +833,12 @@ leads with one of two things:
     - a text file reads "1 pages/sections";
     - an update prints a "Documents:" line with up to five zero counts. The
       zero-count rule above covers it.
+- **Backlog — two more plural slips in `rag-ingest`'s log** (found in S2-8): "Embedding 1
+  chunks..." and "Published …: 1 documents, 1 chunks.". S2-8 fixed the ones on its list:
+  "1 page/section", and the summary's "1 chunk".
+- **Backlog — the API's ingest jobs print pypdf's warnings** to `rag-serve`'s stderr (found
+  in S2-8). `rag-ingest` sets the `pypdf` logger to ERROR for its own run only, as it does
+  its log handler.
 - **Closed by S2-6 (2026-10-05) — the walk descends into ignored trees** (found in S1-3 and S1-4). Hidden folders are pruned in place now; the history below is kept.
   It walks all of `.git` before discarding it. Performance only. Phase 2's
   incremental ingestion rewrites discovery around the manifest, so prune there

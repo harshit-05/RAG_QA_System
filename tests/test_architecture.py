@@ -1,6 +1,7 @@
 """Architecture rules as tests, so a violation fails CI instead of waiting for review.
 
-* ADR-009: ``rag_qa.ingest`` never imports ``rag_qa.chain`` or ``rag_qa.api``, and the config layer
+* ADR-009: ``rag_qa.ingest`` never imports ``rag_qa.chain`` or ``rag_qa.api``, nor
+  ``rag_qa.cli`` the API (§2.2, S2-8), and the config layer
   (``registry``, ``schema``, ``settings``, ``config``) imports no LangChain at all.
   Nor does ``evaluation.dataset``, which CI's model-free eval gate imports (S2-2), nor
   ``manifest``, whose identity functions S2-5's fingerprint reuses there (S2-6).
@@ -46,6 +47,15 @@ def test_ingest_never_loads_the_query_chain() -> None:
     assert "rag_qa.cli" not in loaded
     # Nor the HTTP API (ARCHITECTURE.md §2.5): the API imports ingest, never the reverse.
     assert sorted(m for m in loaded if m == "rag_qa.api" or m.startswith("rag_qa.api.")) == []
+
+
+def test_rag_query_never_loads_the_api_and_does_load_readline() -> None:
+    # §2.2: the CLI never imports the API package. The start-up check both use lives in
+    # components for that reason (S2-8). readline is imported for its side effect alone:
+    # input() gains line editing and history, so nothing else would notice it missing.
+    loaded = modules_loaded_by("rag_qa.cli")
+    assert sorted(m for m in loaded if m == "rag_qa.api" or m.startswith("rag_qa.api.")) == []
+    assert "readline" in loaded
 
 
 @pytest.mark.parametrize(

@@ -15,6 +15,7 @@ from conftest import FakeOllama, MakeConfig, use_fakes
 from pydantic import ValidationError
 
 from rag_qa.api import server
+from rag_qa.components import OLLAMA_HINT
 from rag_qa.settings import ServerSettings, describe_settings_error, is_loopback
 
 real_configure_logging = server.configure_logging
@@ -137,7 +138,7 @@ def test_ollama_down_at_start_up_is_a_reason_and_a_hint_not_a_traceback(
     err = capsys.readouterr().err
     assert "cannot build the language model components.llms.probe" in err
     assert "Failed to connect to Ollama" in err
-    assert server.OLLAMA_HINT in err
+    assert OLLAMA_HINT in err
     assert "Traceback" not in err
     assert ran == []
 
@@ -265,5 +266,5 @@ def test_ollama_down_is_caught_even_without_validate_model_on_init(
     assert server.main(["--config", str(path)]) == server.EXIT_CANNOT_START
     err = capsys.readouterr().err
     assert "the language model components.llms.probe did not answer within 2 s" in err
-    assert server.OLLAMA_HINT in err
+    assert OLLAMA_HINT in err
     assert ran == []

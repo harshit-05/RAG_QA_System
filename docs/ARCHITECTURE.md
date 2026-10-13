@@ -1516,6 +1516,10 @@ Entry points: `rag-ingest` and `rag-query` as before, plus
 Dependency direction extends ADR-009:
 
 - `cli → {answering, chain, config}`.
+  - **Since S2-8 (2026-10-13), `cli → components` too** (maintainer). `rag-query` runs the
+    start-up check `rag-serve` runs: `preflight` and `OLLAMA_HINT` moved from
+    `api/server.py` into `components`, so that the CLI never imports the `api` package.
+    `tests/test_architecture.py` checks that rule.
 - `api → {answering, chain, ingest, manifest, components, config, settings}`.
 - `evaluation → {answering, chain, components, config, manifest}`.
 - `answering → chain`, for `QueryPipeline`, `citation` and `format_docs`.
