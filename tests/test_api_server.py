@@ -1,11 +1,16 @@
 """``rag-serve`` (S2-7, DEC-18): what it refuses before it starts, and how it starts.
 
 uvicorn itself is replaced by a recorder here (``test_api_uvicorn.py`` runs the real one),
-so these tests check the command's decisions, not the server.
+so these tests check the command's decisions, not the server. The one exception is Ctrl-C,
+which only a process's main thread receives: that test runs the real server in a child.
 """
 
 import logging
+import signal
 import socket
+import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -71,10 +76,14 @@ def ollama_config(make_config: MakeConfig, base_url: str, model: str = "mistral"
     return make_config(edit)
 
 
-def dead_url() -> str:
+def free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
-        return f"http://127.0.0.1:{sock.getsockname()[1]}"
+        return int(sock.getsockname()[1])
+
+
+def dead_url() -> str:
+    return f"http://127.0.0.1:{free_port()}"
 
 
 def test_a_non_loopback_host_without_a_token_is_refused_before_the_config_loads(
@@ -199,6 +208,65 @@ def test_a_server_that_did_not_start_exits_2(
     monkeypatch.setattr(uvicorn.Server, "run", run)
     path = ollama_config(make_config, fake_ollama.url)
     assert server.main(["--config", str(path)]) == server.EXIT_CANNOT_START
+
+
+def test_a_server_stopped_with_ctrl_c_exits_0(
+    make_config: MakeConfig, fake_ollama: FakeOllama, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # After its graceful shutdown, uvicorn re-raises the SIGINT it captured, and asyncio's
+    # runner turns that into KeyboardInterrupt out of run() (S2-9's end-to-end run).
+    def run(self: uvicorn.Server, sockets: Any = None) -> None:
+        self.started = True
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(uvicorn.Server, "run", run)
+    path = ollama_config(make_config, fake_ollama.url)
+    assert server.main(["--config", str(path)]) == server.EXIT_OK
+
+
+#: ``rag-serve`` with the real uvicorn and no Ollama or models: a stub app, no preflight.
+CTRL_C_CHILD = """
+import sys
+from fastapi import FastAPI
+from rag_qa.api import server
+server.preflight = lambda config: None
+server.create_app = lambda config, settings: FastAPI()
+sys.exit(server.main(sys.argv[1:]))
+"""
+
+
+def test_ctrl_c_stops_the_real_server_with_exit_0_and_no_traceback(
+    make_config: MakeConfig,
+) -> None:
+    """Found in S2-9's end-to-end run: the shutdown completed, then a KeyboardInterrupt
+    traceback and status 130, where the docs promise 0. Signals reach only a main thread,
+    so this runs ``main`` in a child process and sends it a real SIGINT."""
+    path = make_config(use_fakes)
+    port = free_port()
+    child = subprocess.Popen(
+        [sys.executable, "-c", CTRL_C_CHILD, "--config", str(path), "--port", str(port)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while True:
+            assert child.poll() is None, child.communicate()[0]
+            assert time.monotonic() < deadline, "rag-serve did not start listening"
+            with socket.socket() as sock:
+                if sock.connect_ex(("127.0.0.1", port)) == 0:
+                    break
+            time.sleep(0.05)
+        child.send_signal(signal.SIGINT)
+        output, _ = child.communicate(timeout=30)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate()
+    assert "Application shutdown complete" in output
+    assert "Traceback" not in output, output
+    assert child.returncode == server.EXIT_OK
 
 
 @pytest.mark.parametrize("port", ["0", "65536", "http"])
