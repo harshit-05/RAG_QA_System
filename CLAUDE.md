@@ -65,7 +65,7 @@ prototype to production via a spec-driven story loop.
 - Never commit binaries, indexes (`vectorstore/`), `__pycache__`, or media.
 - Before ending a session: update the story file status + STATUS.md.
 
-## Environment facts (first verified 2026-08-01, re-verified 2026-10-02)
+## Environment facts (first verified 2026-08-01, re-verified 2026-10-13)
 
 - Arch Linux; system Python 3.14.7 — do NOT use it; uv has 3.12/3.11 managed
   (3.12.13 is the project's).
@@ -73,10 +73,25 @@ prototype to production via a spec-driven story loop.
 - **No NVIDIA GPU** — CPU-only torch and embeddings; never select
   `device: cuda` components. 15 GB RAM (7B models fit, tightly).
 
-- Ollama daemon running; models pulled: mistral, phi3, gemma2:9b, codellama.
-  `qwen2:7b` (referenced in config) is NOT pulled — see DEC-2 in STATUS.md.
-  Ollama keeps the last model resident for ~5 min, so `free -h` under-reports
-  what a run will have: check `ollama ps` and `ollama stop <model>` first.
+- Ollama 0.22.1 daemon running; models pulled: mistral, phi3, gemma2:9b, codellama,
+  plus `rag-judge`, tier 2's judge, built from `eval/judge.Modelfile` on gemma2:9b
+  (8k context). `qwen2:7b` (referenced in config) is NOT pulled — see DEC-2 in
+  STATUS.md. Every Ollama llm in config sets `num_thread: 10`. Ollama keeps the last
+  model resident for ~5 min, so `free -h` under-reports what a run will have: check
+  `ollama ps` and `ollama stop <model>` first. The 5 min count from the end of the
+  last request, so after a dropped prefill the model can unload while you wait, and
+  the next question pays a reload and a full prefill (S2-9).
+
+- Commands: `rag-ingest`, `rag-query`, `rag-serve` (the HTTP API) and `rag-eval`
+  (`retrieval` for tier 1; `generate`, `score` and `check` for tier 2). Servers and
+  model runs go in the maintainer's foreground terminal, logged with `tee -i`: a
+  plain `tee` dies with Ctrl-C and loses the shutdown lines.
+
+- **Tier 2 is committed and fingerprinted.** An edit to the prompt, an llm, retriever
+  or reranker spec, the corpus, the embedder, splitter or loaders, or a golden
+  question fails CI's `rag-eval check` until tier 2 is re-run: about 70 min of
+  `generate` here, then about 35 min of `score` on a Colab T4. Budget it before such
+  an edit (STATUS.md caveat 24; README, "Evaluation").
 
 - The stack runs on LangChain 1.x (DEC-1, migrated in S0-5); app code never
   imports `langchain_classic`, which arrives only transitively. Since S2-4 no
@@ -92,6 +107,8 @@ prototype to production via a spec-driven story loop.
 
 - Phase exit ⇒ git tag: v0.1 (Phase 0), v0.2, v0.3, v1.0 (Phase 3 / SRS
   complete). Package version tracks the tag; `.dev0` suffix between tags.
+- Current: 0.3.0, tagged `v0.3` (Phase 2, 2026-10-13). Phase 3's first story bumps
+  it to `1.0.0.dev0`, in `pyproject.toml` and `src/rag_qa/__init__.py` (and `uv lock`).
 
 ## Model routing (which Claude model for which work)
 
@@ -106,9 +123,9 @@ The story file's **Model** field is authoritative per story. The convention:
 | Library/design choices (e.g. Qdrant vs pgvector, Phase 3) | fable |
 
 **Fable is unavailable from 2026-10-04 (maintainer).** Until access returns, work routed
-to fable runs on Opus 5.5 at max effort: S2-4, S2-5, S2-6, S2-7 and the Phase 3
-architecture pass. There is no stronger model to escalate to, so those stories keep the
-two-review habit, and each records the substitution under Deviation.
+to fable runs on Opus 5.5 at max effort: S2-4 to S2-7 did, and the Phase 3 architecture
+pass is next. There is no stronger model to escalate to, so that work keeps the
+two-review habit, and each story records the substitution under Deviation.
 
 ## GPU policy
 

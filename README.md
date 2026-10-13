@@ -8,10 +8,11 @@ answers from them and cites its sources.
 Everything runs on your machine. There are no API keys, your documents never leave the
 host, and no GPU is required.
 
-**Status: v0.2 (Phase 1).** Ingestion and the interactive CLI work end to end. The
-config is validated before anything runs, failures are reported with clear exit codes,
-and a test suite runs in CI. An HTTP API, answer-quality evaluation and incremental
-ingestion are planned; see the [roadmap](#roadmap).
+**Status: v0.3 (Phase 2).** Ingestion, the interactive CLI and an HTTP API with streamed
+answers work end to end. Ingestion embeds only what changed, retrieved chunks are
+reranked by a cross-encoder, and two evaluation gates in CI hold retrieval and answer
+quality to measured floors. A production vector store, hybrid search, tracing and
+containers come next; see the [roadmap](#roadmap).
 
 ## How it works
 
@@ -19,6 +20,9 @@ ingestion are planned; see the [roadmap](#roadmap).
 corpus/   --rag-ingest-->  chunks --MiniLM embeddings-->  FAISS index (vectorstore/)
 question  --rag-query--->  20 nearest chunks --reranker--> best 5 --> local LLM via Ollama --> streamed answer + sources
 ```
+
+`rag-serve` answers the same way over HTTP, and `rag-eval` measures retrieval and answers
+against a hand-checked set of questions.
 
 | Piece | Default | Alternatives in `config.yaml` |
 | --- | --- | --- |
@@ -51,11 +55,12 @@ uv run rag-ingest            # builds the index in vectorstore/
 uv run rag-query             # ask questions; Ctrl-C stops an answer, 'exit' quits
 ```
 
-Both commands take `--config PATH` to use another config file, and `--help`, which
-also lists their exit codes. `rag-ingest` exits 0 when the index matches the corpus, 1
-when something could not be read (it names what failed, and a document indexed before
-keeps its previous version), and 2 when it cannot start: for example, an invalid config,
-or another `rag-ingest` already running.
+Every command (`rag-ingest`, `rag-query`, `rag-serve` and `rag-eval`'s subcommands) takes
+`--config PATH` to use another config file, and `--help`, which also lists its exit codes.
+`rag-ingest` exits 0 when the index matches the corpus, 1 when something could not be
+read (it names what failed, and a document indexed before keeps its previous version),
+and 2 when it cannot start: for example, an invalid config, a corpus folder that is
+missing or cannot be read, or another `rag-ingest` already running.
 
 A session looks like this. The answer streams in as it is generated:
 
@@ -72,18 +77,46 @@ Sources:
   [2] Batch22_SmartSurveillanceSystemsUsingYOLOv8...pdf, p. 3
 ```
 
-Expect slow answers on CPU. In testing, the first question of a `mistral` session took
-about five minutes end to end, including loading the 4.4 GB model into memory; the
-answer then streams in as it is generated. `phi3` is much faster, answering in well
-under a minute, at some cost in answer quality.
+Expect slow answers on CPU. In the v0.3 end-to-end run on a laptop CPU, `mistral`'s first
+words came after about 155 seconds, most of it the model reading the prompt, and the
+answer was complete at about 175 seconds. The answer streams in as it is generated.
+`phi3` is much faster, answering in well under a minute, at some cost in answer quality.
 
 ### Upgrading from v0.2
 
-An index now carries a manifest recording what is in it and which embedder made it.
-v0.2 indexes have none, so `rag-query` refuses them, exiting 2 with "re-run rag-ingest".
-Run `uv run rag-ingest` once: it rebuilds the index (about two minutes for the sample
-corpus) and keeps the old one beside it as `vectorstore/db_faiss.v02-<timestamp>`.
-Delete that folder once the new index works.
+Five changes since v0.2 need something from you. The first two apply to every v0.2 user.
+
+1. **Re-ingest once.** An index now carries a manifest recording what is in it and which
+   embedder made it. v0.2 indexes have none, so `rag-query` and `rag-eval` refuse them,
+   exiting 2 with "re-run rag-ingest". Run `uv run rag-ingest` once: it rebuilds the index
+   (about two minutes for the sample corpus) and keeps the old one beside it as
+   `vectorstore/db_faiss.v02-<timestamp>`. Delete that folder once the new index works.
+   Each chunk now records its corpus-relative `source`, with `source_sha256` and
+   `ingested_at`.
+2. **Replace the reranker entry in your `config.yaml`.** A `_target_` under
+   `langchain_classic.` or `langchain_community.` is now refused, so a config that still
+   has v0.2's `components.rerankers.cross_encoder` entry no longer loads. Delete that
+   entry. The reranker is now our own cross-encoder: to switch it on, copy the `rerankers`
+   block and the two reranker lines of `pipeline.query` from this release's `config.yaml`:
+
+   ```yaml
+   reranker: components.rerankers.ms_marco_minilm_cpu
+   reranker_candidates: 20      # at least the entry's top_n
+   ```
+
+3. **The prompt's placeholders are checked**, if you edited the prompt. `{context}` and
+   `{question}` must both be in the `human` turn, `{context}` must not be in the `system`
+   turn, and no other `{placeholder}` may appear anywhere; write a literal brace doubled,
+   `{{` or `}}`. A prompt that breaks a rule stops the config loading, naming the problem.
+   The shipped prompt passes.
+4. **`trust_remote_code` is refused.** A config that sets it to a true value anywhere
+   under `components` no longer loads. Remove the key or set it to false: a model that
+   needs to run its own code is not supported.
+5. **`rag-ingest` exits 2 for a corpus folder it cannot read**, where it exited 1. It also
+   exits 2 while another ingestion runs, or when something that is not an index sits at
+   the index path. Its failure lines
+   now say "N item(s)" where they said "N file(s)", and summary lines with a zero count are
+   left out. Update any script that matches the old codes or wording.
 
 ### GPU embeddings (Colab / Kaggle)
 
@@ -173,6 +206,15 @@ data: {"ttft_ms": 157033.62593899964, "total_ms": 176273.471257}
 Each `token` is a chunk of the answer. A stream that ends with neither `done` nor `error`
 was cut off.
 
+An ingest job, then its result:
+
+```bash
+curl -s -X POST localhost:8000/v1/ingest -H 'content-type: application/json' -d '{"rebuild": false}'
+# {"job_id":"a5a336a2…","status":"queued"}
+curl -s localhost:8000/v1/ingest/a5a336a2…    # status, exit_code, report and log, when done
+curl -s localhost:8000/v1/documents           # what the index now holds
+```
+
 How it behaves:
 
 - **One answer at a time.** A question that arrives while another is being answered gets
@@ -207,9 +249,21 @@ How it behaves:
   must be `application/json`. So a web page you visit cannot reach the server, even on
   localhost. Scripts, `curl` and the CLI send no `Origin`.
 
-`rag-serve` exits 2, with the reason, when it cannot start: invalid settings, a
-non-loopback host without a token, a configuration error, Ollama not answering, or the
-port in use.
+Serving another machine on your network, with a token:
+
+```bash
+export RAG_API_TOKEN=$(openssl rand -hex 32)
+uv run rag-serve --host 0.0.0.0
+# from the other machine, with the same token:
+curl -N -X POST http://<server>:8000/v1/query -H "Authorization: Bearer $RAG_API_TOKEN" \
+     -H 'content-type: application/json' -d '{"question": "What is GLIDER?"}'
+```
+
+Ctrl-C stops `rag-serve`: answers in flight get up to 5 seconds, then it exits 0. A
+SIGTERM stops it the same way, and the process then ends by that signal (status 143), as
+service managers expect. It exits 2, with the reason, when it cannot start: invalid
+settings, a non-loopback host without a token, a configuration error, Ollama not
+answering, or the port in use.
 
 ## Configuration
 
@@ -262,20 +316,86 @@ run where little changed takes seconds. Embedding the whole sample corpus (three
 - One `rag-ingest` runs at a time. A second one exits 2 at once, saying another is
   running; the lock is `vectorstore/db_faiss.lock`.
 
+## Evaluation
+
+`rag-eval` measures the pipeline against a golden set, `eval/eval_dataset.jsonl`: 25
+questions about the sample corpus, each checked by hand against its PDF. 20 can be
+answered from the corpus, and each names the pages that hold its answer. For the other 5,
+the right answer is a refusal. The quality bar has two tiers, and CI enforces both
+against the floors in `eval/thresholds.yaml`.
+
+**Tier 1, retrieval**, recomputed by CI on every pull request and every push to `main`:
+
+```bash
+uv run rag-eval retrieval        # hit rate, MRR and recall over the 20 answerable questions
+```
+
+It needs the index and the embedder but not Ollama, and takes under a minute here. The
+v0.3 baseline is hit rate 0.950, MRR 0.796 and recall 0.858, with the reranker on (0.800,
+0.588 and 0.717 without it). Exit 1 means a floor was missed, and 2 that it could not run.
+
+**Tier 2, the answers**, scored offline, committed, then checked by CI:
+
+| Command | Does | Cost |
+| --- | --- | --- |
+| `rag-eval generate` | answers all 25 questions the way users get answers, and records the answers, the chunks each prompt got and the timings in `eval/runs/answers-latest.json` | about 70 min on this laptop CPU; needs the index and `mistral` |
+| `rag-eval score` | scores those answers with RAGAs (faithfulness, answer relevancy, context precision, context recall) using a local judge, plus the decline rate on the 5 unanswerable questions; writes `eval/runs/generation-latest.json` | 13–18 h on a CPU, about 35 min on a Colab T4: score on a GPU notebook (below) |
+| `rag-eval check` | compares the committed run with this checkout and the floors | instant; no models, no Ollama. The last step of CI's `check` job |
+
+The judge is `rag-judge`, built from `eval/judge.Modelfile` on `gemma2:9b`
+(`ollama create rag-judge -f eval/judge.Modelfile`). `score` needs the `eval` extra,
+`uv sync --extra eval`, which CI never installs. Do not run the generator and the judge
+together on a 16 GB machine: `ollama stop mistral` before scoring locally.
+
+**A committed run goes stale when its inputs change.** It records a fingerprint of what
+produced it, and `check` fails on any part that moved, naming the re-run that fixes it:
+
+- **generate and score:** the prompt, an llm, retriever or reranker setting,
+  `reranker_candidates`, a corpus file, the embedder, the splitter, the loaders or a
+  golden question;
+- **score only:** a reference answer, the decline marker or the judge's Modelfile;
+- **nothing:** comments, a question's `notes` or `expected_sources`, and runtime-only llm
+  keys such as `keep_alive`.
+
+Code is not fingerprinted: after a change that alters answers, re-run tier 2 by hand.
+The v0.3 baseline is faithfulness 0.908, answer relevancy 0.719, context precision
+0.920, context recall 1.000 and decline rate 0.6, and each floor is 0.05 below. A hand
+check found the judge lenient: it scored two wrong answers as faithful. So read tier 2
+as a regression alarm rather than a measure of absolute quality.
+
+**Scoring on Colab or Kaggle.** The v0.3 baseline was scored this way, on a T4:
+
+1. On a GPU runtime, install Ollama at the pinned version, so that the judge's digest
+   matches this machine's: `apt-get install zstd`, then
+   `curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION=0.22.1 sh`. Start
+   `ollama serve` in the background (a notebook has no systemd).
+2. `ollama pull gemma2:9b`. Clone the repository at the commit holding your
+   `answers-latest.json`, install uv, and run `uv sync --extra eval`.
+3. `ollama create rag-judge -f eval/judge.Modelfile`.
+4. `uv run --no-sync rag-eval score --out <a mounted Drive folder>/generation-latest.json`.
+   A run that disconnects resumes from its checkpoint, `<out>.partial.jsonl`, when you run
+   the same command again.
+5. Commit the scores as `eval/runs/generation-latest.json`. On your machine,
+   `uv run rag-eval check --with-ollama` also compares the recorded model digests with your
+   local ones.
+
 ## Known limitations
 
 - **Answers can misstate facts.** In testing, retrieval found the right passages, but the
   7B model sometimes attributed numbers to the wrong item, or filled a gap in the
-  retrieved text with an invented detail. Answer faithfulness is not measured yet; an
-  automated evaluation gate is planned for Phase 2. Check important answers against the
-  cited pages.
+  retrieved text with an invented detail. Tier 2 measures faithfulness (0.908 on the
+  golden set), but its local judge is lenient: a hand check found it scoring two such
+  answers as faithful. Check important answers against the cited pages.
 - **"Sources" shows what was retrieved, not what was used.** Retrieval always returns five
-  chunks, so even a refusal lists sources. A relevance cutoff is planned.
-- **Stopping an answer does not free Ollama at once.** Ctrl-C stops generation and returns
-  you to the prompt. If it lands while the model is still reading the prompt, Ollama
-  finishes that step first, and your next question waits behind it. How long that takes
-  depends on your CPU, the threads Ollama uses and free memory: up to about 4 minutes in
-  one test on a laptop CPU where Ollama ran on 2 threads with little free memory.
+  chunks, so even a refusal lists sources. The reranker has a relevance cutoff,
+  `min_score`, which stays off until it is tuned against the evaluation.
+- **Stopping an answer does not free Ollama at once.** Ctrl-C (or closing the HTTP
+  connection) stops generation. If it lands while the model is still reading the prompt,
+  Ollama finishes that step first, and your next question waits behind it: about 2.5
+  minutes on a laptop CPU in the v0.3 run, and up to 4 minutes in an earlier test where
+  Ollama ran on 2 threads with little free memory. Meanwhile Ollama holds most of the CPU,
+  so the next question's retrieval is slow too: 7 seconds rather than under 1 in the v0.3
+  run.
 - **Latency.** On CPU, answers take minutes, not seconds. The long-term target of under
   2 seconds to the first word needs GPU serving.
 - **The index is a pickle.** FAISS saves the index with Python's pickle format, which can
@@ -298,6 +418,7 @@ src/rag_qa/
   registry.py      builds objects from `_target_` entries, within an import allowlist
   components.py    builds the pipeline's loaders, splitter, embedder and LLM
   loaders.py       PDF, DOCX and text loaders
+  rerankers.py     the cross-encoder that rescores retrieved chunks
   manifest.py      what each index version holds: file hashes, the embedder, chunk IDs
   vectorstore.py   the only FAISS code: index versions and their atomic switch; the
                    swap point for Phase 3
@@ -308,6 +429,10 @@ src/rag_qa/
   api/             the rag-serve command: the HTTP API, its ingest jobs and its checks
   evaluation/      the rag-eval command: retrieval scores (tier 1), and generation
                    scored by RAGAs offline, then checked against the floors (tier 2)
+eval/              the golden set, the floors, the judge's Modelfile and the committed
+                   tier-2 run
+scripts/           fetch_dataset.py, a standalone helper that downloads a Hugging Face
+                   dataset to downloads/, never into a corpus
 tests/             the test suite, including one regression case per Phase 0 bug
 docs/              specification, architecture, workflow and decision records
 stories/           the delivery board and a record of each change
@@ -316,13 +441,14 @@ stories/           the delivery board and a record of each change
 ## Development
 
 The test suite is hermetic: no Ollama, no model download, no network. CI
-(`.github/workflows/ci.yml`) runs these gates on every pull request and every push to `main`, and each
-one blocks:
+(`.github/workflows/ci.yml`) runs on every pull request, every push to `main` and every
+release tag. Its `check` job runs these gates, and each one blocks:
 
 ```bash
 uv run ruff check                       # lint
 uv run mypy                             # types
 uv run pytest --cov=rag_qa              # tests, with an 80% coverage floor
+uv run rag-eval check                   # tier 2: the committed run is fresh and meets its floors
 (                                       # known vulnerabilities, as CI's Audit step
   set -o pipefail
   uv pip freeze --python .venv --exclude-editable \
@@ -344,13 +470,18 @@ guard stops a pass that audited nothing:
 The parentheses keep `pipefail` out of your shell. CI also fails if the installed torch
 is not the CPU build.
 
+CI's second job, `eval-retrieval`, ingests the corpus and runs tier 1 against its floors.
+It is CI's only job with network access, to fetch the two models from Hugging Face, and
+it caches them: on a cache hit it runs offline. When it is red and `check` is green,
+retrieval quality moved, not the code.
+
 ## Roadmap
 
 | Release | Phase | Adds |
 | --- | --- | --- |
 | v0.1 | 0 | Runs end to end |
-| v0.2 | 1 | Validated config, allowlisted `_target_` imports, own loaders, exit codes, tests and CI (this release) |
-| v0.3 | 2 | HTTP API with streaming, reranking, incremental ingestion, evaluation gate |
+| v0.2 | 1 | Validated config, allowlisted `_target_` imports, own loaders, exit codes, tests and CI |
+| v0.3 | 2 | HTTP API with streaming, reranking, incremental ingestion, two evaluation gates (this release) |
 | v1.0 | 3 | Production vector store, hybrid search, tracing, containers |
 
 The full plan is in [docs/SRS.md](docs/SRS.md), section 12. Image and other multi-modal

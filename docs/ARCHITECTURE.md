@@ -277,6 +277,13 @@ prefix, is caught). `langchain_classic.` is allowed as a **config**
 prefix so the disabled reranker entry validates; ADR-007 constrains **source** imports
 under `src/rag_qa/` and is untouched. Closes ISS-04.
 
+_S2-4 (2026-10-04): `langchain_community.` and `langchain_classic.` left the list, and so
+did the disabled reranker entry. Our own reranker replaced it (DEC-16), so no `_target_`
+names either package, and a v0.2 config that still has the old entry is refused with a
+message saying how to migrate. The allowed prefixes are now `langchain_core.`,
+`langchain_huggingface.`, `langchain_ollama.`, `langchain_text_splitters.` and `rag_qa.`
+(§2.8)._
+
 **DEC-8 — Our own loaders; the extension mapping moves into the pipeline section.**
 `rag_qa/loaders.py` implements `PdfLoader`, `DocxLoader` and `TextLoader` on `pypdf` and
 `docx2txt`, both already locked and both already what the community loaders wrap.
@@ -570,6 +577,10 @@ code differs from the text above, each with the story that records why.
 
 _Confirmed 2026-10-02. Scope: SRS §12 Phase 2. Exit: the system is callable over HTTP
 and has an enforced quality bar; tag `v0.3`, version 0.3.0._
+
+_Delivered 2026-10-13 (S2-1 … S2-9, released as `v0.3`). §2.1–§2.7 are kept as
+confirmed, with the dated notes the stories added; §2.8 records where the delivery
+differs from them._
 
 _This pass ran on Opus 5.5, although ADR-018 routes architecture passes to Fable. The
 maintainer chose to accept it rather than re-run it (2026-10-02)._
@@ -1490,11 +1501,20 @@ src/rag_qa/
 │                       ragas_scoring.py   the only ragas importer; coverage-omitted
 │                       fingerprint.py     the six fingerprint parts; langchain_core only
 │                       gate.py            freshness + floors: rag-eval check (no models)
+│                       checkpoint.py      resumable runs: <out>.partial.jsonl (S2-5b)
 │                       cli.py             rag-eval {retrieval, generate, score, check}
-├── api/           NEW  app.py · routes.py · models.py · server.py (rag-serve)
-├── chain.py            + QueryPipeline, build_retrieve, build_query_pipeline;
-│                         build_rag_chain kept for invoke (§0.4 contract)
-├── components.py       + build_reranker, aclose_llm
+├── api/           NEW  app.py      create_app, the lifespan
+│                       routes.py   the endpoints, and the refusals as dependencies
+│                       models.py   request and response bodies
+│                       state.py    Serving: the served generation, the slots, the
+│                                   retrieval lock (S2-7)
+│                       jobs.py     single-flight ingest jobs, in a daemon thread (S2-7)
+│                       server.py   rag-serve: settings, preflight, uvicorn
+├── chain.py            + QueryPipeline, build_retrieve, build_query_pipeline, build_prompt,
+│                         open_retrieval, live_generation, check_index,
+│                         IncompatibleIndexError; build_rag_chain kept for invoke (§0.4)
+├── components.py       + build_reranker, aclose_llm, llm_reachable, preflight, OLLAMA_HINT
+│                         (the start-up check both rag-serve and rag-query run, S2-8)
 ├── vectorstore.py      + incremental apply, generations + symlink flip, manifest-aware open
 ├── ingest.py           incremental, --rebuild, logging, lock, pruned walk
 ├── cli.py              one asyncio.Runner per session, over stream_answer
@@ -1515,11 +1535,10 @@ Entry points: `rag-ingest` and `rag-query` as before, plus
 
 Dependency direction extends ADR-009:
 
-- `cli → {answering, chain, config}`.
-  - **Since S2-8 (2026-10-13), `cli → components` too** (maintainer). `rag-query` runs the
-    start-up check `rag-serve` runs: `preflight` and `OLLAMA_HINT` moved from
-    `api/server.py` into `components`, so that the CLI never imports the `api` package.
-    `tests/test_architecture.py` checks that rule.
+- `cli → {answering, chain, components, config}`, and never `api`. `components` came in
+  with S2-8 (maintainer): `rag-query` runs the start-up check `rag-serve` runs, so
+  `preflight` and `OLLAMA_HINT` moved from `api/server.py` into `components`.
+  `tests/test_architecture.py` checks that the CLI loads no `api` module.
 - `api → {answering, chain, ingest, manifest, components, config, settings}`.
 - `evaluation → {answering, chain, components, config, manifest}`.
 - `answering → chain`, for `QueryPipeline`, `citation` and `format_docs`.
@@ -1836,4 +1855,86 @@ CI:
 | NFR-2 (<2 s to first token) | measured: `ttft_ms` on every answer and in every tier-2 run | Phase 3 decision (ADR-016) |
 | OTel / structlog | stdlib logging in ingest | Phase 3 |
 
-§2.8, "As delivered", is written by S2-9.
+### 2.8 As delivered (2026-10-13)
+
+No decision in §2.1 was reversed. Two mechanisms were reshaped by what the code met,
+DEC-14's stream and DEC-18's disconnect, and the rest are refinements. The dated notes in
+§2.1 carry the detail. This list is the index to them, with the story that records each
+change.
+
+- **DEC-14, the answer stream.**
+  - **`stream_answer` streams `llm.astream(messages)` itself**, after rendering the
+    prompt, not `prompt | llm | StrOutputParser()` (the second trap, fixed 2026-10-04,
+    PR #10). A sequence runs each chunk in its own task, so a cancel could leave the
+    model's stream open until the loop ran again. Strict `xfail` controls pin both traps.
+  - **The second Ctrl-C closes the model's clients before the loop closes** (S2-1).
+    ChatOllama's async client closes only on its own loop, so `cli.close_session` cancels
+    the leftover answer, runs `pipeline.aclose()`, then `runner.close()`.
+  - **`rag-query` starts in a fixed order** (S2-1, S2-8): the index, checked from its
+    files (`NoIndexError` comes from `build_query_pipeline`, one source); then Ollama
+    (`preflight`); then the models. Each failure is one message and exit 2.
+- **DEC-15, the quality bar.**
+  - **The golden set gained `also_pages`** (S2-2's second review), pages that repeat the
+    whole answer. They count towards hit rate and MRR but not recall. Validation is
+    stricter than §2.4 first listed: normalised sources, strict types, and a committed
+    test that every quote in the notes is on its page.
+  - **Both tiers' floors live in `evaluation/gate.py`** (S2-3), so the model-free job can
+    read them. They are rounded down to 3 decimals.
+  - **CI runs on pull requests, pushes to `main` and `v*` tags only** (S2-3's reviews): a
+    story branch is tested by its PR. `eval-retrieval` has a 20-minute limit, saves the
+    HF cache right after ingest, and runs offline on an exact cache hit. Any error while
+    retrieving exits 2, so a crash never reads as a missed floor.
+  - **S2-5's notes:** ragas 0.4.3 needs a narrow import shim; the judge runs in
+    instructor's JSON mode and sends its Modelfile's settings with every call; it is
+    checked against the whole Modelfile, both ways; instructor is pinned and hashed into
+    `judge`, as ragas is; failures are classified by cause; the scores record the sha256
+    of the answers they judged; `max_unscored` caps unscored items; `generate` refuses an
+    index that lags the corpus; and `modelfile` is relative to the eval folder.
+  - **S2-5b's notes:** runs resume from a checkpoint (`evaluation/checkpoint.py`);
+    `num_thread: 10` is set on every Ollama llm; two scorings agreed exactly, so each
+    floor is the baseline minus 0.05; Ollama digests carry across machines for one Ollama
+    version; and the judge is lenient, which is recorded, not fixed.
+- **DEC-16, the reranker** (S2-4). Tier 1 switched it on: hit rate 0.800 to 0.950.
+  - Load never imports a class, so the schema reads `top_n` from the entry:
+    `reranker_candidates` must be at least that, and at least 1.
+  - The reranker refuses unknown keys, a `top_n` below 1, and a model with more than one
+    score per pair, at construction.
+  - A v0.2 config's refusal names the migration.
+  - CI warms the cross-encoder up before saving the cache, whose key names both models.
+- **DEC-17, incremental ingestion** (S2-6's notes):
+  - `CHUNKING_VERSION` versions the code that makes chunks;
+  - `multi_process` stays in the embedder identity (maintainer), and a default spelled
+    out is the same embedder;
+  - generation stamps carry microseconds;
+  - only a folder holding exactly `index.faiss` and `index.pkl` is migrated as v0.2, and
+    anything else at the index path exits 2;
+  - every update opens the live generation and probes the embedder's dimension;
+  - a full rebuild leaves failed documents out (maintainer).
+- **DEC-18, the API** (S2-7's notes, unless named):
+  - **The disconnect goes through FastAPI's own SSE producer task**, not straight from
+    Starlette into our generator. The slot's teardown closes a stream that a drop between
+    events left paused, the window S2-7's spike found.
+  - **The API opens the index itself** (`chain.open_retrieval`, `live_generation`), and
+    `require_index` is gone.
+  - **One retrieval at a time, by a lock, not by the slot**, so a disconnect never becomes
+    a 503 and an orphaned rerank never overlaps the next.
+  - **A failed reopen is "not ready" and is retried**; requests queued behind it share
+    the attempt.
+  - **Two 422s:** a body that is not JSON is refused before the auth checks.
+  - **`rag-serve` checks Ollama before uvicorn starts.** S2-8 moved that check into
+    `components`, for `rag-query`.
+  - **Ingest jobs run in a daemon thread**, and the `api` package has six modules, not
+    §2.2's original four.
+  - **Ctrl-C ends `rag-serve` with exit 0, as documented** (S2-9). uvicorn re-raises the
+    SIGINT it captured after its graceful shutdown, asyncio's runner turns it into
+    `KeyboardInterrupt`, and it escaped `main()` as a traceback with status 130. S2-7's
+    log was tee'd without `-i`, so the end-to-end run was the first to see it. `main()`
+    catches it, and a test sends a real SIGINT to a child process.
+- **Dependencies:** fastapi 0.143.0, starlette 1.7.0 and uvicorn 0.54.0 (plain, over h11),
+  with opentelemetry-api through FastAPI (S2-7); `requests`, declared rather than
+  transitive (S2-8).
+- **The exit criterion, as run** (S2-9). A fresh clone synced CPU-only torch, ingested
+  the corpus (1,708 chunks), re-ran ingest with nothing to embed, and answered over HTTP
+  and through `rag-query`. A disconnect during the prefill, a disconnect mid-stream and a
+  Ctrl-C each closed our connection to Ollama within 0.03 s. Tier 1 and tier 2 are green
+  in CI. The story file has the table.
