@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-13): PR #16, five commits `742c075` … `b3bec07`. CI is green on `b3bec07` (run 38341250960). Verification 1–6 are run and shown below, 3 by the maintainer's hand. First review done: no blockers, two code findings fixed, one commit-marking finding recorded. The second review is next. |
+| **Status** | In review (2026-10-13): PR #16, commits `742c075` … `4c73f70`. CI is green on `b3bec07` (run 38341250960). Verification 1–6 are run and shown below, 3 by the maintainer's hand. Both reviews done, no blockers. The first fixed two code findings and recorded one commit-marking finding; the second fixed one code finding. Next: commit the second review's fix, CI, then merge. |
 | **Closes** | backlog: "CLI polish" (found in S1-4, plus two items from the v0.2 manual test) |
 | **Depends on** | S2-1 (rewrites `cli.py`), S2-6 (rewrites `ingest.py`) |
 | **Model** | opus-fast |
@@ -216,6 +216,50 @@ gh run list --limit 1
     installed transitively already, and the story asked for it declared;
   - the `PAR1` check covers the header only. Parquet files end in `PAR1` too, so the tail
     would catch a truncated download.
+
+**Second review (2026-10-13, Opus 5.5): no blockers; 1 code finding, fixed on the branch,
+test first.** It covered the contract change, the start-up guard, the prompt under
+readline in a real pseudo-terminal, and the dataset guard.
+
+- **Checked and sound:**
+  - **The gates, with the fix:** ruff and mypy clean; **888 passed, 5 xfailed**, coverage
+    98.37%; `rag-eval check` exit 0.
+  - **The prompt under readline (libedit), in a pseudo-terminal:** the real `repl()`,
+    with a stub retriever and a fake model that waits 5 s before its first token. Four
+    endings each left the terminal's ECHO, ICANON and ISIG on, with exit 0 and no
+    traceback:
+    - Ctrl-C at an empty prompt;
+    - Ctrl-C after typing;
+    - Ctrl-D;
+    - Ctrl-C during the prefill. That one cancelled the answer and came back to a working
+      prompt, where Up and then `exit` worked.
+
+    Neither the suite (no terminal) nor Verification 3 (arrows, history, Ctrl-C while
+    loading) had covered these.
+  - **The contract change:** `86788b5` carries `!` and a `BREAKING-CHANGE:` trailer that
+    git parses. `rag-ingest` and an API job both map `CorpusUnreadableError` to exit 2.
+    `_check_corpus` also turns a `PermissionError` from `is_dir()` itself into it.
+  - **The dataset guard compares resolved paths on both sides.** `paths.data` is resolved
+    at load, symlinks included, and the `RAG_DATA_PATH` fallback too. A corpus reached
+    through a symlink cannot slip past it.
+  - **`preflight` moved verbatim,** and the architecture test pins the import rule.
+  - **The PR's title** is fixed: `fix!: polish the command-line tools`.
+- **Finding (code, fixed): `rag-eval` printed a traceback for an unreadable corpus root.**
+  - **The cause:** S2-8 made the walk raise `CorpusUnreadableError` for an unreadable
+    root. Tier 2's `corpus_scan` caught only `FileNotFoundError`, so the new error escaped
+    `rag-eval check` and `generate` to their crash handler.
+  - **Measured:** on `main`, from a `git archive` export, that corpus gave one line, "Error:
+    rag-ingest cannot read part of the corpus either… ./: PermissionError", and exit 2. On
+    the branch it gave a full traceback, still exit 2. So CI's reading did not change, but
+    this is the defect S2-8 exists to remove.
+  - **The fix:** `corpus_scan` catches both, as `FingerprintError`.
+    `test_an_unreadable_corpus_root_has_no_fingerprint_and_no_traceback` failed on the
+    branch and passes. The real `rag-eval check` now prints "Error: Corpus directory not
+    readable: … (Permission denied; …)", exit 2, with no traceback.
+  - The corpus part's hash is unchanged, and code is not hashed, so no tier-2 re-run is
+    needed (caveat 24).
+- **Not in this PR:** the untracked `.claude/` folder (Claude Code's settings). If
+  `settings.json` is ever committed, `settings.local.json` belongs in `.gitignore`.
 
 ## Deviation from plan
 

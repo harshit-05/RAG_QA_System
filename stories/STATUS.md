@@ -5,8 +5,17 @@
 
 ## Now
 
-**Next action: the second review of [S2-8](phase-2/S2-8-cli-polish.md), the CLI polish
-batch** (PR #16, on `fix/s2-8-cli-polish`). The first review is done.
+**Next action: commit the second review's fix to PR #16 ([S2-8](phase-2/S2-8-cli-polish.md),
+the CLI polish batch), and merge once CI is green.** Both reviews are done.
+
+- **Second review (2026-10-13): no blockers, one code finding, fixed test first.** S2-8's
+  new `CorpusUnreadableError` escaped tier 2's corpus scan, so `rag-eval check` and
+  `generate` printed a traceback for an unreadable corpus. On `main` that was one line.
+  The exit code was 2 both times. `corpus_scan` now catches it, and the suite is 888
+  passed.
+- **The prompt under readline holds.** In a pseudo-terminal, Ctrl-C at the prompt, after
+  typing and during the prefill, and Ctrl-D, all left the terminal sane. After the
+  cancel, the prompt and its history still worked.
 
 - **CI is green** on `b3bec07`, the PR's head (run 38341250960): `check` and
   `eval-retrieval` (2026-10-13). There are five commits, `742c075` … `b3bec07`, one per
@@ -15,9 +24,8 @@ batch** (PR #16, on `fix/s2-8-cli-polish`). The first review is done.
   coverage 98.31%, after the first review's fixes. `rag-eval check` passed, so caveat 24
   held. Verification 3 passed by the maintainer's hand: arrow keys, history, and Ctrl-C
   while loading.
-- **Owed:** the PR's title, which reads "fixpolish the command-line tools". zsh expanded
-  `!:` in the recipe's double quotes. Fix it with
-  `gh pr edit 16 --title 'fix!: polish the command-line tools'`, in single quotes.
+- **The PR's title is fixed:** it reads `fix!: polish the command-line tools`. zsh had
+  expanded `!:` in the recipe's double quotes; use single quotes for any `!`.
 - **`preflight` and `OLLAMA_HINT` moved** from `api/server.py` to `components` (maintainer),
   so `rag-query` shares `rag-serve`'s start-up check without importing the `api` package.
   ARCHITECTURE.md §2.2 has a dated note, and an architecture test holds the rule.
@@ -633,7 +641,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Done 2026-10-12 (PR #14) |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Done 2026-10-12 (PR #15) |
-| [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | In review 2026-10-13 |
+| [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | In review 2026-10-13 (PR #16; two reviews done, one fix to commit) |
 | [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Todo |
 
 **Order.** S2-1, S2-2, S2-3, S2-4, **S2-6**, S2-5, S2-5b, S2-7, S2-8, S2-9. It differs
