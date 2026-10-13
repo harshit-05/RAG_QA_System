@@ -48,7 +48,7 @@ from langchain_core.documents import Document
 
 from rag_qa import chain
 from rag_qa.evaluation.dataset import GoldenItem
-from rag_qa.ingest import CorpusScan, IngestReport, scan_corpus
+from rag_qa.ingest import CorpusScan, CorpusUnreadableError, IngestReport, scan_corpus
 from rag_qa.manifest import CHUNKING_VERSION, embedder_identity, spec_identity
 from rag_qa.schema import Evaluation, RagConfig
 
@@ -191,13 +191,16 @@ def corpus_scan(config: RagConfig) -> CorpusScan:
     """The corpus exactly as ``rag-ingest`` walks it: the same function, so the same
     pruning, extension map, symlink rule and file-name check.
 
-    Raises :class:`FingerprintError` when the corpus is missing, or when anything in it
-    would fail ``rag-ingest`` too (an unreadable file or folder, a name that is not UTF-8).
+    Raises :class:`FingerprintError` when the corpus is missing or cannot be listed, or
+    when anything in it would fail ``rag-ingest`` too (an unreadable file or folder, a name
+    that is not UTF-8).
     """
     report = IngestReport()
     try:
         scan = scan_corpus(config, report)
-    except FileNotFoundError as e:
+    # CorpusUnreadableError since S2-8, which made rag-ingest refuse an unreadable root
+    # rather than report it as a failed folder (S2-8's second review).
+    except (FileNotFoundError, CorpusUnreadableError) as e:
         raise FingerprintError(str(e)) from e
     if report.failed:
         failed = "; ".join(f"{name}: {error}" for name, error in report.failed)
