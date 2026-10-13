@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-12): PR #15, CI green on `164b498`. Verification 1–6 run and shown below. Both reviews done, no blockers. The first fixed one doc and one code finding on the PR and recorded one decision; the second fixed one code and one doc finding. Next: commit both reviews' fixes, CI, then merge. |
+| **Status** | Done (2026-10-12): PR #15, merged as `1ef599f`. CI was green on the PR's head, `2eff33f`, and on `main` after the merge. Verification 1–6 are run and shown below. Two reviews, no blockers: each fixed one code and one doc finding on the PR. Two commits in the middle of the PR fail their own tests (see Deviation); it was merged as is, by the maintainer's choice. |
 | **Closes** | FR-6, SRS §8.1; backlog: the API must never let a request supply components, the `trust_remote_code` load guard, the ChatOllama client (API half) |
 | **Depends on** | S2-1 (`stream_answer`, `QueryPipeline`), S2-6 (manifest, lock, incremental `ingest`) |
 | **Model** | fable |
@@ -377,6 +377,9 @@ gh run list --limit 2
        expected failure.
      - The committed tier-2 run matched the checkout.
    - **`eval-retrieval`:** passed, recall 0.858 against its floor of 0.808.
+   - **After the reviews,** on the PR's head `2eff33f` (run 38260306611): green, 844
+     passed, 4 skipped, 5 xfailed. The uvicorn tests passed again on the runner.
+   - **On `main` after the merge** (`1ef599f`, run 38262357171): green, 5 min 57 s.
 
 ## Reviews
 
@@ -493,7 +496,16 @@ jobs, and the first review's fix, which was not yet committed.
 ## Deviation from plan
 
 - **Model:** Opus 5.5 at max effort, not Fable, which the story names. Fable is unavailable
-  from 2026-10-04 (CLAUDE.md, "Model routing"). The two reviews follow.
+  from 2026-10-04 (CLAUDE.md, "Model routing"). The two reviews ran as planned (above).
+- **Two commits in the middle of the PR fail their own tests.**
+  - `f12ef97` added the first review's tests together with the routes' fix. But the
+    reopen's own fix, which two of those tests need (a reopen that raises `OSError`, and
+    queued requests sharing a failed reopen), came two commits later, in `4c37911`.
+  - CI ran on `badb2cd`, the head of that push. Two tests failed there (run 38260295065),
+    each with the `OSError` escaping as a 500. Every commit from `4c37911` on is green.
+  - The maintainer merged as is rather than fold `4c37911` into `f12ef97`. A
+    `git bisect` over `main` should skip `f12ef97` and `badb2cd`
+    (`git bisect skip f12ef97 badb2cd`).
 - **The disconnect path differs from DEC-18's wording** (Discovered). The cancel reaches
   `stream_answer` through FastAPI's own producer task. The slot dependency holds the
   answer stream, and its teardown closes it, because the spike found a window where

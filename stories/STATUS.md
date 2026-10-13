@@ -5,10 +5,25 @@
 
 ## Now
 
-**Next action: commit both reviews' fixes to PR #15 ([S2-7](phase-2/S2-7-http-api.md)),
-and merge once CI is green.** CI was green on `164b498` (run 38254023254), and
-Verification 1–6 are shown in the story. It ran on Opus 5.5 at max effort in place of
-Fable.
+**Next action: [S2-8](phase-2/S2-8-cli-polish.md), the CLI polish batch.**
+
+- Low risk and opus-fast, not plan-first, on `fix/s2-8-cli-polish`.
+- Its unguarded `rag-query` start-up can reuse S2-7's `rag_qa.api.server.preflight` and
+  `OLLAMA_HINT`.
+- Mind caveat 24, as S2-7 did: leave the prompt, the llm, retriever and reranker specs,
+  the corpus and the golden set alone.
+
+**S2-7 is done** (2026-10-12, PR #15, merged as `1ef599f`; on Opus 5.5 in place of
+Fable).
+
+- CI was green on the PR's head, `2eff33f` (run 38260306611), and on `main` after the
+  merge (run 38262357171). Verification 1–6 are shown in the story.
+- Two reviews, no blockers; each fixed one code and one doc finding on the PR.
+- **Two commits in the middle are red:** `f12ef97` and `badb2cd` carry tests whose fix
+  came in `4c37911`. They were merged as is, by the maintainer's choice; a `git bisect`
+  should skip them.
+- The second review left one decision open, now a backlog line: a back-off after a failed
+  index reopen.
 
 **Second review of S2-7 (2026-10-12): no blockers.** It re-ran the gates on the working
 tree (848 passed), the uvicorn tests five times on one core, and probed the reopen. Both
@@ -17,8 +32,8 @@ findings are fixed on the PR.
 - **Code:** after a failed reopen, every request queued behind it tried again in turn:
   five concurrent refreshes made five opens, one after another, and `/v1/health` needs no
   token. Now a request that waited for an attempt takes its result. Reproduced with a test
-  first. **Your call:** a few seconds' back-off after a failure, so probes during an
-  outage cost nothing (not built).
+  first. **Your call (now a backlog line):** a few seconds' back-off after a failure, so
+  probes during an outage cost nothing (not built).
 - **Docs:** README called `/docs` interactive, but a browser's "Try it out" POST sends
   `Origin` and gets 403. The row now says "to read".
 
@@ -34,7 +49,7 @@ tests on one core, and the auth by probe. Both findings are fixed on the PR.
   next request.
 - **Backlog, reworded:** the body-size gap is pre-auth, so a token does not guard it.
 
-**S2-7 is in review** (2026-10-12): `rag-serve`, the HTTP API (FR-6, SRS §8.1, DEC-18).
+**What S2-7 delivered:** `rag-serve`, the HTTP API (FR-6, SRS §8.1, DEC-18).
 
 - **What it serves.**
   - Answers stream as SSE: `sources`, `token`…, then `done` or `error`, with `: ping`
@@ -598,7 +613,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-5](phase-2/S2-5-ragas-gate.md) | Tier-2 RAGAs harness and the freshness gate (code only) | FR-7 (harness), ISS-15 | S2-2, S2-4, S2-6 | Done 2026-10-07 (PR #13) |
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Done 2026-10-12 (PR #14) |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
-| [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | In review 2026-10-12 (PR #15, CI green on `164b498`; two reviews done, fixes to commit) |
+| [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Done 2026-10-12 (PR #15) |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Todo |
 | [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Todo |
 
@@ -692,7 +707,7 @@ leads with one of two things:
 
   It opens three follow-ups: two from its hand check and its answers, and one from its
   second review (`check` recomputing the aggregates).
-- **S2-7 (in review):** the HTTP API (FR-6, SRS §8.1, DEC-18). It closes three lines below:
+- **S2-7 (PR #15):** the HTTP API (FR-6, SRS §8.1, DEC-18). It closes three lines below:
   requests never supply components (with the `trust_remote_code` guard), a disconnect
   stays a cancel, and ChatOllama's client closed at shutdown (the API half).
   - It opens two: request size and health-check load (Phase 3), and the `eval` extra's
@@ -963,6 +978,12 @@ leads with one of two things:
 - **Closed by S2-7 (2026-10-12) —** `ChatOllama` leaves its HTTP client open
   (`ResourceWarning: unclosed socket` at exit). S2-1 closed the CLI half: `aclose_llm`,
   called at exit. The API's lifespan owns the client and closes it at shutdown.
+- **Maintainer's call — a back-off after a failed index reopen** (S2-7's second review).
+  - **Now:** after a reopen fails, each later request tries again once. Concurrent requests
+    share one attempt.
+  - **The proposal:** wait a few seconds after a failure, so probes arriving one by one
+    during an outage (an unreadable disk, say) cost nothing.
+  - `/v1/health` refreshes without a token. Not built.
 - **Phase 3 — request size and health-check load** (found in S2-7).
   - FastAPI reads a request body whole before validating it, so a huge body costs memory
     before the 422.
