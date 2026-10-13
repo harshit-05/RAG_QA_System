@@ -33,6 +33,7 @@ from rag_qa.ingest import (
     EXIT_CANNOT_START,
     EXIT_OK,
     EXIT_RUN_FAILED,
+    CorpusUnreadableError,
     IngestionRunningError,
     IngestReport,
     describe_error,
@@ -139,7 +140,13 @@ class IngestJobs:
             ingest_logger.setLevel(logging.INFO)  # progress is INFO, as rag-ingest shows it
         try:
             report = ingest(self._config, rebuild=job.rebuild)
-        except (ConfigError, FileNotFoundError, FileExistsError, IngestionRunningError) as e:
+        except (
+            ConfigError,
+            FileNotFoundError,
+            CorpusUnreadableError,
+            FileExistsError,
+            IngestionRunningError,
+        ) as e:
             # What rag-ingest reports as "could not start", with exit status 2.
             job.exit_code = EXIT_CANNOT_START
             job.log.append(f"Error: {describe_error(e, self._config)}")

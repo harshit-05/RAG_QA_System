@@ -25,9 +25,9 @@ finish. A second run, from the CLI or the API, exits 2: "another ingestion is ru
 
 **Error policy (S1-4, ISS-05, NFR-7).** Two kinds of failure, handled differently:
 
-* a *configuration* problem — an invalid config, a missing corpus directory, a
-  loader that cannot be built — is the same for every file, so the run stops at
-  once with the problem named;
+* a *configuration* problem — an invalid config, a missing or unreadable corpus
+  directory, a loader that cannot be built — is the same for every file, so the run
+  stops at once with the problem named;
 * a *document* problem — one corrupt, unreadable or mis-encoded file, or a folder that
   cannot be listed — is recorded and the run continues with the rest (NFR-7). In an
   update the document keeps its previous chunks and manifest entry (DEC-17, which
@@ -113,7 +113,8 @@ class IngestReport:
     published nothing: then the previous index, if any, is still the live one).
 
     ``skipped`` and ``symlinks`` hold corpus-relative names, and ``failed`` holds
-    ``(name, "Type: message")`` pairs with no absolute path in them. ``ignored`` counts
+    ``(name, "Type: message")`` pairs with no absolute path in them: documents, and
+    folders that could not be listed (named with a trailing slash). ``ignored`` counts
     hidden and lock files, and hidden folders once each: the walk never enters them, and
     a ``.git`` folder alone can hold thousands of files.
     """
@@ -134,24 +135,51 @@ class IngestReport:
     failed: list[tuple[str, str]] = field(default_factory=list)
 
     def summary(self) -> str:
-        lines = [
-            f"Loaded {self.documents} document pages/sections, split into {self.chunks} chunks.",
-            (
-                f"Documents: {self.added} added, {self.changed} changed, {self.removed} "
-                f"removed, {self.unchanged} unchanged; {self.kept} failed and kept their "
-                f"previous chunks."
-            ),
-            f"Skipped {len(self.skipped)} file(s) with no configured loader.",
-            f"Skipped {len(self.symlinks)} symlink(s) (not followed).",
-            f"Ignored {self.ignored} hidden or lock file(s) and folder(s).",
-            f"Failed {len(self.failed)} file(s).",
-        ]
+        """The run in a few lines. A line, or a part of one, whose count is zero is left
+        out (S2-8): every run used to print "Skipped 0 symlink(s)" and its kind."""
+        lines = []
+        if self.documents:
+            pages = _counted(self.documents, "document page/section", "document pages/sections")
+            lines.append(f"Loaded {pages}, split into {_counted(self.chunks, 'chunk', 'chunks')}.")
         if self.rebuild is not None and self.published is not None:
-            lines.insert(1, f"Rebuilt the index in full: {self.rebuild}.")
+            lines.append(f"Rebuilt the index in full: {self.rebuild}.")
         elif self.rebuild is not None:
-            lines.insert(1, f"A full rebuild was due ({self.rebuild}), but published nothing.")
+            lines.append(f"A full rebuild was due ({self.rebuild}), but published nothing.")
+        documents = "; ".join(
+            part
+            for part in (
+                _nonzero(
+                    (self.added, "added"),
+                    (self.changed, "changed"),
+                    (self.removed, "removed"),
+                    (self.unchanged, "unchanged"),
+                ),
+                _nonzero((self.kept, "failed and kept their previous chunks")),
+            )
+            if part
+        )
+        if documents:
+            lines.append(f"Documents: {documents}.")
+        if self.skipped:
+            lines.append(f"Skipped {len(self.skipped)} file(s) with no configured loader.")
+        if self.symlinks:
+            lines.append(f"Skipped {len(self.symlinks)} symlink(s) (not followed).")
+        if self.ignored:
+            lines.append(f"Ignored {self.ignored} hidden or lock file(s) and folder(s).")
+        if self.failed:  # "item(s)": a folder that could not be listed counts as one
+            lines.append(f"Failed {len(self.failed)} item(s).")
         lines += [f"  - {name}: {error}" for name, error in self.failed]
         return "\n".join(lines)
+
+
+def _counted(count: int, one: str, many: str) -> str:
+    """``count`` and the noun that agrees with it: "1 chunk", "0 chunks", "7 chunks"."""
+    return f"{count} {one if count == 1 else many}"
+
+
+def _nonzero(*counts: tuple[int, str]) -> str:
+    """``"1 added, 3 unchanged"``: each count that is not zero, in order; "" if none is."""
+    return ", ".join(f"{count} {what}" for count, what in counts if count)
 
 
 def _ignored(relative: Path) -> bool:
@@ -166,8 +194,25 @@ def _ignored(relative: Path) -> bool:
     return any(part.startswith(".") for part in relative.parts) or relative.name.startswith("~$")
 
 
+class CorpusUnreadableError(Exception):
+    """The corpus directory is there but cannot be listed. Like a missing one, that is the
+    setup's problem, not one document's, so the run cannot start (exit 2)."""
+
+
 def _check_corpus(data_path: Path) -> None:
-    if not data_path.is_dir():
+    try:
+        found = data_path.is_dir()
+        if found:
+            with os.scandir(data_path):  # what the walk opens first
+                pass
+    except OSError as e:
+        # Otherwise the walk reports the root as an unreadable folder, "./", and the run
+        # exits 1 as if one document were bad (S2-8).
+        raise CorpusUnreadableError(
+            f"Corpus directory not readable: {data_path} ({e.strerror}; set by paths.data "
+            f"or RAG_DATA_PATH)"
+        ) from None
+    if not found:
         # A walk of a missing directory yields nothing rather than raising, which
         # would read as "0 documents" instead of naming the real problem.
         raise FileNotFoundError(
@@ -466,10 +511,13 @@ def _plan(config: RagConfig, scan: CorpusScan, report: IngestReport, *, rebuild:
             return _Plan(load=scan.files, rebuild=reason, embeddings=embeddings)
     report.unchanged, report.kept = len(changes.unchanged), len(hold)
     if pending or remove or relabel:
-        logger.info(
-            "Updating the index: %d added, %d changed, %d removed, %d unchanged.",
-            len(changes.added), len(changes.changed), len(remove), len(changes.unchanged),
+        counts = _nonzero(
+            (len(changes.added), "added"),
+            (len(changes.changed), "changed"),
+            (len(remove), "removed"),
+            (len(changes.unchanged), "unchanged"),
         )
+        logger.info("Updating the index: %s.", counts)
     return _Plan(
         load=[file for file in scan.files if file.name in pending],
         live=live,
@@ -556,7 +604,7 @@ def _load(
         doc.metadata.update(
             source=file.name, source_sha256=file.state.sha256, ingested_at=ingested_at
         )
-    logger.info("    %d pages/sections", len(docs))
+    logger.info("    %s", _counted(len(docs), "page/section", "pages/sections"))
     return docs
 
 
@@ -686,9 +734,10 @@ def _update(config: RagConfig, plan: _Plan, report: IngestReport) -> None:
 def ingest(config: RagConfig, *, rebuild: bool = False) -> IngestReport:
     """Bring the index up to date with the corpus; see the module docstring.
 
-    Raises ``FileNotFoundError`` (no corpus folder), ``FileExistsError`` (something at the
-    index's path that is not an index, :func:`rag_qa.vectorstore.in_the_way`),
-    :class:`IngestionRunningError` and :class:`ConfigError` before anything is published.
+    Raises ``FileNotFoundError`` (no corpus folder), :class:`CorpusUnreadableError`,
+    ``FileExistsError`` (something at the index's path that is not an index,
+    :func:`rag_qa.vectorstore.in_the_way`), :class:`IngestionRunningError` and
+    :class:`ConfigError` before anything is published.
     Any other exception propagates, also with nothing published.
     """
     report = IngestReport()
@@ -767,7 +816,7 @@ def outcome(report: IngestReport) -> tuple[int, str | None]:
     """
     if report.failed:
         return EXIT_RUN_FAILED, (
-            f"{len(report.failed)} file(s) could not be read (listed above). "
+            f"{len(report.failed)} item(s) could not be read (listed above). "
             f"{_failure_note(report)}"
         )
     if not report.found:
@@ -789,11 +838,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     level = logger.level
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+    # A corrupt PDF makes pypdf log its own warnings ("invalid pdf header", "EOF marker
+    # not found") through logging's last-resort handler, ahead of the clean error this run
+    # reports for that file (S2-8). Its errors still show.
+    pypdf = logging.getLogger("pypdf")
+    pypdf_level = pypdf.level
+    pypdf.setLevel(logging.ERROR)
     try:
         return _run(args)
     finally:
         logger.removeHandler(handler)
         logger.setLevel(level)
+        pypdf.setLevel(pypdf_level)
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -803,12 +859,20 @@ def _run(args: argparse.Namespace) -> int:
         # the log and the report (both returned over HTTP in S2-7) never do.
         print(f"Loading documents from '{config.paths.data}'...")
         report = ingest(config, rebuild=args.rebuild)
-    except (ConfigError, FileNotFoundError, FileExistsError, IngestionRunningError) as e:
+    except (
+        ConfigError,
+        FileNotFoundError,
+        CorpusUnreadableError,
+        FileExistsError,
+        IngestionRunningError,
+    ) as e:
         print(f"Error: {e}", file=sys.stderr)
         return EXIT_CANNOT_START
 
-    print()
-    print(report.summary())
+    summary = report.summary()
+    if summary:  # empty when there was nothing at all to count
+        print()
+        print(summary)
     store = config.paths.vector_store
     status, error = outcome(report)
     if error is not None:
