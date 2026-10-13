@@ -11,6 +11,10 @@ queries against it must use the same embedding model, or retrieval silently comp
 incomparable vectors — wrong answers, not a crash. Before S1-3 that held because two
 modules happened to contain the same line; now it holds because there is one
 function, and it always reads ``pipeline.ingestion.embedder``.
+
+:func:`preflight` is the start-up check of the language model's server that ``rag-serve``
+and ``rag-query`` share (S2-7, S2-8). It lives here, not in the ``api`` package, because
+the CLI never imports that package (ARCHITECTURE.md §2.2).
 """
 
 import asyncio
@@ -21,9 +25,13 @@ from typing import Any
 from langchain_core.documents import BaseDocumentCompressor
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
+from pydantic import ValidationError
 
 from rag_qa.registry import build_object
 from rag_qa.schema import RagConfig
+
+#: What to try when an Ollama model cannot be reached, shown under the error.
+OLLAMA_HINT = "Is Ollama running? Try: systemctl status ollama"
 
 
 def build_embedder(config: RagConfig) -> Embeddings:
@@ -90,6 +98,44 @@ async def llm_reachable(llm: BaseChatModel, timeout_s: float = 2.0) -> bool | No
     except Exception:  # noqa: BLE001
         return False
     return True
+
+
+def _reason(error: Exception) -> str:
+    """What a failed model build says, without pydantic's wrapping around it."""
+    if isinstance(error, ValidationError):
+        return "; ".join(
+            str(detail["msg"]).removeprefix("Value error, ") for detail in error.errors()
+        )
+    return f"{type(error).__name__}: {error}"
+
+
+async def _reachable_then_close(llm: BaseChatModel) -> bool | None:
+    try:
+        return await llm_reachable(llm)
+    finally:
+        await aclose_llm(llm)
+
+
+def preflight(config: RagConfig) -> str | None:
+    """Why the language model's server cannot be used, or ``None`` when it answers.
+
+    It builds the model, which with ``validate_model_on_init`` asks Ollama for its models,
+    then asks once more with a time limit (the readiness check's), then closes the
+    model's clients. The caller builds its own afterwards. It runs its own event loop, so
+    call it before the caller's loop starts. A Ctrl-C is not caught here.
+    """
+    ref = config.pipeline.query.llm
+    target = config.component(ref).spec()["_target_"]
+    hint = f"\n{OLLAMA_HINT}" if str(target).startswith("langchain_ollama.") else ""
+    try:
+        llm = build_llm(config)
+    # Deliberately broad: whatever stops the model being built stops the start, and it
+    # deserves a reason rather than a traceback.
+    except Exception as e:  # noqa: BLE001
+        return f"cannot build the language model {ref}: {_reason(e)}{hint}"
+    if asyncio.run(_reachable_then_close(llm)) is False:
+        return f"the language model {ref} did not answer within 2 s{hint}"
+    return None
 
 
 def build_loader(config: RagConfig, path: Path) -> Any | None:

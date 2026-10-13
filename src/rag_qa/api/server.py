@@ -5,9 +5,10 @@ bearer-token authentication, and only then may ``--host`` be anything but loopba
 plain HTTP the token travels in cleartext until Phase 3 adds TLS, so ``rag-serve`` warns
 when it listens beyond this machine.
 
-Before uvicorn starts, it checks that the language model's server answers. A failure
-inside uvicorn's start-up would end in a traceback, not a reason (Starlette hands uvicorn
-the formatted traceback of a failed lifespan).
+Before uvicorn starts, it checks that the language model's server answers
+(:func:`rag_qa.components.preflight`, which ``rag-query`` runs too). A failure inside
+uvicorn's start-up would end in a traceback, not a reason (Starlette hands uvicorn the
+formatted traceback of a failed lifespan).
 
 uvicorn reports ASGI spec 2.3, under which a client disconnect cancels its answer at once,
 during the model's prompt evaluation too. That is why this command runs uvicorn and
@@ -19,19 +20,16 @@ model's server not answering, the address in use, or a usage error).
 """
 
 import argparse
-import asyncio
 import logging
 import sys
 from collections.abc import Sequence
 
 import uvicorn
-from langchain_core.language_models import BaseChatModel
 from pydantic import ValidationError
 
 from rag_qa.api.app import create_app
-from rag_qa.components import aclose_llm, build_llm, llm_reachable
+from rag_qa.components import preflight
 from rag_qa.config import ConfigError, load_config
-from rag_qa.schema import RagConfig
 from rag_qa.settings import (
     ENV_CONFIG,
     ServerSettings,
@@ -47,8 +45,6 @@ EXIT_CANNOT_START = 2
 GRACEFUL_SHUTDOWN_S = 5
 
 logger = logging.getLogger("rag_qa.api.server")
-
-OLLAMA_HINT = "Is Ollama running? Try: systemctl status ollama"
 
 
 def _port(value: str) -> int:
@@ -96,43 +92,6 @@ def configure_logging() -> None:
     handler.rag_serve = True  # type: ignore[attr-defined]
     package.addHandler(handler)
     package.setLevel(logging.INFO)
-
-
-def _reason(error: Exception) -> str:
-    """What a failed model build says, without pydantic's wrapping around it."""
-    if isinstance(error, ValidationError):
-        return "; ".join(
-            str(detail["msg"]).removeprefix("Value error, ") for detail in error.errors()
-        )
-    return f"{type(error).__name__}: {error}"
-
-
-async def _reachable_then_close(llm: BaseChatModel) -> bool | None:
-    try:
-        return await llm_reachable(llm)
-    finally:
-        await aclose_llm(llm)
-
-
-def preflight(config: RagConfig) -> str | None:
-    """Why the language model's server cannot be used, or ``None`` when it answers.
-
-    It builds the model, which with ``validate_model_on_init`` asks Ollama for its models,
-    then asks once more with a time limit (the readiness check's), then closes the
-    model's clients. The server builds its own afterwards.
-    """
-    ref = config.pipeline.query.llm
-    target = config.component(ref).spec()["_target_"]
-    hint = f"\n{OLLAMA_HINT}" if str(target).startswith("langchain_ollama.") else ""
-    try:
-        llm = build_llm(config)
-    # Deliberately broad: whatever stops the model being built stops the server, and
-    # it deserves a reason rather than a traceback.
-    except Exception as e:  # noqa: BLE001
-        return f"cannot build the language model {ref}: {_reason(e)}{hint}"
-    if asyncio.run(_reachable_then_close(llm)) is False:
-        return f"the language model {ref} did not answer within 2 s{hint}"
-    return None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
