@@ -5,15 +5,19 @@
 
 ## Now
 
-**Next action: commit [S2-8](phase-2/S2-8-cli-polish.md), the CLI polish batch, open its
-PR, and run the second review.** It is implemented on `fix/s2-8-cli-polish` and not yet
-committed (2026-10-13). The first review is done.
+**Next action: the second review of [S2-8](phase-2/S2-8-cli-polish.md), the CLI polish
+batch** (PR #16, on `fix/s2-8-cli-polish`). The first review is done.
 
-- **Shown in the story:** Verification 1–5. The suite gave 887 passed, 5 xfailed,
+- **CI is green** on `b3bec07`, the PR's head (run 38341250960): `check` and
+  `eval-retrieval` (2026-10-13). There are five commits, `742c075` … `b3bec07`, one per
+  area. Each intermediate state was checked green before committing.
+- **Shown in the story:** Verification 1–6. The suite gave 887 passed, 5 xfailed,
   coverage 98.31%, after the first review's fixes. `rag-eval check` passed, so caveat 24
   held. Verification 3 passed by the maintainer's hand: arrow keys, history, and Ctrl-C
   while loading.
-- **Owed after the commit:** the PR, for CI (Verification 6).
+- **Owed:** the PR's title, which reads "fixpolish the command-line tools". zsh expanded
+  `!:` in the recipe's double quotes. Fix it with
+  `gh pr edit 16 --title 'fix!: polish the command-line tools'`, in single quotes.
 - **`preflight` and `OLLAMA_HINT` moved** from `api/server.py` to `components` (maintainer),
   so `rag-query` shares `rag-serve`'s start-up check without importing the `api` package.
   ARCHITECTURE.md §2.2 has a dated note, and an architecture test holds the rule.

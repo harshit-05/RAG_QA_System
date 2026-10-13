@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-13): implemented on `fix/s2-8-cli-polish`, not yet committed. Verification 1–5 are run and shown below, 3 by the maintainer's hand. Verification 6 waits for the PR. First review done: no blockers, two code findings fixed, one commit-marking finding recorded. |
+| **Status** | In review (2026-10-13): PR #16, five commits `742c075` … `b3bec07`. CI is green on `b3bec07` (run 38341250960). Verification 1–6 are run and shown below, 3 by the maintainer's hand. First review done: no blockers, two code findings fixed, one commit-marking finding recorded. The second review is next. |
 | **Closes** | backlog: "CLI polish" (found in S1-4, plus two items from the v0.2 manual test) |
 | **Depends on** | S2-1 (rewrites `cli.py`), S2-6 (rewrites `ingest.py`) |
 | **Model** | opus-fast |
@@ -166,8 +166,16 @@ gh run list --limit 1
    PdfStreamError: …" for each, the summary ("Failed 2 item(s).") and the error line.
    - **The control:** the same run with the `pypdf` setting disabled in-process printed
      "invalid pdf header: b'not a'" and "EOF marker not found" again.
-6. **CI:** `gh run list --limit 1` shows `main`'s push run for `313671a`, a success. This
-   story's run comes with its PR, since CI runs on pull requests, not on branch pushes.
+6. **CI is green on PR #16** (2026-10-13). `gh run list --limit 1` shows run 38341250960,
+   a `pull_request` run on `b3bec07`, the PR's head, in 5 min 29 s. Both jobs passed:
+   `check` and `eval-retrieval`.
+   - **The commits:** five, one per area. The state after each of the first three was
+     checked before committing, in a scratch copy of `HEAD`: ruff and mypy clean, and 834,
+     858 and 866 passed. `test_repo_hygiene.py` was left out there, since that copy is not
+     a git repository. The fourth state is the full tree.
+   - **Owed:** the PR's title reads "fixpolish the command-line tools". The recipe put
+     `fix!: …` in double quotes, and zsh expanded `!:` as history. The commits used quoted
+     heredocs and are intact.
 
 ## Review (2026-10-13)
 
