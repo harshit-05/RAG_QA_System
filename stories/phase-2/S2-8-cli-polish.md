@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-13): PR #16, commits `742c075` … `4c73f70`. CI is green on `b3bec07` (run 38341250960). Verification 1–6 are run and shown below, 3 by the maintainer's hand. Both reviews done, no blockers. The first fixed two code findings and recorded one commit-marking finding; the second fixed one code finding. Next: commit the second review's fix, CI, then merge. |
+| **Status** | Done (2026-10-13): PR #16, merged as `5961de8`. CI was green on the PR's head, `573e733` (run 38343630988), and on `main` after the merge (run 38344128852). Verification 1–6 are run and shown below, 3 by the maintainer's hand. Two reviews, no blockers: the first fixed two code findings and marked the breaking commit; the second fixed one code finding (`a5f75b9`). |
 | **Closes** | backlog: "CLI polish" (found in S1-4, plus two items from the v0.2 manual test) |
 | **Depends on** | S2-1 (rewrites `cli.py`), S2-6 (rewrites `ingest.py`) |
 | **Model** | opus-fast |
@@ -173,9 +173,12 @@ gh run list --limit 1
      checked before committing, in a scratch copy of `HEAD`: ruff and mypy clean, and 834,
      858 and 866 passed. `test_repo_hygiene.py` was left out there, since that copy is not
      a git repository. The fourth state is the full tree.
-   - **Owed:** the PR's title reads "fixpolish the command-line tools". The recipe put
-     `fix!: …` in double quotes, and zsh expanded `!:` as history. The commits used quoted
-     heredocs and are intact.
+   - **The PR's title** first read "fixpolish the command-line tools". The recipe put
+     `fix!: …` in double quotes, and zsh expanded `!:` as history. It was fixed with
+     `gh pr edit` in single quotes. The commits used quoted heredocs and were intact.
+   - **After the reviews:** CI was green on `4c73f70` (run 38341913718) and on `573e733`,
+     the PR's last head, with the second review's fix (run 38343630988). It was green on
+     `main` after the merge, `5961de8` (run 38344128852).
 
 ## Review (2026-10-13)
 
@@ -263,7 +266,16 @@ readline in a real pseudo-terminal, and the dataset guard.
 
 ## Deviation from plan
 
-Ran on Opus 5.5. Scope calls made during implementation, for review:
+Ran on Opus 5.5, where the story says opus-fast.
+
+**One miss, found in the second review.** `CorpusUnreadableError` was added to the
+could-not-start lists of `rag-ingest` and of the API's jobs, but not to the third caller of
+the corpus walk, tier 2's `corpus_scan`. So `rag-eval` printed a traceback for an
+unreadable root, still with exit 2. It was fixed on the PR (`a5f75b9`). The lesson: a new
+exception from a shared function means checking every caller of that function, not only
+the ones the story names.
+
+Scope calls made during implementation, for review:
 
 - **"item(s)" in both failure lines.** The summary's "Failed N item(s)." and the error line
   "N item(s) could not be read" both count `report.failed`, folders included. The error

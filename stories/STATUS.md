@@ -5,40 +5,60 @@
 
 ## Now
 
-**Next action: commit the second review's fix to PR #16 ([S2-8](phase-2/S2-8-cli-polish.md),
-the CLI polish batch), and merge once CI is green.** Both reviews are done.
+**Next action: [S2-9](phase-2/S2-9-phase-2-exit.md), the Phase 2 exit:** the docs, the
+end-to-end run over HTTP, and release 0.3.0.
 
-- **Second review (2026-10-13): no blockers, one code finding, fixed test first.** S2-8's
-  new `CorpusUnreadableError` escaped tier 2's corpus scan, so `rag-eval check` and
-  `generate` printed a traceback for an unreadable corpus. On `main` that was one line.
-  The exit code was 2 both times. `corpus_scan` now catches it, and the suite is 888
-  passed.
-- **The prompt under readline holds.** In a pseudo-terminal, Ctrl-C at the prompt, after
-  typing and during the prefill, and Ctrl-D, all left the terminal sane. After the
-  cancel, the prompt and its history still worked.
+- It is opus-fast and not plan-first, on `chore/s2-9-phase-2-exit`. A release: it lands
+  through a PR, and `main` is tagged `v0.3` after the merge.
+- **Before the end-to-end run:** free memory first (caveat 8). Budget about 150–170 s to
+  mistral's first token (caveat 3).
+- **The docs owed to it, from the stories before:**
+  - README's status line (v0.2) still calls the HTTP API, answer-quality evaluation and
+    incremental ingestion planned (S2-6, S2-7). Its known limitations still plan the
+    evaluation gate for Phase 2.
+  - In §2.2:
+    - the layout lists four `api` modules, and there are six (S2-7);
+    - `components.py`'s line lacks `llm_reachable`, `preflight` and `OLLAMA_HINT` (S2-8);
+    - the dependency list has S2-8's dated note to fold in.
+  - §2.8 should fold in DEC-18's notes from S2-7.
+- Caveat 24 still applies: leave the prompt, the llm, retriever and reranker specs, the
+  corpus and the golden set alone.
 
-- **CI is green** on `b3bec07`, the PR's head (run 38341250960): `check` and
-  `eval-retrieval` (2026-10-13). There are five commits, `742c075` … `b3bec07`, one per
-  area. Each intermediate state was checked green before committing.
-- **Shown in the story:** Verification 1–6. The suite gave 887 passed, 5 xfailed,
-  coverage 98.31%, after the first review's fixes. `rag-eval check` passed, so caveat 24
-  held. Verification 3 passed by the maintainer's hand: arrow keys, history, and Ctrl-C
-  while loading.
-- **The PR's title is fixed:** it reads `fix!: polish the command-line tools`. zsh had
-  expanded `!:` in the recipe's double quotes; use single quotes for any `!`.
-- **`preflight` and `OLLAMA_HINT` moved** from `api/server.py` to `components` (maintainer),
-  so `rag-query` shares `rag-serve`'s start-up check without importing the `api` package.
-  ARCHITECTURE.md §2.2 has a dated note, and an architecture test holds the rule.
-- **New main dependency:** `requests`, declared rather than transitive. Its locked version
-  did not change.
-- **Breaking (exit code):** an unreadable corpus root makes `rag-ingest` exit **2**, where
-  it exited 1, and an API ingest job reports the same `exit_code`. Its summary also drops
-  the zero-count lines. The `rag-ingest` commit carries `!` and a `BREAKING-CHANGE:`
-  trailer.
-- **First review (2026-10-13): no blockers.** It re-ran the gates and Verification 2, 4 and
-  5, and drove the prompt in a pseudo-terminal. Two code findings are fixed, test first: an
-  `OSError` from the index check was blamed on the Hugging Face cache, and a read timeout
-  got "Is Ollama running?". The suite is now 887 passed.
+**S2-8 is done** (2026-10-13, PR #16, merged as `5961de8`; on Opus 5.5, where the story
+says opus-fast).
+
+- **CI** was green on the PR's head, `573e733` (run 38343630988), and on `main` after the
+  merge (run 38344128852). Verification 1–6 are shown in the story, 3 by the maintainer's
+  hand.
+- **What it delivered:**
+  - **`rag-query` starts cleanly.** It checks the index from its files, then the model's
+    server, then loads the models. Ollama down, a model missing from the HF cache offline,
+    or Ctrl-C while loading is one message and exit 2.
+  - **`rag-query`'s prompt** has line editing and history (`readline`, libedit here). A
+    refused or dropped connection names Ollama with a hint, and `Answer:` waits for the
+    first token.
+  - **`rag-ingest`** leaves out zero counts, says "item(s)" and "1 page/section", and
+    quiets pypdf's own warnings for its run.
+  - **`fetch_dataset.py`** refuses `paths.data` and `RAG_DATA_PATH` too, and writes only a
+    download that starts with `PAR1`.
+- **Breaking (exit code):** an unreadable corpus root exits **2**, where it exited 1, from
+  `rag-ingest` and in an API ingest job's `exit_code`. The failure lines read "N item(s)".
+  `86788b5` carries `!` and a `BREAKING-CHANGE:` trailer.
+- **Moved (maintainer):** `preflight` and `OLLAMA_HINT` moved from `api/server.py` to
+  `components`, so the CLI never imports the `api` package. An architecture test holds
+  the rule.
+- **New main dependency:** `requests`, declared rather than transitive, at its locked
+  version.
+- **Two reviews, no blockers.**
+  - The first fixed two code findings: an `OSError` from the index check got the HF cache
+    hint, and a read timeout got "Is Ollama running?".
+  - The second fixed one. The new exception escaped tier 2's corpus scan, so `rag-eval`
+    printed a traceback, still with exit 2. Implementation had missed that caller.
+  - The second also drove the prompt under readline through Ctrl-C and Ctrl-D: the
+    terminal stayed sane.
+- **Caveat 24 held:** `rag-eval check` was clean, and no hashed input moved.
+- **The suite:** 888 passed, 5 xfailed, coverage 98.37%. The state after each of the first
+  four commits was checked green before they were made.
 
 **S2-7 is done** (2026-10-12, PR #15, merged as `1ef599f`; on Opus 5.5 in place of
 Fable).
@@ -641,7 +661,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-5b](phase-2/S2-5b-tier2-baseline.md) | Tier-2 baseline run, floors, and the CI check | FR-7 (enforced) | S2-5 | Done 2026-10-12 (PR #14) |
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Done 2026-10-12 (PR #15) |
-| [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | In review 2026-10-13 (PR #16; two reviews done, one fix to commit) |
+| [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Done 2026-10-13 (PR #16) |
 | [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Todo |
 
 **Order.** S2-1, S2-2, S2-3, S2-4, **S2-6**, S2-5, S2-5b, S2-7, S2-8, S2-9. It differs
@@ -741,6 +761,11 @@ leads with one of two things:
     langchain advisory.
   - S2-8 can reuse its start-up check for `rag-query`.
   - S2-9 owes README's status line, §2.2's module list and §2.8.
+- **S2-8 (PR #16):** the CLI polish batch. It closes the "CLI polish" line below, all
+  eight of its items.
+  - It opens two lines: the log's plural slips, and the API's ingest jobs printing pypdf's
+    warnings.
+  - S2-9 owes §2.2's `components` line.
 - **S2-6:** incremental ingestion (FR-2, ISS-14, NFR-4 in place, SRS §7.3, DEC-17).
   - Three backlog lines close with it: walk pruning, the §7.3 chunk metadata, and the
     embedder check on open.
@@ -802,7 +827,9 @@ leads with one of two things:
   config. Re-deferred because it only matters once the config is reachable from
   outside the host. Designed in DEC-18: `QueryRequest` forbids extra keys, and the
   `trust_remote_code` guard lands in the same story.
-- **S2-8 — CLI polish (found in S1-4).** No single item is worth a story, so they are
+- **Closed by S2-8 (2026-10-13) — CLI polish (found in S1-4).** Every item below is done;
+  the two the story left alone are separate lines (the log's plurals, and the API's pypdf
+  warnings). The history below is kept. No single item is worth a story, so they are
   batched as S2-8. It runs after S2-6, which rewrites `ingest.py`:
   - `rag-query` startup is unguarded: Ollama being down
     (`validate_model_on_init`) and Ctrl-C while models load both print a
