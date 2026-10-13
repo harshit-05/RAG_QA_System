@@ -19,23 +19,38 @@ HTTP clients are closed on the session's loop.
 
 **Staying alive (S1-4, ISS-06).** One failed answer — Ollama stopped, a timeout, a
 model error — prints the error and returns to the prompt instead of ending the
-session.
+session. A connection error from an Ollama model names Ollama, with a hint.
+
+**Line editing (S2-8).** Importing :mod:`readline` gives ``input()`` line editing and an
+in-session history: an arrow key moves the cursor instead of reaching the model as
+``^[[A``.
+
+**Starting (S2-8).** :func:`start` refuses an unusable index from its files alone, then
+asks whether the language model's server answers (:func:`rag_qa.components.preflight`,
+the check ``rag-serve`` runs), then loads the models. A failure in any of them, or a
+Ctrl-C while they load, is one message and exit 2, not a traceback.
 
 ``rag-query`` exit codes: **0** the session ended normally; **2** it could not start
-(configuration problem, no index yet, an index this config cannot use, or a command-line
-usage error). An index it cannot use is a v0.2 one, or one built with another embedder
-(DEC-17): it says to re-run ``rag-ingest``, before loading any model.
+(configuration problem, no index yet, an index this config cannot use, the language
+model's server not answering, a model that would not load, Ctrl-C while loading, or a
+command-line usage error). An index it cannot use is a v0.2 one, or one built with another
+embedder (DEC-17): it says to re-run ``rag-ingest``, before loading any model.
 """
 
 import argparse
 import asyncio
+import readline  # noqa: F401  # for its side effect: input() gains line editing and history
 import sys
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
-from rag_qa.answering import AnswerEvent, Done, SourceRef, Sources, Token, stream_answer
-from rag_qa.chain import NoIndexError, QueryPipeline, build_query_pipeline
+from langchain_core.language_models import BaseChatModel
+
+from rag_qa.answering import AnswerEvent, SourceRef, Sources, Token, stream_answer
+from rag_qa.chain import NoIndexError, QueryPipeline, build_query_pipeline, check_index
+from rag_qa.components import OLLAMA_HINT, preflight
 from rag_qa.config import ConfigError, load_config
+from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_CONFIG
 
 GREEN, YELLOW, BLUE, RED, DIM, RESET = (
@@ -44,6 +59,29 @@ GREEN, YELLOW, BLUE, RED, DIM, RESET = (
 
 EXIT_OK = 0
 EXIT_CANNOT_START = 2
+
+#: Shown under a model that would not load. Offline, a model not in the Hugging Face cache
+#: yet fails with an ``OSError``: the embedder, or since S2-4 the reranker.
+HF_CACHE_HINT = (
+    "If this machine is offline, a model may be missing from the Hugging Face cache: run "
+    "rag-query once with network to fetch it."
+)
+
+
+def question_prompt() -> str:
+    """The question prompt, in blue.
+
+    When ``input()`` reads through readline (stdin and stdout both a terminal), the colour
+    codes are marked as taking no width, ``\\001``…``\\002``; otherwise readline counts
+    them, and the cursor lands in the wrong place once a line is edited or wraps. Anywhere
+    else ``input()`` writes the prompt itself, and the markers would be stray bytes.
+
+    The prompt ends on its space, after the reset: libedit, the readline of uv's Python,
+    drops a marked sequence that ends a prompt, which left the typed question blue.
+    """
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        return f"\001{BLUE}\002Question:\001{RESET}\002 "
+    return f"{BLUE}Question:{RESET} "
 
 
 def print_sources(sources: list[SourceRef]) -> None:
@@ -57,19 +95,52 @@ def print_sources(sources: list[SourceRef]) -> None:
 
 
 async def render(events: AsyncIterator[AnswerEvent]) -> None:
-    """Print one answer to the terminal as it streams, then its sources."""
+    """Print one answer to the terminal as it streams, then its sources.
+
+    The ``Answer:`` header waits for the first token, so an answer that fails or is
+    interrupted before any text arrives prints no empty header above its error. An answer
+    that completes with no text at all still gets one.
+    """
     sources: list[SourceRef] = []
-    print(f"\n{GREEN}Answer:{RESET}")
+    answering = False
     async for event in events:
-        match event:
-            case Sources():
-                sources = event.sources
-            case Token():
-                print(event.text, end="", flush=True)
-            case Done():
-                pass
+        if isinstance(event, Sources):
+            sources = event.sources
+            continue
+        if not answering:  # the first Token, or Done for an answer with no text
+            print(f"\n{GREEN}Answer:{RESET}")
+            answering = True
+        if isinstance(event, Token):
+            print(event.text, end="", flush=True)
     print()
     print_sources(sources)
+
+
+#: httpx's errors for a server that cannot be reached or that dropped the connection.
+#: Not its read, write and pool timeouts: those mean a slow server or a busy client, and
+#: "Is Ollama running?" would point the wrong way (S2-8's review).
+_UNREACHABLE = {"ConnectError", "ConnectTimeout", "ReadError", "WriteError", "RemoteProtocolError"}
+
+
+def _connection_failed(error: Exception) -> bool:
+    """Whether ``error`` is a refused or dropped connection: the builtin
+    ``ConnectionError``, or one of httpx's :data:`_UNREACHABLE`, which ChatOllama's stream
+    raises unwrapped (``ConnectError: All connection attempts failed``). httpx is matched
+    by name rather than imported: it comes with ollama, and is not a dependency of ours."""
+    return isinstance(error, ConnectionError) or any(
+        kind.__module__ == "httpx" and kind.__name__ in _UNREACHABLE
+        for kind in type(error).__mro__
+    )
+
+
+def describe_failure(error: Exception, llm: BaseChatModel) -> str:
+    """A failed answer's error line. A connection error from an Ollama model names Ollama
+    and adds :data:`~rag_qa.components.OLLAMA_HINT`: httpx's own text does not say what it
+    could not reach."""
+    text = f"{type(error).__name__}: {error}"
+    if _connection_failed(error) and type(llm).__module__.startswith("langchain_ollama"):
+        return f"the connection to Ollama failed ({text})\n{OLLAMA_HINT}"
+    return text
 
 
 class _Answer:
@@ -121,7 +192,7 @@ def ask(runner: asyncio.Runner, pipeline: QueryPipeline, question: str) -> bool:
     # is the same: say so and keep the session. KeyboardInterrupt and SystemExit
     # are not Exceptions, so quitting still works.
     except Exception as e:  # noqa: BLE001
-        print(f"\n{RED}Error: {type(e).__name__}: {e}{RESET}")
+        print(f"\n{RED}Error: {describe_failure(e, pipeline.llm)}{RESET}")
         print("That question was not answered; ask again or try another.")
     return True
 
@@ -171,8 +242,9 @@ def repl(pipeline: QueryPipeline, read: Callable[[str], str] | None = None) -> i
     runner = asyncio.Runner()
     try:
         while True:
+            print()  # not in the prompt: readline is safest with a one-line prompt
             try:
-                query = read(f"\n{BLUE}Question: {RESET}").strip()
+                query = read(question_prompt()).strip()
             except (EOFError, KeyboardInterrupt):
                 # End of piped input, or Ctrl-C at the prompt: a normal way to leave,
                 # not an error worth a traceback.
@@ -197,8 +269,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="rag-query",
         description="Ask questions about the indexed corpus in an interactive session.",
         epilog="Exit status: 0 session ended normally; 2 could not start "
-        "(configuration error, no index yet, an index this config cannot use, or usage "
-        "error).",
+        "(configuration error, no index yet, an index this config cannot use, the language "
+        "model's server not answering, a model that would not load, Ctrl-C while loading, "
+        "or usage error).",
     )
     parser.add_argument(
         "--config",
@@ -206,6 +279,47 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"config file to use (default: ${ENV_CONFIG}, then ./config.yaml)",
     )
     return parser
+
+
+def start(config: RagConfig) -> QueryPipeline | str:
+    """The session's pipeline, or why the session cannot start (exit 2).
+
+    Cheapest first, so a refusal never waits on a later step:
+
+    1. the index, from its files alone (:class:`NoIndexError`, or its
+       ``IncompatibleIndexError``): otherwise a missing index would surface as FAISS's
+       "could not open ... for reading", and one from another embedder would answer with
+       wrong chunks;
+    2. the language model's server (:func:`~rag_qa.components.preflight`): Ollama down, or
+       a model it lacks, before the embedder and the reranker take seconds to load;
+    3. the models, in :func:`build_query_pipeline`.
+
+    Only the start is guarded here; once the session runs, :func:`ask` handles each
+    failed answer (ISS-06). A Ctrl-C propagates, for :func:`main` to report.
+    """
+    try:
+        check_index(config)  # build_query_pipeline checks again; a few small reads
+    except NoIndexError as e:
+        return str(e)
+    # The manifest or the link could not be read. Apart from the model catch below, so that
+    # its Hugging Face hint is not shown for a problem with the index (S2-8's review).
+    except OSError as e:
+        return f"cannot read the index: {type(e).__name__}: {e}"
+    try:
+        problem = preflight(config)
+        if problem is not None:
+            return problem
+        return build_query_pipeline(config)
+    # From the checks that need the embedder: the dimension, and an index that will not
+    # open.
+    except NoIndexError as e:
+        return str(e)
+    # Deliberately broad, as preflight is: whatever stops the models loading (a model
+    # missing from the HF cache offline, Ollama gone since the check) stops the session
+    # before it starts, and deserves a reason rather than a traceback.
+    except Exception as e:  # noqa: BLE001
+        hint = f"\n{HF_CACHE_HINT}" if isinstance(e, OSError) else ""
+        return f"cannot load the models: {type(e).__name__}: {e}{hint}"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -221,14 +335,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print("Loading vector store and models...")
     try:
-        # Raises NoIndexError, or its IncompatibleIndexError, before any model is built:
-        # otherwise a missing index would surface as FAISS's "could not open ... for
-        # reading", and an index from another embedder would answer with wrong chunks.
-        pipeline = build_query_pipeline(config)
-    except NoIndexError as e:
-        print(f"Error: {e}", file=sys.stderr)
+        started = start(config)
+    # Ctrl-C while the models load: the user chose to leave, so no traceback. During the
+    # start-up check's ping, its asyncio.run raises KeyboardInterrupt, or CancelledError as
+    # ask() describes; both mean the same.
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("\nInterrupted while loading; the session did not start.", file=sys.stderr)
         return EXIT_CANNOT_START
-    return repl(pipeline)
+    if isinstance(started, str):
+        print(f"Error: {started}", file=sys.stderr)
+        return EXIT_CANNOT_START
+    return repl(started)
 
 
 if __name__ == "__main__":

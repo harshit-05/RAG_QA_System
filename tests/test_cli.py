@@ -8,24 +8,36 @@ stories' manual steps.
 """
 
 import asyncio
+import dataclasses
+import re
 import signal
+import socket
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
-from conftest import MakeConfig, StreamingFakeChatModel, use_fakes
+from conftest import (
+    FakeOllama,
+    MakeConfig,
+    StreamingFakeChatModel,
+    use_fakes,
+    use_fakes_and_reranker,
+)
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
+from langchain_ollama import ChatOllama
 from pydantic import Field
 
 from rag_qa import cli
 from rag_qa.chain import QueryPipeline
-from rag_qa.cli import EXIT_CANNOT_START, EXIT_OK, repl
+from rag_qa.cli import EXIT_CANNOT_START, EXIT_OK, HF_CACHE_HINT, describe_failure, repl
+from rag_qa.components import OLLAMA_HINT
 
 CTRL_C = "ctrl-c"  # script: the user presses Ctrl-C once, mid-answer
 CTRL_C_TWICE = "ctrl-c twice"  # and again while the answer is unwinding
@@ -110,10 +122,18 @@ def require_default_sigint_handler() -> None:
         )
 
 
+def dead_url() -> str:
+    """A local port nothing listens on, so a connection there is refused at once."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return f"http://127.0.0.1:{sock.getsockname()[1]}"
+
+
 def test_an_answer_streams_then_lists_its_sources(capsys: Any) -> None:
     model = ScriptedModel(script=["the answer."])
     assert repl(fake_pipeline(model), scripted("a question")) == EXIT_OK
     out = capsys.readouterr().out
+    assert "Answer:" in out
     assert "Partial the answer." in out
     assert "[1] guide.pdf, p. 1" in out
     assert "Question: a question" in model.prompts[0]
@@ -127,8 +147,93 @@ def test_a_failed_answer_keeps_the_session_alive(capsys: Any) -> None:
     assert repl(fake_pipeline(model), scripted("first?", "second?")) == EXIT_OK
     out = capsys.readouterr().out
     assert "Error: ConnectError: [Errno 111] Connection refused" in out
+    assert OLLAMA_HINT not in out  # this model is not Ollama's, so Ollama is not named
     assert "second answer" in out
     assert len(model.prompts) == 2
+
+
+def test_a_connection_error_from_ollama_names_it_with_the_hint(capsys: Any) -> None:
+    # A real ChatOllama on a closed port: what an answer meets once Ollama has stopped.
+    # httpx's own text, "All connection attempts failed", does not say what it could not
+    # reach (S2-8).
+    llm = ChatOllama(model="mistral", base_url=dead_url())
+    assert repl(fake_pipeline(llm), scripted("a question")) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "Error: the connection to Ollama failed (ConnectError: " in out
+    assert OLLAMA_HINT in out
+    assert "That question was not answered" in out
+
+
+@pytest.mark.parametrize(
+    ("error", "connection"),
+    [
+        pytest.param(httpx.ConnectError("All connection attempts failed"), True, id="refused"),
+        pytest.param(
+            httpx.RemoteProtocolError("peer closed connection"), True, id="dropped mid-answer"
+        ),
+        pytest.param(ConnectionRefusedError(111, "Connection refused"), True, id="builtin"),
+        pytest.param(httpx.ConnectTimeout("no route"), True, id="unreachable"),
+        pytest.param(httpx.ReadError("connection reset"), True, id="reset"),
+        # Ollama is up and slow: "Is Ollama running?" would point the wrong way (S2-8's review).
+        pytest.param(httpx.ReadTimeout("timed out"), False, id="slow, not down"),
+        pytest.param(httpx.PoolTimeout("no free connection"), False, id="busy client"),
+        pytest.param(ValueError("a model error"), False, id="not a connection error"),
+    ],
+)
+def test_only_a_connection_error_from_an_ollama_model_names_ollama(
+    error: Exception, connection: bool
+) -> None:
+    ollama = ChatOllama(model="mistral", base_url=dead_url())
+    assert (OLLAMA_HINT in describe_failure(error, ollama)) is connection
+    assert describe_failure(error, ScriptedModel()) == f"{type(error).__name__}: {error}"
+
+
+def test_an_answer_that_fails_before_its_first_token_prints_no_empty_header(
+    capsys: Any,
+) -> None:
+    def broken(question: str) -> list[Document]:
+        raise RuntimeError("the index could not be read")
+
+    pipeline = dataclasses.replace(
+        fake_pipeline(ScriptedModel()), retrieve=RunnableLambda(broken)
+    )
+    assert repl(pipeline, scripted("a question")) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "Error: RuntimeError: the index could not be read" in out
+    assert "Answer:" not in out
+
+
+def test_an_answer_with_no_text_still_has_its_header(capsys: Any) -> None:
+    # One empty chunk: stream_answer drops it, so Done arrives with no Token before it.
+    # (No chunk at all is langchain-core's error, "No generation chunks were returned".)
+    model = StreamingFakeChatModel(tokens=[""])
+    assert repl(fake_pipeline(model), scripted("q")) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "Answer:" in out
+    assert "[1] guide.pdf, p. 1" in out
+
+
+@pytest.mark.parametrize(("stdin", "stdout"), [(True, True), (True, False), (False, True)])
+def test_the_prompt_marks_its_colour_codes_only_where_readline_reads(
+    monkeypatch: pytest.MonkeyPatch, stdin: bool, stdout: bool
+) -> None:
+    # input() reads through readline only when stdin and stdout are both a terminal.
+    # There the colour codes must be marked as zero-width, or editing misplaces the
+    # cursor; anywhere else input() prints the prompt itself, and a marker is a stray byte.
+    terminals = SimpleNamespace(
+        stdin=SimpleNamespace(isatty=lambda: stdin),
+        stdout=SimpleNamespace(isatty=lambda: stdout),
+    )
+    monkeypatch.setattr(cli, "sys", terminals)
+    prompt = cli.question_prompt()
+    marked = stdin and stdout
+    assert ("\001" in prompt) is marked
+    assert re.sub("\001[^\002]*\002", "", prompt) == (
+        "Question: " if marked else "\033[94mQuestion:\033[0m "
+    )
+    # libedit drops a marked sequence that ends the prompt (seen in a pty, S2-8): the reset
+    # must come before the last visible character.
+    assert prompt.endswith(" ")
 
 
 def test_ctrl_c_during_an_answer_stops_it_and_returns_to_the_prompt(capsys: Any) -> None:
@@ -323,12 +428,197 @@ def test_invalid_config_exits_2(
     assert "no entry 'nope'" in capsys.readouterr().err
 
 
+def probe_config(make_config: MakeConfig, base_url: str, *, validate: bool = True) -> Path:
+    """The fakes' config, with an Ollama model at ``base_url`` as the query's llm."""
+
+    def edit(c: dict[str, Any]) -> None:
+        use_fakes(c)
+        c["components"]["llms"]["probe"] = {
+            "_target_": "langchain_ollama.ChatOllama",
+            "model": "mistral",
+            "base_url": base_url,
+            "validate_model_on_init": validate,
+        }
+        c["pipeline"]["query"]["llm"] = "components.llms.probe"
+
+    return make_config(edit)
+
+
 def test_main_runs_the_session_with_the_built_pipeline(
-    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch, capsys: Any
+    fake_rag: Path,
+    make_config: MakeConfig,
+    fake_ollama: FakeOllama,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
 ) -> None:
     model = ScriptedModel(script=["an answer"])
     monkeypatch.setattr(cli, "build_query_pipeline", lambda config: fake_pipeline(model))
     # honoured: looked up at call time
     monkeypatch.setattr("builtins.input", scripted("a question"))
-    assert cli.main(["--config", str(make_config())]) == EXIT_OK
+    path = probe_config(make_config, fake_ollama.url)  # over fake_rag's index
+    assert cli.main(["--config", str(path)]) == EXIT_OK
     assert "an answer" in capsys.readouterr().out
+    # The start-up check asked Ollama, as rag-serve's does: validate_model_on_init, then
+    # the ping.
+    assert fake_ollama.requests.count("/api/tags") == 2
+
+
+# --- main(): the start-up guard (S2-8) -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("validate", "reason"),
+    [
+        (
+            True,
+            (
+                "cannot build the language model components.llms.probe: ConnectionError: "
+                "Failed to connect to Ollama"
+            ),
+        ),
+        (False, "the language model components.llms.probe did not answer within 2 s"),
+    ],
+)
+def test_ollama_down_at_start_up_is_one_reason_and_a_hint_not_a_traceback(
+    fake_rag: Path,
+    make_config: MakeConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+    validate: bool,
+    reason: str,
+) -> None:
+    # Before the embedder and the reranker load: they take seconds, and are not needed.
+    monkeypatch.setattr(cli, "build_query_pipeline", _pipeline_must_not_be_built)
+    path = probe_config(make_config, dead_url(), validate=validate)
+    assert cli.main(["--config", str(path)]) == EXIT_CANNOT_START
+    err = capsys.readouterr().err
+    assert f"Error: {reason}" in err
+    assert OLLAMA_HINT in err
+    assert "Traceback" not in err
+
+
+def test_a_language_model_that_cannot_be_built_stops_the_start_with_its_reason(
+    fake_rag: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    def refuse(config: Any) -> None:
+        raise RuntimeError("model 'mistral' not found")
+
+    monkeypatch.setattr("rag_qa.components.build_llm", refuse)  # the llm factory
+    monkeypatch.setattr(cli, "build_query_pipeline", _pipeline_must_not_be_built)
+    assert cli.main(["--config", str(fake_rag)]) == EXIT_CANNOT_START
+    err = capsys.readouterr().err
+    assert (
+        "Error: cannot build the language model components.llms.fake: RuntimeError: "
+        "model 'mistral' not found"
+    ) in err
+    assert OLLAMA_HINT not in err  # the fake is not an Ollama model
+
+
+def test_a_missing_index_is_refused_before_ollama_is_asked(
+    make_config: MakeConfig,
+    fake_ollama: FakeOllama,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(tmp_path / "empty"))
+    path = probe_config(make_config, fake_ollama.url)
+    assert cli.main(["--config", str(path)]) == EXIT_CANNOT_START
+    assert "Run rag-ingest first" in capsys.readouterr().err
+    assert fake_ollama.requests == []
+
+
+def test_a_model_missing_from_the_hf_cache_offline_is_one_reason(
+    fake_rag: Path,
+    make_config: MakeConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    # S2-4's case: the reranker's model, never downloaded, on a machine now offline. The
+    # real build_query_pipeline, with the error transformers raises (seen in S2-8).
+    offline = (
+        "We couldn't connect to 'https://huggingface.co' to load the files, and couldn't "
+        "find them in the cached files."
+    )
+
+    def cross_encoder(*args: Any, **kwargs: Any) -> None:
+        raise OSError(offline)
+
+    monkeypatch.setattr("rag_qa.rerankers.CrossEncoder", cross_encoder)
+    assert cli.main(["--config", str(make_config(use_fakes_and_reranker))]) == EXIT_CANNOT_START
+    err = capsys.readouterr().err
+    assert f"Error: cannot load the models: OSError: {offline}" in err
+    assert HF_CACHE_HINT in err
+    assert "Traceback" not in err
+
+
+def test_an_index_that_cannot_be_read_is_not_blamed_on_the_hf_cache(
+    fake_rag: Path,
+    make_config: MakeConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    # S2-8's review: the one broad catch around the start used to give an OSError from the
+    # index check "cannot load the models" and the Hugging Face hint, which sent the reader
+    # to the wrong place.
+    def unreadable(config: Any) -> None:
+        raise PermissionError(13, "Permission denied", "manifest.json")
+
+    monkeypatch.setattr(cli, "check_index", unreadable)
+    assert cli.main(["--config", str(make_config(use_fakes))]) == EXIT_CANNOT_START
+    err = capsys.readouterr().err
+    assert "Error: cannot read the index: PermissionError: " in err
+    assert "cannot load the models" not in err
+    assert HF_CACHE_HINT not in err
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        pytest.param("rag_qa.components.build_llm", id="checking the language model"),
+        pytest.param("rag_qa.cli.build_query_pipeline", id="loading the models"),
+    ],
+)
+def test_ctrl_c_while_loading_exits_2_without_a_traceback(
+    fake_rag: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, where: str
+) -> None:
+    def interrupted(config: Any) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(where, interrupted)
+    try:
+        status = cli.main(["--config", str(fake_rag)])
+    except KeyboardInterrupt:
+        pytest.fail("Ctrl-C while loading escaped rag-query as a KeyboardInterrupt (a traceback)")
+    assert status == EXIT_CANNOT_START
+    assert "Interrupted while loading; the session did not start." in capsys.readouterr().err
+
+
+def test_ctrl_c_during_the_start_up_ping_exits_2_without_a_traceback(
+    fake_rag: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    # A real SIGINT, while preflight's own event loop waits on the server: that loop's
+    # Runner turns it into a cancel, then a KeyboardInterrupt out of asyncio.run.
+    require_default_sigint_handler()
+    closed = []
+
+    async def hanging_ping(llm: Any, timeout_s: float = 2.0) -> bool:
+        signal.raise_signal(signal.SIGINT)
+        await asyncio.sleep(30)
+        return True
+
+    async def record(llm: Any) -> None:
+        closed.append(llm)
+
+    monkeypatch.setattr("rag_qa.components.llm_reachable", hanging_ping)
+    monkeypatch.setattr("rag_qa.components.aclose_llm", record)
+    monkeypatch.setattr(cli, "build_query_pipeline", _pipeline_must_not_be_built)
+    try:
+        status = cli.main(["--config", str(fake_rag)])
+    except KeyboardInterrupt:
+        pytest.fail("Ctrl-C during the ping escaped rag-query as a KeyboardInterrupt")
+    assert status == EXIT_CANNOT_START
+    assert "Interrupted while loading" in capsys.readouterr().err
+    assert len(closed) == 1  # the checked model's clients were still closed
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
