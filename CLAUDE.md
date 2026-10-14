@@ -107,8 +107,9 @@ prototype to production via a spec-driven story loop.
 
 - Phase exit ⇒ git tag: v0.1 (Phase 0), v0.2, v0.3, v1.0 (Phase 3 / SRS
   complete). Package version tracks the tag; `.dev0` suffix between tags.
-- Current: 0.3.0, tagged `v0.3` (Phase 2, 2026-10-13). Phase 3's first story bumps
-  it to `1.0.0.dev0`, in `pyproject.toml` and `src/rag_qa/__init__.py` (and `uv lock`).
+- Current: 0.3.0, tagged `v0.3` on `aa8c19b` (Phase 2, 2026-10-14). Phase 3's first
+  story bumps it to `1.0.0.dev0`, in `pyproject.toml` and `src/rag_qa/__init__.py` (and
+  `uv lock`).
 
 ## Model routing (which Claude model for which work)
 

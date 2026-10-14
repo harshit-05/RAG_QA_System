@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done 2026-10-13, reviewed 2026-10-14; tag `v0.3` on `main` after the merge |
+| **Status** | Done 2026-10-14 (PR #17, merged as `aa8c19b`; tag `v0.3` on `aa8c19b`) |
 | **Closes** | — (phase exit; SRS §12 Phase 2) |
 | **Depends on** | S2-1 … S2-8, S2-5b |
 | **Model** | opus-fast |
@@ -303,3 +303,24 @@ gh run list --limit 3         # the tag's run: check and eval-retrieval green
 
 Then the close-out commit records the PR number, the three CI runs (PR, `main`, tag) and
 the tag's commit, in this file and in STATUS.md.
+
+## After the merge (2026-10-14)
+
+PR #17 was merged as `aa8c19b` at 11:13 IST, and `v0.3` was tagged on it at 11:20. This
+fills in Verification 1's CI run and Verification 4's tag.
+
+| Run | Commit | Event | `check` | `eval-retrieval` |
+| --- | --- | --- | --- | --- |
+| 38396359569 | `6cec959`, the PR before the review | pull_request | success | success |
+| 38517570599 | `69aa991`, the PR's head after the review | pull_request | success | success |
+| 38518198641 | `aa8c19b`, the merge | push to `main` | success | success |
+| 38518816307 | `aa8c19b`, the tag | push of `v0.3` | success | success |
+
+- **The tag** is annotated ("v0.3: Phase 2 complete; callable over HTTP, with an enforced
+  quality bar"). It points at `aa8c19b`, which is `origin/main`, and it is on the remote.
+  At the tag, `pyproject.toml` and `__init__.py` both read 0.3.0.
+- **The commits:** all six on the PR carry a `Refs:` trailer that git parses. None has an
+  attribution line, and neither has the PR body. The only "Claude" in either is the file
+  name `CLAUDE.md`.
+- **Exit criterion (SRS §12 Phase 2), both halves:** callable over HTTP (the table
+  above), and an enforced quality bar (both gates green on `main` and on the tag).

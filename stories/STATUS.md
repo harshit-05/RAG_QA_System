@@ -18,12 +18,21 @@ sharding Phase 3 into stories (Step 2).
     holds the CPU (S2-9);
   - the DEC-2 revisit, which batches the tier-2 follow-ups into one re-run;
   - caveats 25–28, learned at the Phase 2 exit.
-- **Before it:** S2-9's PR merged, `main` tagged `v0.3` with its CI run checked, and the
-  close-out commit (S2-9's story has the recipe).
+- **The release is done:** `v0.3` is tagged and its CI run is green (below).
 
-**S2-9 is implemented (2026-10-13) and reviewed (2026-10-14), on PR #17** (on Opus 5.5,
-where the story says opus-fast). The exit criterion holds; one bug was found and fixed.
-CI was green on the PR's head `6cec959` (run 38396359569), before the review's fixes.
+**Phase 2 is complete and released as `v0.3`** (2026-10-14): the tag is on `aa8c19b`, and
+CI is green on the PR, on `main` and on the tag.
+
+**S2-9 is done** (2026-10-14, PR #17, merged as `aa8c19b`; on Opus 5.5, where the story
+says opus-fast). The exit criterion holds; one bug was found and fixed.
+
+- **CI**, `check` and `eval-retrieval` both green each time:
+  - the PR's head before the review, `6cec959` (run 38396359569);
+  - its head after the review, `69aa991` (run 38517570599);
+  - `main` after the merge (run 38518198641);
+  - the `v0.3` tag (run 38518816307).
+- **The tag** is annotated, sits on `origin/main`, and reads 0.3.0 in both version files.
+  The six commits carry `Refs:` trailers and no attribution.
 
 **Second review of S2-9 (2026-10-14): no blockers; 4 doc findings and 4 nits, fixed on the
 PR.** It re-ran the gates (890 passed, `rag-eval check` exit 0), ran the new test's child
@@ -444,7 +453,7 @@ DEC-1/DEC-2/DEC-4 are resolved below.
 | --- | --- | --- |
 | Phase 0 | `v0.1` | 0.1.0 — **released 2026-09-25** (`ae15a23`) |
 | Phase 1 | `v0.2` | 0.2.0 — **released 2026-10-02** (`db75439`) |
-| Phase 2 | `v0.3` | 0.3.0 — **released 2026-10-13** (S2-9; tagged on `main` after the merge) |
+| Phase 2 | `v0.3` | 0.3.0 — **released 2026-10-14** (`aa8c19b`) |
 | Phase 3 (SRS complete) | `v1.0` | 1.0.0 |
 
 The final story of each phase performs the tag + version bump at close-out.
@@ -739,7 +748,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Done 2026-10-12 (PR #15) |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Done 2026-10-13 (PR #16) |
-| [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Done 2026-10-13 (PR #17), reviewed 2026-10-14; `v0.3` after the merge |
+| [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Done 2026-10-14 (PR #17, `v0.3` on `aa8c19b`) |
 
 **Order.** S2-1, S2-2, S2-3, S2-4, **S2-6**, S2-5, S2-5b, S2-7, S2-8, S2-9. It differs
 from the numbering in one place, and the Depends column is satisfied throughout:
@@ -1204,7 +1213,7 @@ regression suite + coverage gate · S1-6 types and lint · S1-7 CPU/CUDA torch
 variants · S1-8 audit gate, doc hygiene, release. As delivered:
 ARCHITECTURE.md §1.8; per-story detail in `stories/phase-1/`.
 
-**Phase 2 — shipped as `v0.3` (2026-10-13; tagged on `main` after S2-9's merge).**
+**Phase 2 — shipped as `v0.3` (`aa8c19b`, 2026-10-14).**
 S2-1 answer events, Ctrl-C cancels generation · S2-2 golden set · S2-3 tier-1 retrieval
 gate in CI · S2-4 own cross-encoder reranker, on · S2-6 incremental ingestion, generations
 and a symlink flip · S2-5 tier-2 harness and freshness gate · S2-5b tier-2 baseline,
