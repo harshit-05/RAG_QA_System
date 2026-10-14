@@ -14,9 +14,11 @@ uvicorn reports ASGI spec 2.3, under which a client disconnect cancels its answe
 during the model's prompt evaluation too. That is why this command runs uvicorn and
 nothing else (DEC-18).
 
-``rag-serve`` exit codes: **0** the server ran and was stopped; **2** it could not start
-(invalid settings, a non-loopback host without a token, a configuration error, the
-model's server not answering, the address in use, or a usage error).
+``rag-serve`` exit codes: **0** the server ran and was stopped with Ctrl-C; **2** it could
+not start (invalid settings, a non-loopback host without a token, a configuration error,
+the model's server not answering, the address in use, or a usage error). A SIGTERM shuts
+it down the same way, and uvicorn then ends the process by that signal, as service
+managers expect (status 143 in a shell).
 """
 
 import argparse
@@ -59,9 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="rag-serve",
         description="Serve questions and ingestion over HTTP: answers stream as "
         "Server-Sent Events. Set RAG_API_TOKEN to require a bearer token.",
-        epilog="Exit status: 0 the server ran and was stopped; 2 could not start (invalid "
-        "settings, a non-loopback host without RAG_API_TOKEN, a configuration error, the "
-        "language model's server not answering, the address in use, or a usage error).",
+        epilog="Exit status: 0 the server ran and was stopped with Ctrl-C; 2 could not "
+        "start (invalid settings, a non-loopback host without RAG_API_TOKEN, a "
+        "configuration error, the language model's server not answering, the address in "
+        "use, or a usage error).",
     )
     parser.add_argument(
         "--config",
@@ -141,6 +144,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         server.run()
     except SystemExit:  # uvicorn exits when it cannot bind the address, after saying why
         return EXIT_CANNOT_START
+    except KeyboardInterrupt:
+        # Ctrl-C: uvicorn shut down gracefully, then re-raised the SIGINT it captured, and
+        # asyncio's runner turned that into KeyboardInterrupt (S2-9's end-to-end run). The
+        # stop was asked for, so the status below reports it, without a traceback.
+        pass
     return EXIT_OK if server.started else EXIT_CANNOT_START  # a failed lifespan: logged
 
 

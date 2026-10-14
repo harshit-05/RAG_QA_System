@@ -47,6 +47,11 @@ be revisited — or `Superseded`.
 | [019](#adr-019-reach-_target_-through-a-pydantic-alias-not-a-field-of-that-name) | Reach `_target_` through a Pydantic alias, not a field of that name | Accepted | 1 |
 | [020](#adr-020-the-_target_-allowlist-lives-at-the-import-funnel-and-is-hardcoded) | The `_target_` allowlist lives at the import funnel, and is hardcoded | Accepted | 1 |
 | [021](#adr-021-own-loaders-as-step-1-of-leaving-langchain-community) | Own loaders as step 1 of leaving `langchain-community` | Accepted | 1 → 3 |
+| [022](#adr-022-stop-a-stream-by-cancelling-the-task-that-consumes-it) | Stop a stream by cancelling the task that consumes it | Accepted | 2 |
+| [023](#adr-023-a-two-tier-quality-gate-whose-expensive-tier-is-committed-with-a-fingerprint) | A two-tier quality gate, whose expensive tier is committed with a fingerprint | Accepted | 2 |
+| [024](#adr-024-publish-an-index-by-an-atomic-symlink-flip-between-generations) | Publish an index by an atomic symlink flip between generations | Accepted (provisional) | 2 → 3 |
+| [025](#adr-025-version-a-local-judges-settings-as-a-modelfile) | Version a local judge's settings as a Modelfile | Accepted | 2 |
+| [026](#adr-026-an-embedder-identity-that-leaves-out-what-does-not-change-the-vectors) | An embedder identity that leaves out what does not change the vectors | Accepted | 2 |
 
 ---
 
@@ -386,6 +391,13 @@ check in S0-5's own Verification section. Phase 2 is explicitly permitted a
 narrow, named exception: `langchain_classic.retrievers.document_compressors
 .CrossEncoderReranker`, if a hand-rolled Runnable proves larger than reusing
 the wrapper — a decision deferred, not a rule broken.
+
+*Update (2026-10-13, Phase 2 exit): the exception was never used.* DEC-16
+hand-rolled the reranker on `sentence-transformers` (S2-4), so no source file
+imports `langchain_classic`. S2-4 also took `langchain_classic.` and
+`langchain_community.` off the `_target_` allowlist (ADR-020), so no config
+names either package. The rule stays provisional until Phase 3 removes
+`langchain-community` from the direct dependencies.
 
 **Consequences.**
 
@@ -1209,6 +1221,269 @@ was touching that code anyway. When you replace something that produces
 data downstream code depends on (here, citations), record what the old
 version produced first, then make the new one reproduce it. "It still
 works" is not a check; "the output is identical" is.
+
+---
+
+## ADR-022: Stop a stream by cancelling the task that consumes it
+
+**Context.** In v0.2, Ctrl-C stopped the display while Ollama generated on
+for about 43 s (S1-8's manual test): the chain ran the answer in an executor
+thread. Phase 2's API needed the same guarantee for a client that leaves.
+The obvious fix, going async, was tested and fell short twice:
+
+1. Under `RunnablePassthrough.assign`, `RunnableParallel` waits on its step
+   tasks with `asyncio.wait` and never cancels them. Cancelled at 0.5 s, the
+   model's stream closed at 2.0 s.
+2. Streamed directly, `prompt | llm | StrOutputParser()` runs each chunk in
+   its own task. A cancel landing while a chunk is in flight ends that task,
+   not the model's read: 66 of 300 one-core mid-stream cancels left the
+   stream open until the loop ran again, which in the CLI meant the next
+   question.
+
+**Decision.** One answer-event stream, `answering.stream_answer` (DEC-14),
+serves every front end, and there is one way to stop it: cancel the task
+that consumes it. The stream awaits retrieval, yields the sources, renders
+the prompt itself, and streams `llm.astream(messages)` in the consuming task.
+The model's read is then the only place a cancel can land, and a `finally`
+closes the model's stream. The CLI cancels through `asyncio.Runner`'s SIGINT
+handling, and the API through Starlette's cancel on disconnect, with no task
+of ours. Strict `xfail` tests keep both trap shapes as negative controls.
+
+**Consequences.**
+
+- *Pros:* checked against real Ollama: our connection closed within 0.03 s
+  of a dropped client or a Ctrl-C, mid-stream and during the prefill alike
+  (S2-7, S2-9). One mechanism covers the CLI, the API and evaluation.
+- *Cons:* the answer no longer streams through a composed LangChain chain
+  (`build_rag_chain` stays, for `invoke` only). A callback handler that
+  suspends in `on_llm_new_token` would reopen the window. FastAPI's native
+  SSE brought a producer task of its own, whose window the slot's teardown
+  now closes (S2-7). And Ollama finishes a prompt evaluation in progress
+  before it notices (caveat 21), so a cancel during the prefill frees our
+  side at once, and the runner only at the end of the prefill.
+
+**Alternatives considered.**
+
+- *Close the HTTP client from outside on cancel* — rejected: it reaches into
+  private state on every answer, and still leaves the orphaned task.
+- *A thread per answer with a stop flag* — rejected: Python threads cannot
+  be cancelled, which is the shape of the original bug.
+- *Keep the sequence and let the loop drain after a cancel* — rejected: every
+  interrupt would need a drain step. Streaming the model itself removes the
+  per-chunk tasks instead.
+
+**Lesson.** Async is not the same as cancellable. A cancel stops only the
+task it is delivered to, and any task a framework spawns for you and never
+cancels keeps running. Before relying on cancellation, find the task that
+owns the I/O, and test the cancel at its worst moment, forced and
+deterministic, not only on average: here the "flaky test" was the real bug.
+Go's `context.Context` teaches the same: cancellation reaches only the
+goroutines that were handed the context.
+
+---
+
+## ADR-023: A two-tier quality gate, whose expensive tier is committed with a fingerprint
+
+**Context.** Phase 2's exit needs an enforced quality bar (SRS §12). RAGAs
+with a local judge took 39–54 min per question on this CPU, so 13–18 h for
+the golden set. A hosted judge in CI would mean cost, a secret and network
+access. Retrieval metrics take under a minute and need no LLM.
+
+**Decision.** Two tiers (DEC-15). Tier 1 recomputes hit rate, MRR and
+recall in CI on every pull request and every push to `main`; its job is
+the only one that downloads models, which it caches. Tier 2 runs offline:
+the answers are generated here and scored on a GPU notebook. The result is
+committed with a fingerprint of six parts, `query`, `ingestion`, `corpus`,
+`questions`, `references` and `judge`, each a hash of the inputs that move
+it. CI's `rag-eval check` fails on a missed floor or a stale part, and names
+the re-run that fixes it: generate and score, or score only. Floors are the
+baseline minus a tolerance, and a stale run fails rather than warns
+(maintainer).
+
+**Consequences.**
+
+- *Pros:* every change passes both tiers, at a CI cost of minutes. An edit
+  to the prompt, a model setting, the corpus or a golden question cannot
+  merge without fresh answers, and the failure tells its author what the
+  re-run costs. Unhashed edits (comments, notes) cost nothing.
+- *Cons:* code is not fingerprinted, so a code change that alters answers
+  needs a re-run by hand. A fresh run still measures whatever its judge
+  measures: the hand check found this one lenient (S2-5b). Each hashed edit
+  costs about 70 min of generation and 35 min of GPU scoring. And the
+  fingerprint's coverage is a maintained list: reviews added
+  `CHUNKING_VERSION` and the instructor pin.
+
+**Alternatives considered.**
+
+- *RAGAs in CI with a hosted judge* — rejected: cost, a secret, network
+  access and a non-local dependency.
+- *Offline only* — rejected: nothing would be recomputed per change, and
+  retrieval regressions, the cheapest kind to catch, would wait for a manual
+  run.
+- *A warn-only freshness check* — rejected: a bar that does not fail is not
+  enforced.
+
+**Lesson.** When a check is too slow to run on every change, do not demote
+it to "run occasionally". Put its cheap, high-signal part in CI, and turn
+the expensive part into an artifact whose validity CI can check cheaply.
+It is a build cache key: hash the inputs, not the outputs, and invalidate
+precisely (Bazel's action keys work the same way). Having each part name its
+re-run turns a red build into instructions.
+
+---
+
+## ADR-024: Publish an index by an atomic symlink flip between generations
+
+**Context.** Incremental ingestion (DEC-17) updates the index rather than
+rebuilding it. FAISS saves two files, not atomically, and its add is not
+atomic either: vectors enter the index before the docstore rejects a
+duplicate ID. Meanwhile the API serves, and an ingest job or a CLI run may
+publish. The first draft, a two-rename swap (`live → .previous`,
+`.staging → live`), left a moment with no index at the path, and each crash
+point needed a repair rule of its own.
+
+**Decision.** `vectorstore/db_faiss` is a symlink to a generation folder,
+`db_faiss.gen-<UTC stamp with microseconds>-<8 hex>`. A run builds the new
+generation in memory from the live one, all or nothing, and writes it to a
+fresh folder. It `fsync`s the files and the folder, then `os.replace`s a
+temporary symlink over the path: one `rename(2)`. It then `fsync`s the
+parent and keeps only the previous generation. Recovery is one rule, run
+under the `flock`: delete every generation that is neither the link's target
+nor the newest older one. Readers detect a new index by `readlink`, because
+the generation's id is the target's name.
+
+**Consequences.**
+
+- *Pros:* a reader sees the old index or the new one, never neither and
+  never half. A crash at any point leaves the live index intact. The API
+  picks up a CLI's publish by comparing one `readlink`, and a rollback is a
+  link edit.
+- *Cons:* two generations sit on disk. It relies on POSIX semantics,
+  `rename(2)` and `flock`, which suit the Linux deployment target. v0.2's real
+  folder needed a one-time migration, the only two-step moment. And anything
+  unexpected at the path must be refused, not renamed aside: a review found
+  that a mis-set path could have renamed the corpus.
+
+*Provisional:* Phase 3 moves the index to Qdrant, which has snapshots of its
+own. The pattern stays right for any file-based artifact.
+
+**Alternatives considered.**
+
+- *A two-rename directory swap* — rejected: a gap with no index, and a
+  repair rule per crash point.
+- *Mutating the store per document* — rejected: FAISS's add is not atomic,
+  so one failed add would corrupt the generation that gets saved.
+- *Detecting a new index by mtime* — rejected: it races a swap in progress,
+  and coarse timestamps can hide one.
+
+**Lesson.** This is the release-directory pattern of deploy tools
+(Capistrano's `current` link, Nix profiles): never modify the live thing;
+build the next one beside it, then switch one pointer atomically, writing
+the pointer last and syncing around it. The number of crash states you must
+reason about is the real cost of a write protocol, so design for one
+recovery rule.
+
+---
+
+## ADR-025: Version a local judge's settings as a Modelfile
+
+**Context.** Tier 2's judge, `gemma2:9b`, is reached through Ollama's
+OpenAI-compatible endpoint, which is what RAGAs speaks. That endpoint cannot
+set the context size per request, and Ollama defaults it to 4096 tokens
+below 24 GiB of VRAM, which includes this host and a Colab T4. RAGAs'
+prompts exceed that, and Ollama truncates them silently (caveat 22). ragas
+also sends its own temperature, `top_p` and `max_tokens` with every call.
+
+**Decision.** The judge is a derived model, `rag-judge`, built with
+`ollama create` from `eval/judge.Modelfile`: `gemma2:9b`, `num_ctx 8192`,
+temperature 0, a seed and `num_predict 2048` (DEC-15's second review, S2-5).
+The Modelfile is committed, and hashed into the fingerprint's `judge` part
+with its comments stripped. `score` checks the served judge against it both
+ways: every parameter it sets, no parameter that neither it nor its base
+sets, its base, and its SYSTEM and TEMPLATE. It refuses a judge served with
+any other context, and sends the Modelfile's own temperature, seed and
+`num_predict` with each call, so the hashed text is what runs. The scoring
+recipe pins the Ollama version, the run records the model digests, and
+`check --with-ollama` compares them.
+
+**Consequences.**
+
+- *Pros:* the judge's settings are reviewed text, not server state, and a
+  re-created judge is checked rather than trusted. The same Modelfile on the
+  same weights and Ollama version gave the same digest on Colab and here,
+  and two scorings agreed to the last digit (S2-5b), so a re-score on the
+  same setup reproduces.
+- *Cons:* a manual `ollama create` after every re-pull or edit. The spread
+  across hardware is unmeasured. The check trusts what Ollama's `/api/show`
+  reports.
+
+**Alternatives considered.**
+
+- *Pass `num_ctx` per request* — not possible on the OpenAI endpoint.
+- *Ollama's native API through a custom adapter* — rejected: more code than a
+  Modelfile, against the interface RAGAs already speaks.
+- *`OLLAMA_CONTEXT_LENGTH` server-wide* — rejected: unversioned server state,
+  and it changes every model on the host.
+- *The default context* — rejected: silent truncation, the very failure.
+
+**Lesson.** When an API cannot carry a setting per request, the setting
+becomes state, and unversioned state drifts. Move it into a file you can
+commit and hash, then check at the moment of use that what runs matches
+the file. It is configuration as code with a drift check, as
+`terraform plan` compares the declared state with the live one.
+
+---
+
+## ADR-026: An embedder identity that leaves out what does not change the vectors
+
+**Context.** The manifest must tell when an index no longer fits the
+configured embedder (DEC-17): vectors from another model are not comparable,
+and nothing fails loudly when they are compared. But the same model runs as
+`minilm_cpu` here and `minilm_cuda` on Colab (DEC-12's offload path), and a
+spec carries operational keys too. Comparing whole specs would force a
+re-embed on every move between CPU and GPU. Comparing `model_name` alone
+would miss `encode_kwargs` such as `normalize_embeddings`.
+
+**Decision.** The identity is a sha256 of the spec without the keys shown
+not to change the vectors: `device`, `model_kwargs.device`, `show_progress`
+and `cache_folder`. An empty `model_kwargs` is dropped. For the classes in
+`manifest.EMBEDDER_DEFAULTS`, a default spelled out (`encode_kwargs: {}`,
+`query_encode_kwargs: {}`, `multi_process: false`) is dropped too, and a test
+checks those defaults against the installed library. `multi_process` itself
+stays in (maintainer): langchain-huggingface 1.2.2's multi-process path
+drops `encode_kwargs`. The dimension is recorded as a backstop. A changed
+identity forces a full rebuild, and `rag-query` and `rag-eval` refuse a
+mismatched index before loading any model. Tier 2's fingerprint reuses the
+same functions, so the two can never disagree.
+
+**Consequences.**
+
+- *Pros:* the CPU and GPU twins share one index, a real change cannot pass
+  unnoticed, and the query side fails before any model loads.
+- *Cons:* each exclusion is a claim about a library's behaviour, so each
+  needs evidence and the defaults table needs its test. A default is a fact
+  about one class in one version, so the table lists classes one by one, and
+  an unlisted class keeps every key it is given: at worst a needless
+  rebuild, never a stale index. The model is pinned by name, not by
+  revision.
+
+**Alternatives considered.**
+
+- *Hash the whole spec* — rejected: the CPU and GPU twins would differ, and
+  every offload would re-embed the corpus.
+- *Compare `model_name` only* — rejected: it misses `encode_kwargs`.
+- *Compare the vectors of a probe text* — rejected: it loads the model on
+  the query path, and floats differ by device.
+
+**Lesson.** An identity used for invalidation should be exactly "what
+determines the output", no more and no less. Too wide, and it rebuilds for
+nothing, until people learn to bypass the check; too narrow, and it serves
+stale results. Each exclusion is a claim about the code that reads the key,
+so prove it with a test against the installed library. A claim not proved
+that way can be wrong: the reason first given for the per-class table, that
+`encode_kwargs: {}` turns normalisation off in `HuggingFaceBgeEmbeddings`,
+was false for the installed version (S2-9's review). Its test checked our
+function, not the library. The table stands for the reason above.
 
 ---
 

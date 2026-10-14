@@ -334,6 +334,9 @@ gh run list --limit 2                  # check and eval-retrieval green (CI inge
     - Only for classes listed in `EMBEDDER_DEFAULTS`, which a test checks against the
       installed library. A blanket "drop empty mappings" rule would be unsafe:
       `HuggingFaceBgeEmbeddings` defaults to normalising, and `{}` there turns it off.
+      _S2-9's review (2026-10-14): that example is wrong. In langchain-community 0.4.2
+      the class defaults `encode_kwargs` to `{}` and never normalises by itself. The rule
+      stands: a default counts only once a test checks it for that class._
     - `minilm_cpu`'s identity is unchanged.
   - **`rag-query` sent the user to `rag-ingest` for things it refuses.** Examples are a
     file, a foreign folder, or a generation folder named directly. `check_index` now
