@@ -114,9 +114,9 @@ Five changes since v0.2 need something from you. The first two apply to every v0
    needs to run its own code is not supported.
 5. **`rag-ingest` exits 2 for a corpus folder it cannot read**, where it exited 1. It also
    exits 2 while another ingestion runs, or when something that is not an index sits at
-   the index path. Its failure lines
-   now say "N item(s)" where they said "N file(s)", and summary lines with a zero count are
-   left out. Update any script that matches the old codes or wording.
+   the index path. Its failure lines now say "N item(s)" where they said "N file(s)", and
+   summary lines with a zero count are left out. Update any script that matches the old
+   codes or wording.
 
 ### GPU embeddings (Colab / Kaggle)
 
@@ -260,10 +260,13 @@ curl -N -X POST http://<server>:8000/v1/query -H "Authorization: Bearer $RAG_API
 ```
 
 Ctrl-C stops `rag-serve`: answers in flight get up to 5 seconds, then it exits 0. A
-SIGTERM stops it the same way, and the process then ends by that signal (status 143), as
-service managers expect. It exits 2, with the reason, when it cannot start: invalid
-settings, a non-loopback host without a token, a configuration error, Ollama not
-answering, or the port in use.
+second Ctrl-C in those seconds does not hurry it, though uvicorn offers one: the 5
+seconds still run out, then the server's own shutdown (which reports an ingest job it
+abandons) is skipped, and uvicorn logs the cancelled tasks as errors. It still exits 0.
+A SIGTERM stops it the same way as one Ctrl-C, and the process then ends by that signal
+(status 143), as service managers expect. It exits 2, with the reason, when it cannot
+start: invalid settings, a non-loopback host without a token, a configuration error,
+Ollama not answering, or the port in use.
 
 ## Configuration
 
@@ -373,8 +376,8 @@ as a regression alarm rather than a measure of absolute quality.
    `answers-latest.json`, install uv, and run `uv sync --extra eval`.
 3. `ollama create rag-judge -f eval/judge.Modelfile`.
 4. `uv run --no-sync rag-eval score --out <a mounted Drive folder>/generation-latest.json`.
-   A run that disconnects resumes from its checkpoint, `<out>.partial.jsonl`, when you run
-   the same command again.
+   A run that disconnects resumes from its checkpoint beside the output,
+   `generation-latest.partial.jsonl`, when you run the same command again.
 5. Commit the scores as `eval/runs/generation-latest.json`. On your machine,
    `uv run rag-eval check --with-ollama` also compares the recorded model digests with your
    local ones.
@@ -471,8 +474,8 @@ The parentheses keep `pipefail` out of your shell. CI also fails if the installe
 is not the CPU build.
 
 CI's second job, `eval-retrieval`, ingests the corpus and runs tier 1 against its floors.
-It is CI's only job with network access, to fetch the two models from Hugging Face, and
-it caches them: on a cache hit it runs offline. When it is red and `check` is green,
+It is CI's only job that downloads models: it fetches the two from Hugging Face and
+caches them, and on a cache hit it runs offline. When it is red and `check` is green,
 retrieval quality moved, not the code.
 
 ## Roadmap

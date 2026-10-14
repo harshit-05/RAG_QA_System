@@ -1291,8 +1291,8 @@ access. Retrieval metrics take under a minute and need no LLM.
 
 **Decision.** Two tiers (DEC-15). Tier 1 recomputes hit rate, MRR and
 recall in CI on every pull request and every push to `main`; its job is
-CI's only network use, and its models are cached. Tier 2 runs offline: the
-answers are generated here and scored on a GPU notebook. The result is
+the only one that downloads models, which it caches. Tier 2 runs offline:
+the answers are generated here and scored on a GPU notebook. The result is
 committed with a fingerprint of six parts, `query`, `ingestion`, `corpus`,
 `questions`, `references` and `judge`, each a hash of the inputs that move
 it. CI's `rag-eval check` fails on a missed floor or a stale part, and names
@@ -1400,10 +1400,11 @@ temperature 0, a seed and `num_predict 2048` (DEC-15's second review, S2-5).
 The Modelfile is committed, and hashed into the fingerprint's `judge` part
 with its comments stripped. `score` checks the served judge against it both
 ways: every parameter it sets, no parameter that neither it nor its base
-sets, its base, and its SYSTEM and TEMPLATE. It refuses a judge served with any other context, and sends
-the Modelfile's own temperature, seed and `num_predict` with each call, so
-the hashed text is what runs. The scoring recipe pins the Ollama version,
-the run records the model digests, and `check --with-ollama` compares them.
+sets, its base, and its SYSTEM and TEMPLATE. It refuses a judge served with
+any other context, and sends the Modelfile's own temperature, seed and
+`num_predict` with each call, so the hashed text is what runs. The scoring
+recipe pins the Ollama version, the run records the model digests, and
+`check --with-ollama` compares them.
 
 **Consequences.**
 
@@ -1460,10 +1461,11 @@ same functions, so the two can never disagree.
 - *Pros:* the CPU and GPU twins share one index, a real change cannot pass
   unnoticed, and the query side fails before any model loads.
 - *Cons:* each exclusion is a claim about a library's behaviour, so each
-  needs evidence and the defaults table needs its test. A blanket "drop
-  defaults" rule would be wrong: in `HuggingFaceBgeEmbeddings`,
-  `encode_kwargs: {}` turns normalisation off. The model is pinned by name,
-  not by revision.
+  needs evidence and the defaults table needs its test. A default is a fact
+  about one class in one version, so the table lists classes one by one, and
+  an unlisted class keeps every key it is given: at worst a needless
+  rebuild, never a stale index. The model is pinned by name, not by
+  revision.
 
 **Alternatives considered.**
 
@@ -1477,8 +1479,11 @@ same functions, so the two can never disagree.
 determines the output", no more and no less. Too wide, and it rebuilds for
 nothing, until people learn to bypass the check; too narrow, and it serves
 stale results. Each exclusion is a claim about the code that reads the key,
-so prove it with a test against the installed library, and remember that
-"default" can mean different things in sibling classes.
+so prove it with a test against the installed library. A claim not proved
+that way can be wrong: the reason first given for the per-class table, that
+`encode_kwargs: {}` turns normalisation off in `HuggingFaceBgeEmbeddings`,
+was false for the installed version (S2-9's review). Its test checked our
+function, not the library. The table stands for the reason above.
 
 ---
 

@@ -93,8 +93,8 @@ def test_a_default_spelled_out_is_the_same_embedder(key: str, value: Any) -> Non
 
 
 def test_a_default_counts_only_for_a_class_whose_defaults_are_listed() -> None:
-    # In HuggingFaceBgeEmbeddings, encode_kwargs defaults to normalising, and {} turns that
-    # off: an unlisted class keeps every key it is given.
+    # An unlisted class keeps every key it is given: its defaults are unchecked, so {} may
+    # or may not be one. (Here it is, in langchain-community 0.4.2; S2-9's review.)
     bge = {**MINILM, "_target_": "langchain_community.embeddings.HuggingFaceBgeEmbeddings"}
     assert embedder_identity({**bge, "encode_kwargs": {}}) != embedder_identity(bge)
 

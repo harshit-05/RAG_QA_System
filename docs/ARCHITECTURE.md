@@ -1184,6 +1184,11 @@ Python, with no LangChain.
     `manifest.EMBEDDER_DEFAULTS`, whose defaults a test checks against the installed
     library. A blanket rule would be unsafe: in `HuggingFaceBgeEmbeddings`,
     `encode_kwargs: {}` turns normalisation off. No existing identity changed.
+  - _S2-9's review (2026-10-14): the BGE example is wrong._ In the installed
+    langchain-community 0.4.2, that class's `encode_kwargs` already defaults to `{}`, and
+    it never normalises by itself. The rule stands for its own reason: a default counts
+    only once a test checks it for that class, and an unlisted class keeps every key
+    (ADR-026).
 - **Chunk IDs are `uuid5(namespace, f"{relative_path}:{sha256}:{index}")`.**
   - They are deterministic, so an unchanged document keeps its IDs.
   - The path is part of the key because two files with identical bytes (a copy in another
@@ -1501,7 +1506,7 @@ src/rag_qa/
 │                       ragas_scoring.py   the only ragas importer; coverage-omitted
 │                       fingerprint.py     the six fingerprint parts; langchain_core only
 │                       gate.py            freshness + floors: rag-eval check (no models)
-│                       checkpoint.py      resumable runs: <out>.partial.jsonl (S2-5b)
+│                       checkpoint.py      resumable runs: <stem>.partial.jsonl (S2-5b)
 │                       cli.py             rag-eval {retrieval, generate, score, check}
 ├── api/           NEW  app.py      create_app, the lifespan
 │                       routes.py   the endpoints, and the refusals as dependencies
@@ -1878,8 +1883,9 @@ change.
     whole answer. They count towards hit rate and MRR but not recall. Validation is
     stricter than §2.4 first listed: normalised sources, strict types, and a committed
     test that every quote in the notes is on its page.
-  - **Both tiers' floors live in `evaluation/gate.py`** (S2-3), so the model-free job can
-    read them. They are rounded down to 3 decimals.
+  - **Both tiers' floor checks live in `evaluation/gate.py`** (S2-3), so the model-free
+    job can run them. The floors themselves are in `eval/thresholds.yaml`, rounded down
+    to 3 decimals.
   - **CI runs on pull requests, pushes to `main` and `v*` tags only** (S2-3's reviews): a
     story branch is tested by its PR. `eval-retrieval` has a 20-minute limit, saves the
     HF cache right after ingest, and runs offline on an exact cache hit. Any error while
@@ -1929,7 +1935,9 @@ change.
     SIGINT it captured after its graceful shutdown, asyncio's runner turns it into
     `KeyboardInterrupt`, and it escaped `main()` as a traceback with status 130. S2-7's
     log was tee'd without `-i`, so the end-to-end run was the first to see it. `main()`
-    catches it, and a test sends a real SIGINT to a child process.
+    catches it, and a test sends a real SIGINT to a child process. A second Ctrl-C
+    during the graceful wait still exits 0, but it does not shorten the wait: uvicorn
+    then skips the lifespan's shutdown and logs the cancelled tasks (S2-9's review).
 - **Dependencies:** fastapi 0.143.0, starlette 1.7.0 and uvicorn 0.54.0 (plain, over h11),
   with opentelemetry-api through FastAPI (S2-7); `requests`, declared rather than
   transitive (S2-8).

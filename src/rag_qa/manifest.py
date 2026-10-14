@@ -49,9 +49,8 @@ EMBEDDER_RUNTIME_MODEL_KWARGS = ("device",)
 #: Per embedder class, keys whose value equals what leaving them out gives: dropped, so
 #: spelling a default out never reads as another embedder (S2-6's second review). Only for
 #: classes listed here, with defaults checked against the installed library
-#: (``tests/test_manifest.py``): in langchain-community's ``HuggingFaceBgeEmbeddings``, say,
-#: ``encode_kwargs: {}`` turns normalisation off, so a blanket rule would equate two
-#: embedders that differ.
+#: (``tests/test_manifest.py``): a default is a fact about one class in one version, so an
+#: unlisted class keeps every key it is given, which costs at worst a needless rebuild.
 EMBEDDER_DEFAULTS: Final[Mapping[str, Mapping[str, Any]]] = {
     "langchain_huggingface.HuggingFaceEmbeddings": {
         "encode_kwargs": {},
