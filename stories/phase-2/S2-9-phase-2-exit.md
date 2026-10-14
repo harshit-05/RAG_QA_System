@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done 2026-10-13, in review; tag `v0.3` on `main` after the merge |
+| **Status** | Done 2026-10-13, reviewed 2026-10-14; tag `v0.3` on `main` after the merge |
 | **Closes** | — (phase exit; SRS §12 Phase 2) |
 | **Depends on** | S2-1 … S2-8, S2-5b |
 | **Model** | opus-fast |
@@ -236,6 +236,58 @@ with 9.5–10 GB available before the server started.
    with a GitHub-style slugger, the five new ADR index links included.
 4. **The release:** `version = "0.3.0"` and `__version__ = "0.3.0"`. No `v0.3` tag yet:
    the maintainer tags `main` after the merge.
+
+## Review (2026-10-14)
+
+**Second review (Opus 5.5): no blockers; 4 doc findings and 4 nits, fixed on the PR.** It
+covered the server fix, the docs against the code, and the run's own logs.
+
+- **Checked and sound:**
+  - **The gates, re-run on `6cec959`:** ruff and mypy clean; **890 passed, 5 xfailed**,
+    coverage 98.37%; `rag-eval check` exit 0, all six parts ok.
+  - **CI on the PR's head `6cec959`:** `check` and `eval-retrieval` green (run
+    38396359569). Verification 1's PR run is done.
+  - **The fix discriminates.** The new test's child, run against `main`'s `server.py`,
+    died by SIGINT (status 130 in a shell) with a traceback; on the branch it exits 0
+    with none. SIGTERM gives 143 and no traceback, as the docs say. A Ctrl-C while the
+    lifespan loads the models is inside uvicorn's signal capture, so it exits 0 too.
+  - **The upgrade guide works:** v0.2's own `config.yaml` is refused as shipped and loads
+    once the `cross_encoder` entry is deleted.
+  - **The README against the code:** the allowlist, `trust_remote_code`, the prompt
+    rules, the chunk metadata, "item(s)" against v0.2's "file(s)", the job's fields, the
+    golden set's 25/20/5, the thresholds, the Modelfile, the fingerprint's parts and
+    runtime keys, and CI's triggers. With a token the Host check is off, so the
+    "another machine" example works. Every name §2.2 cites exists.
+  - **The run's logs** in `~/dev/rag-s2-9-e2e` match the table: 7a's close at +0.01 s
+    and 7b's at +0.03 s, the runner idle at +133 s and +0.68 s, and the traceback in
+    `serve-repro.log` but not in `serve-fixed.log`.
+  - **The commits:** Conventional headers, `Refs:` trailers that git parses, and no
+    attribution in the commits or the PR body.
+- **Findings, fixed on the PR:**
+  - **ADR-026's example was false.** It said that in `HuggingFaceBgeEmbeddings`,
+    `encode_kwargs: {}` turns normalisation off. In the installed langchain-community
+    0.4.2 that field already defaults to `{}`, and the class never normalises by itself;
+    its quantized siblings do not either. The claim came from S2-6, where its test checked
+    our identity function, not the library. The decision stands for its own reason.
+    ADR-026's Cons and Lesson are reworded. ARCHITECTURE.md and S2-6's story get dated
+    notes, and the comments in `manifest.py` and `test_manifest.py` are corrected. No
+    hashed input moved.
+  - **"CI's only job with network access"** (README) and **"CI's only network use"**
+    (ADR-023) were wrong: the `check` job runs `uv sync --locked` and pip-audit's live
+    lookup. What holds is that `eval-retrieval` is the only job that downloads models.
+  - **A second Ctrl-C was undocumented,** and it is what uvicorn's log offers during the
+    graceful wait ("CTRL+C to force quit"). Reproduced with a request in flight: it exits
+    0, but does not shorten the 5 s wait (exit at 5.4 s after the first), skips the
+    lifespan's shutdown, and uvicorn logs the cancelled tasks as errors. On `main` the
+    same case exited 130, so the fix improves it. Now in the README, §2.8, and the
+    backlog's Docker line: only a repeated SIGINT forces, so `docker stop` never does.
+  - **Caveat 24 said about 70 min to score on a T4,** counting S2-5b's two scorings.
+    CLAUDE.md, which cites it, the README, ADR-023 and caveat 16 say about 35 min for
+    one. It now says 35.
+- **Nits, fixed:** the checkpoint is `generation-latest.partial.jsonl`, not
+  `<out>.partial.jsonl` (README; `<stem>` in §2.2); §2.8 put the floors in `gate.py`,
+  where their checks live, and the numbers are in `eval/thresholds.yaml`; one overlong
+  line in ADR-025; an odd break in README's upgrade step 5.
 
 ## Release, after the merge
 

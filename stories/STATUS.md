@@ -21,8 +21,25 @@ sharding Phase 3 into stories (Step 2).
 - **Before it:** S2-9's PR merged, `main` tagged `v0.3` with its CI run checked, and the
   close-out commit (S2-9's story has the recipe).
 
-**S2-9 is implemented (2026-10-13), awaiting review and its PR** (on Opus 5.5, where the
-story says opus-fast). The exit criterion holds; one bug was found and fixed.
+**S2-9 is implemented (2026-10-13) and reviewed (2026-10-14), on PR #17** (on Opus 5.5,
+where the story says opus-fast). The exit criterion holds; one bug was found and fixed.
+CI was green on the PR's head `6cec959` (run 38396359569), before the review's fixes.
+
+**Second review of S2-9 (2026-10-14): no blockers; 4 doc findings and 4 nits, fixed on the
+PR.** It re-ran the gates (890 passed, `rag-eval check` exit 0), ran the new test's child
+against `main`'s `server.py` (status 130 and a traceback there, 0 on the branch), and
+loaded v0.2's own config through the upgrade guide. Detail in the story.
+
+- **ADR-026's example was false:** `HuggingFaceBgeEmbeddings` already defaults
+  `encode_kwargs` to `{}`, so `{}` changes nothing. It dates from S2-6, whose test checked
+  our function, not the library. The decision stands; the ADR, two dated notes and two
+  comments are corrected, and no hashed input moved.
+- **"CI's only network use"** (README, ADR-023) was wrong: the `check` job syncs and
+  audits over the network. `eval-retrieval` is the only job that downloads models.
+- **A second Ctrl-C on `rag-serve`** still exits 0 but does not shorten the 5 s wait. It
+  skips the lifespan's shutdown, and uvicorn logs errors. It is documented now, and the
+  backlog's Docker line has it.
+- **Caveat 24's "70 min on a T4"** counted two scorings; one is about 35 min.
 
 - **The fresh clone over HTTP** (`~/dev/rag-s2-9-e2e/fresh`, `main` plus the version bump,
   then the server fix):
@@ -36,7 +53,7 @@ story says opus-fast). The exit criterion holds; one bug was found and fixed.
     within 1 s mid-stream;
   - every next query got a slot.
 - **The quality bar:** `rag-eval check` exit 0, fingerprint fresh; tier 1 here gave 0.950,
-  0.796 and 0.858 in 43 s. CI's run on the PR is still to come.
+  0.796 and 0.858 in 43 s. CI's `check` and `eval-retrieval` were green on the PR.
 - **Found by the run, fixed in this PR (maintainer's call):** Ctrl-C on `rag-serve` shut
   down cleanly, then printed a `KeyboardInterrupt` traceback and exited 130, where its
   docs say 0. It dates from S2-7, whose log lost its shutdown lines to a plain `tee`.
@@ -597,7 +614,7 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
     stays empty.
 24. **An edit to a hashed input fails CI until tier 2 is re-run** (S2-5b, DEC-15). The
     `check` job ends with `rag-eval check`, which fails on a stale committed run.
-    - **A re-run of generate and score (about 70 min here, then about 70 min on a T4):**
+    - **A re-run of generate and score (about 70 min here, then about 35 min on a T4):**
       the prompt, an llm, retriever or reranker spec, `reranker_candidates`, a corpus file,
       the embedder, the splitter, the loader map or a golden question.
     - **A re-run of score only:** a `ground_truth`, `decline_marker` or the judge's
@@ -722,7 +739,7 @@ Exit ⇒ tag `v0.3`, version 0.3.0. Design: ARCHITECTURE.md §2.1–§2.7.
 | [S2-6](phase-2/S2-6-ingest-manifest.md) | Incremental ingestion with a hash manifest | FR-2, ISS-14, NFR-4 (part), SRS §7.3 | S2-1 | Done 2026-10-06 (PR #12) |
 | [S2-7](phase-2/S2-7-http-api.md) | FastAPI service with SSE streaming | FR-6, SRS §8.1 | S2-1, S2-6 | Done 2026-10-12 (PR #15) |
 | [S2-8](phase-2/S2-8-cli-polish.md) | CLI polish batch | backlog: CLI polish | S2-1, S2-6 | Done 2026-10-13 (PR #16) |
-| [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Done 2026-10-13, in review; `v0.3` after the merge |
+| [S2-9](phase-2/S2-9-phase-2-exit.md) | Phase 2 exit: docs, end-to-end, 0.3.0 | — (exit) | S2-1 … S2-8, S2-5b | Done 2026-10-13 (PR #17), reviewed 2026-10-14; `v0.3` after the merge |
 
 **Order.** S2-1, S2-2, S2-3, S2-4, **S2-6**, S2-5, S2-5b, S2-7, S2-8, S2-9. It differs
 from the numbering in one place, and the Depends column is satisfied throughout:
@@ -877,6 +894,12 @@ reading **Phase 3 —** is an input to the Phase 3 architecture pass.
     gracefully on it, then uvicorn ends the process by that signal: status 143, no
     traceback. That is conventional, and only Ctrl-C promises exit 0. The container story
     decides whether the entrypoint should map SIGTERM to 0.
+  - **And a forced stop (S2-9's review).** A second Ctrl-C during the 5 s graceful wait
+    (uvicorn's log offers "CTRL+C to force quit") does not shorten it. It skips the
+    lifespan's shutdown, which closes the model clients and reports an abandoned ingest
+    job, and uvicorn logs the cancelled tasks as errors; the exit is still 0. Harmless at
+    exit. Only a repeated SIGINT forces: a second SIGTERM does not, so `docker stop`
+    (SIGTERM, then SIGKILL after 10 s) never takes this path.
 - **Phase 3, or the first advisory with no fix — audit-gate policy (S1-8 review).** CI's Audit step does a live
   advisory lookup and blocks, so a new advisory with no fixed release turns every
   PR red, docs-only ones included. **First seen 2026-10-07 on S2-5's PR:** multidict
