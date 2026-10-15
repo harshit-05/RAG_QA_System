@@ -124,9 +124,10 @@ The story file's **Model** field is authoritative per story. The convention:
 | Library/design choices (e.g. Qdrant vs pgvector, Phase 3) | fable |
 
 **Fable is unavailable from 2026-10-04 (maintainer).** Until access returns, work routed
-to fable runs on Opus 5.5 at max effort: S2-4 to S2-7 did, and the Phase 3 architecture
-pass is next. There is no stronger model to escalate to, so that work keeps the
-two-review habit, and each story records the substitution under Deviation.
+to fable runs on Opus 5.5 at max effort: S2-4 to S2-7 did, and so did the Phase 3
+architecture pass (2026-10-15); Phase 3's fable-routed stories will too. There is no
+stronger model to escalate to, so that work keeps the two-review habit, and each story
+records the substitution under Deviation.
 
 ## GPU policy
 
