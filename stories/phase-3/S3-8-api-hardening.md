@@ -53,12 +53,17 @@ Design: ARCHITECTURE.md §3.1, DEC-23. TLS is S3-9's, at the proxy.
     token is configured.
 - **Rate limits** (`api/limits.py`): token buckets of our own, in memory, per replica.
   - **Per key:** `RAG_API_RATE_LIMIT` requests a minute (default 60).
-  - **Per client address,** for the routes that need no key.
-  - **A strict per-address bucket for failed authentication,** which slows token guessing.
+  - **Per client address,** for requests without a key (a loopback server with none
+    configured).
+  - **A strict per-address bucket for failed authentication,** 10 a minute, which slows
+    token guessing.
+  - **The health routes are exempt** (DEC-23, design review 1): Docker's and Caddy's checks
+    poll them from one address, and the 5 s probe cache bounds their cost.
 
-  The answer is 429 with `Retry-After`. Behind a proxy, the client address comes from
-  `X-Forwarded-For`, trusted only from the addresses in `RAG_API_TRUSTED_PROXIES`, passed to
-  uvicorn's `forwarded_allow_ips`.
+  The answer is 429 with `Retry-After`, and this story adds S3-7's counter for it. Behind a
+  proxy, the client address comes from `X-Forwarded-For`, trusted only from the addresses in
+  `RAG_API_TRUSTED_PROXIES`, passed to uvicorn's `forwarded_allow_ips` (which takes CIDR
+  ranges in 0.54.0, so a compose network's range works).
 - **Body size:** a pure ASGI middleware that answers 413 when `Content-Length` exceeds
   64 KiB, or when a streamed body does, before FastAPI reads or parses anything. It runs
   first, ahead of every dependency, which closes S2-7's pre-authentication gap. A test sends
@@ -72,9 +77,13 @@ Design: ARCHITECTURE.md §3.1, DEC-23. TLS is S3-9's, at the proxy.
     running job and inserts, so the 409 holds whichever replica answers.
   - **The job's thread** still runs `ingest()`, which holds the writer `flock`. Its row
     records the status, the times, the exit code, the report and the log as JSON.
-  - **An abandoned job.** A row marked running while the lock is free belongs to a process
+  - **An abandoned job is told by a lock of its own** (DEC-23, design review 1). The replica
+    takes a `flock` on `var/jobs/<id>.lock` before it inserts the row, and holds it until the
+    row's final status is written; the row reads "running" only once `ingest()` holds the
+    writer lock (a callback). An unfinished row whose job lock is free belongs to a process
     that died: it reads as `failed`, with `abandoned: true`. The kernel releases a `flock`
-    with its process, and DEC-17/DEC-19's recovery cleans up what the run left.
+    with its process, and DEC-17/DEC-19's recovery cleans up what the run left. Never probe
+    the writer lock: a writer starting at that moment would exit 2.
   - The last 100 jobs are kept.
 - **A stateless query tier** (NFR-5). Check that nothing a request depends on lives only in
   one replica:
@@ -89,8 +98,8 @@ Design: ARCHITECTURE.md §3.1, DEC-23. TLS is S3-9's, at the proxy.
   - an ingest published by one is served by the other at its next request.
 - **README:** keys (`rag-keys`), scopes, limits, the 413, 429 and 403 statuses, and the
   documented limits of NFR-5 (ingestion on one host; slots and rate limits per replica; one
-  Ollama queues every replica's answers). `rag-serve --help` and its cleartext warning point
-  to S3-9's TLS recipe.
+  Ollama queues every replica's answers). S3-9 points `rag-serve`'s cleartext warning at its
+  TLS recipe, once that exists.
 
 ## Out of scope
 
@@ -101,6 +110,9 @@ Design: ARCHITECTURE.md §3.1, DEC-23. TLS is S3-9's, at the proxy.
 
 ```bash
 uv run rag-eval check; echo "exit $?"                     # 0
+# no answer changed: the same contexts as S3-2's on Qdrant (§3.5, design review 1)
+uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-8/contexts.json
+diff ~/dev/rag-s3-2/contexts-qdrant.json ~/dev/rag-s3-8/contexts.json && echo IDENTICAL
 HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q
 uv run ruff check && uv run ruff format --check && uv run mypy
 
@@ -110,9 +122,10 @@ uv run rag-keys add bot --scope query
 uv run rag-keys list                                       # names and scopes only
 # rag-serve in a foreground terminal (tee -i), then:
 #   bot's token: POST /v1/query 200; POST /v1/ingest 403
-#   no token: 401; a wrong token 30 times: 429
+#   no token: 401; a wrong token 11 times within a minute: the 11th is 429
 #   a 1 MB body without a token: 413
-#   200 GETs of /v1/health in 2 s: Ollama asked at most once per 5 s (its log)
+#   200 GETs of /v1/health in 2 s: every one answered, none 429; Ollama asked at most once
+#     per 5 s (its log)
 #   kill -9 rag-serve during an ingest job, start it again: the job reads failed, abandoned
 uv run rag-keys revoke bot                                 # bot's token: 401 within 5 s
 gh pr checks
@@ -123,8 +136,8 @@ gh pr checks
 - **`auth.py`:** constant-time comparison on hashes, the same answer for every failure, no
   token in any log line, and the keys file's mode.
 - **The middleware's order:** the size check must run before FastAPI parses the body.
-- **The job database's transaction,** and the abandoned-job rule's race: a job that finishes
-  must write its row before it releases the lock.
+- **The job database's transaction,** and the abandoned-job rule: the job lock is taken before
+  the row exists, and a job that finishes writes its row before it releases the lock.
 
 ## Discovered
 

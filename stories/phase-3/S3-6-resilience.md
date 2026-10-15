@@ -23,6 +23,9 @@ key the maintainer supplies (DEC-21). Design: ARCHITECTURE.md §3.1, DEC-21.
 confirm the key is in their shell under the provider's own variable. Never write it to a
 file in the repository, and never print it.
 
+**If the plan-first step splits it** (design review 1), the seam is resilience (timeouts,
+retries and breakers) against the fallback, which waits on the provider's key.
+
 - **`rag_qa/resilience.py`.**
   - `CircuitBreaker(name, failures=3, reset_after_s=30, clock=time.monotonic)`: closed,
     then open after that many consecutive failures, then half-open, letting one probe
@@ -38,16 +41,27 @@ file in the repository, and never print it.
     keys are runtime keys, never hashed (`fingerprint.RUNTIME_KEYS`); a test confirms.
   - **Qdrant:** `timeout_s`, from S3-2.
 - **Retries.**
-  - **Qdrant:** every call in `vectorstore`, on connection errors, timeouts and 5xx. All of
-    them are idempotent (DEC-19).
+  - **Qdrant:** every call in `vectorstore`, on connection errors, timeouts and 5xx, with
+    what a repeat counts as done stated per call (DEC-21, design review 1): a create that
+    finds our uniquely named collection, or a delete that finds nothing, has succeeded; a
+    snapshot is never retried.
   - **Ollama:** only before the first token, and only on a connection error, 2 attempts. A
     retry after a token would duplicate text.
-  - The retry loop runs in the consuming task: no new task near the stream (DEC-14).
+  - The retry loop runs in the consuming task: no new task near the stream (DEC-14). It is
+    written by hand in `stream_answer`: tenacity retries a call, and the model's stream is an
+    async generator.
 - **Breakers**, one per dependency: Ollama, Qdrant, and the fallback.
   - **API:** a breaker that is open is a dependency that answers 503 with `Retry-After`,
     before the first byte (DEC-18's rule), and `/v1/health` reports each breaker's state.
+    Both name the service, never its address (DEC-18).
   - **Start-up checks** (`rag-query`, `rag-ingest`, `rag-eval`, `rag-serve`) exit 2 naming
     the service.
+  - **With a fallback configured, Ollama down is not a refusal** (DEC-21, design review 1).
+    An open Ollama breaker routes the answer to the fallback, and the 503 comes only when the
+    fallback's breaker is open too. The start-up checks warn about Ollama instead of exiting
+    2, and the primary is built with `validate_model_on_init` off (a runtime key, so nothing
+    hashed moves). Without this, `preflight` would end `rag-query` before the real check
+    below could start.
   - **The reopen back-off (backlog):** while Qdrant's breaker is open, `Serving.refresh()`
     returns at once.
 - **The hosted fallback.**
@@ -95,6 +109,9 @@ file in the repository, and never print it.
 
 ```bash
 uv run rag-eval check; echo "exit $?"                     # 0: runtime keys only
+# no answer changed: the same contexts as S3-2's on Qdrant (§3.5, design review 1)
+uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-6/contexts.json
+diff ~/dev/rag-s3-2/contexts-qdrant.json ~/dev/rag-s3-6/contexts.json && echo IDENTICAL
 HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q
 uv run ruff check && uv run ruff format --check && uv run mypy
 
@@ -106,8 +123,9 @@ uv run rag-query; echo "exit $?"                          # 2, naming Ollama, wi
 
 # the one real check (maintainer's key in the shell; a scratch overlay naming the fallback)
 uv sync --extra fallback
-uv run rag-query --config <scratch config with fallback_llm>   # answers; "(answered by …)"
+uv run rag-query --config <scratch config with fallback_llm>   # starts, warns; "(answered by …)"
 # Ctrl-C during the fallback's answer: the prompt returns at once, nothing printed after
+# rag-serve on the same config: the answer streams from the fallback (`done`'s model), no 503
 sudo systemctl start ollama && uv sync
 gh pr checks
 ```
@@ -117,6 +135,8 @@ gh pr checks
 - **The stream path:** no new task, no `.with_fallbacks()`, and the same `finally` closing
   whichever model streamed. Then read the forced-cancel tests.
 - **Retries only before the first token,** and only on connection errors.
+- **The fallback's routing:** with one configured, Ollama down starts every command and the
+  fallback answers; with none, the refusals stand.
 - **The secret rule:** no key name, and no value from a provider's variable, in any log
   line, error or event.
 

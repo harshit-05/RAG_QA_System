@@ -24,12 +24,11 @@ tier-2 run stays valid with no re-run. Design: ARCHITECTURE.md §3.1, DEC-19; in
 
 ## Scope
 
-**The plan-first step decides** whether this splits into two stories:
-
-- the store, ingest, the query side and parity;
-- the API's refresh, CI and the docs.
-
-It records the decision here.
+**The plan-first step decides** whether this splits into two stories. If it does, the seam is
+the parity tool: step 1 lands first, as its own pull request, while FAISS is still the store,
+and the rest follows. Not the store against the API's refresh, CI and the docs (design review
+1): between those two, `main`'s API and CI would point at a store that is gone. It records the
+decision here.
 
 1. **First commit, while FAISS is still the store: the parity tool.**
    `rag-eval retrieval --contexts-out FILE` writes, for all 25 golden questions,
@@ -66,6 +65,10 @@ It records the decision here.
    - Per document, `chunks: n` replaces `chunk_ids`, and `Manifest.chunk_ids()` derives
      them through `chunk_id`.
    - It adds `store: {distance: cosine, exact: true}`.
+   - **The whole shape of §3.4, now** (design review 1): `sparse: null`, and each document's
+     `splitter` set to the default splitter's identity (S3-4 makes it per extension). The
+     records are strict, so a field added in a later story would make every version-2
+     manifest unreadable.
    - Version 1 is no longer read: it only ever lived beside a FAISS index.
 6. **`vectorstore.py`, rewritten on `qdrant-client`** (the seam).
    - **What it provides:** `QdrantStore`, `live_index`, `in_the_way`, `open_generation`,
@@ -90,6 +93,10 @@ It records the decision here.
 8. **The query side** (`chain.py`).
    - `check_index`, `open_retrieval` and `live_generation` go through the store, and the
      retriever binds to the generation it resolved, never to the alias.
+   - **Readers resolve the alias again for each question** (DEC-19, design review 1):
+     `rag-query` before each question, `rag-eval` before each item, as the API does per
+     request. Two switches delete a generation, and a REPL session can outlive two ingests.
+     A search whose collection has gone resolves once more.
    - **v0.3's folder:** with `vectorstore/db_faiss*` still on disk, `rag-query`'s "no index"
      message says that v0.3's index is no longer read.
 9. **The API** (`api/state.py`): `refresh()` compares the alias's target with the generation
@@ -103,6 +110,9 @@ It records the decision here.
       within a test.
     - The FAISS-specific tests are rewritten for the store.
     - The architecture test gains: only `vectorstore` imports `qdrant_client`.
+    - A hermetic test makes `update_collection_aliases` fail mid-update: the live generation
+      is untouched, and the next recovery removes the orphan. The moment between the new
+      collection and the switch lasts a second or two, too short to hit by hand.
     - A `qdrant_server` marker (in `pyproject.toml`'s pytest settings) covers tests that
       need the real server: the alias switch and recovery, and the metadata round trip.
       They are skipped unless `RAG_TEST_QDRANT_URL` is set.
@@ -138,6 +148,10 @@ uv run rag-ingest
 uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-2/contexts-qdrant.json
 diff ~/dev/rag-s3-2/contexts-faiss.json ~/dev/rag-s3-2/contexts-qdrant.json && echo IDENTICAL
 # tier 1 question by question equals S2-4's: hit rate 0.950, MRR 0.7958, recall 0.8583
+# and twice on Qdrant: an exact search must not vary between runs (DEC-20 has how a cut can)
+uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-2/contexts-qdrant-2.json
+diff ~/dev/rag-s3-2/contexts-qdrant.json ~/dev/rag-s3-2/contexts-qdrant-2.json && echo STABLE
+# S3-3 to S3-10 diff their own contexts against contexts-qdrant.json (§3.5)
 
 # 2. nothing hashed moved
 uv run rag-eval check; echo "exit $?"              # 0
@@ -149,9 +163,8 @@ docker compose start qdrant
 RAG_TEST_QDRANT_URL=http://127.0.0.1:6333 uv run pytest -m qdrant_server -q
 
 # 4. a crash mid-update publishes nothing, and the next run cleans up. kill -9 a
-#    `rag-ingest --rebuild` twice: once while it embeds, and once after its new generation
-#    appears in /collections but before the alias moves (watch with
-#    `watch -n0.5 curl -s 127.0.0.1:6333/collections`). After each:
+#    `rag-ingest --rebuild` while it embeds (about 2 minutes, an easy window); the moment
+#    between the new collection and the switch is the hermetic test's (step 11). Then:
 curl -s 127.0.0.1:6333/aliases                     # still the old generation
 uv run rag-ingest                                  # "Removed what an earlier run left behind"
 uv run rag-query <<< "What is GLIDER?"            # answers from the live generation
@@ -161,8 +174,9 @@ docker compose stop qdrant; uv run rag-query; echo "exit $?"      # 2, with the 
 docker compose start qdrant
 RAG_VECTOR_STORE_PATH=/tmp/x uv run rag-ingest; echo "exit $?"  # 2, with the migration
 
-# 6. the API picks up a CLI ingest without a restart (foreground terminal, tee -i)
-#    /v1/health names the new generation after a rag-ingest that changed something
+# 6. the API picks up a CLI ingest without a restart (foreground terminal, tee -i):
+#    `rag-ingest --rebuild` makes a new generation without touching the corpus, and
+#    /v1/health names it
 
 # 7. CI green on the PR: check, and eval-retrieval with the Qdrant service
 gh pr checks
@@ -174,9 +188,9 @@ gh pr checks
   is complete before it, and recovery can never delete the target or the newest older
   generation. A crash at each step should leave the live generation intact.
 - **Readers bind to a generation, not to the alias.** Check `open_retrieval` and the API's
-  refresh.
+  refresh, and that `rag-query` resolves the alias again before each question.
 - **Parity:** if step 1's diff is not empty, the story must name the question and the tie,
-  and the re-run moves to S3-11; nothing else changes.
+  and the re-run moves to S3-11b; nothing else changes.
 - **The in-memory fixture** must share one client between ingest and the query side, or the
   tests pass against an empty store.
 

@@ -3,8 +3,8 @@
 | | |
 | --- | --- |
 | **Status** | Todo |
-| **Closes** | — (the Phase 3 exit, and v1.0: SRS complete) |
-| **Depends on** | S3-1 … S3-11 |
+| **Closes** | — (the Phase 3 exit, and v1.0: SRS complete); the SRS amend session (revision 2.0) |
+| **Depends on** | S3-1 … S3-11b |
 | **Model** | opus-fast |
 | **Plan-first** | no |
 | **Branch** | `chore/s3-12-phase-3-exit`. Low code risk; it ends in the release tag. |
@@ -12,9 +12,10 @@
 ## Goal
 
 The exit criterion is shown, not asserted: every row of the gap-closure table in
-ARCHITECTURE.md's Phase 3 intro is run from a fresh clone, on the compose stack. The docs
-then describe v1.0 as delivered, the SRS's differences are listed for the amend session, and
-1.0.0 is released and tagged `v1.0` with CI green on the tag, as each phase exit was.
+ARCHITECTURE.md's Phase 3 intro is run from a fresh clone, on the compose stack. The SRS is
+amended to the system as delivered, in the explicit session WORKFLOW requires (maintainer,
+design review 1). The docs then describe v1.0 as delivered, and 1.0.0 is released and tagged
+`v1.0` with CI green on the tag, as each phase exit was.
 
 ## Scope
 
@@ -23,7 +24,9 @@ then describe v1.0 as delivered, the SRS's differences are listed for the amend 
   1. `cp .env.example .env`, keys made with `rag-keys`, `docker compose up -d`, and every
      service healthy;
   2. an ingest over HTTPS through Caddy, then a question answered over SSE, then the same
-     through `rag-query` on the host;
+     through `rag-query` on the host. The host shell loads `.env` first, for Qdrant's key
+     (caveat 32), and one Ollama is stopped before the host run: `rag-query` talks to the
+     host's, while the stack's holds mistral too (caveat 8);
   3. `--scale app=2`: both replicas serve the new generation, and either one reports the
      job;
   4. a client dropped through Caddy, during the prefill and mid-stream: our connection to
@@ -50,9 +53,15 @@ then describe v1.0 as delivered, the SRS's differences are listed for the amend 
     step), deployment, observability, backup and restore, capacity planning, known
     limitations and the roadmap.
   - **CLAUDE.md:** the environment facts re-verified, the release line, the commands.
-- **The SRS amend list:** Phase 2's differences (the Phase 2 intro) and Phase 3's (the
-  Phase 3 intro), merged into one list for the pending amend session. The SRS itself is
-  not edited.
+- **The SRS amend session** (maintainer, design review 1), WORKFLOW's explicit one, in a
+  commit of its own before the release commit.
+  - **The list:** Phase 2's differences (the Phase 2 intro), Phase 3's (the Phase 3 intro),
+    and a sweep of the ADRs and §1.8 for earlier departures that neither phase list holds.
+    Among those are ADR-008's hand-composed chain and DEC-14's stream in place of §6.3's
+    `create_retrieval_chain`, §6.3's allowlist prefixes, and §10's coverage targets.
+  - **The amendment:** the maintainer approves the merged list, and `docs/SRS.md` becomes
+    revision 2.0, with a revision block naming each change.
+  - **If the session runs long,** the release moves to S3-12b, as S2-5b split from S2-5.
 - **The backlog** is reconciled: every Phase 3 line is closed by its story or re-deferred
   with a reason.
 - **Release:**
@@ -71,6 +80,7 @@ then describe v1.0 as delivered, the SRS's differences are listed for the amend 
 git clone <repo> ~/dev/rag-s3-12-e2e/fresh && cd ~/dev/rag-s3-12-e2e/fresh
 # the nine steps above, each with its output pasted here
 uv run rag-eval check; echo "exit $?"                     # 0
+grep -n 'Version\|Revision 2.0' docs/SRS.md | head -3     # 2.0, with its revision block
 grep -n '^version' pyproject.toml                          # 1.0.0
 gh run list --limit 5                                      # green: the PR, main, the tag
 ```
@@ -78,6 +88,8 @@ gh run list --limit 5                                      # green: the PR, main
 ## Review notes for the human
 
 - **The gap-closure table:** every row needs evidence pasted here.
+- **The SRS amendment:** you approve the merged list before `docs/SRS.md` changes; every
+  difference in it is either amended or still listed.
 - **The upgrade guide from v0.3,** followed literally on a v0.3 checkout, as S2-9 did for
   v0.2.
 

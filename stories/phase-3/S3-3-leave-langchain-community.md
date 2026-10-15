@@ -47,7 +47,7 @@ stay in `uv.lock` but not in a plain `uv sync`. Design: ARCHITECTURE.md §3.1, D
 
 - The ragas import shim (`ragas_scoring.import_ragas`): it goes when a ragas release stops
   importing `langchain_community.chat_models.vertexai`, which 0.4.3, the newest, still does.
-- The `eval` extra's `langchain` advisory (S3-9's policy entry, S3-11's bump).
+- The `eval` extra's advisories: S3-9 bumps `langchain` and writes the audit policy.
 
 ## Verification
 
@@ -60,6 +60,9 @@ grep -rnE "^\s*(from|import) (langchain_community|faiss)|allow_dangerous_deseria
 uv run ruff check && uv run ruff format --check && uv run mypy
 HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q
 uv run rag-eval check; echo "exit $?"                         # 0
+# no answer changed: the same contexts as S3-2's on Qdrant (§3.5, design review 1)
+uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-3/contexts.json
+diff ~/dev/rag-s3-2/contexts-qdrant.json ~/dev/rag-s3-3/contexts.json && echo IDENTICAL
 # the eval extra still imports ragas (the shim), then back to the main env
 uv sync --extra eval && uv run --no-sync python -c "from rag_qa.evaluation.ragas_scoring import import_ragas; import_ragas(); print('ragas ok')"
 uv sync

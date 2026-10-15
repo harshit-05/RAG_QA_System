@@ -25,6 +25,10 @@ Design: ARCHITECTURE.md §3.1, DEC-24.
 
 ## Scope
 
+**If the plan-first step splits it** (design review 1), the seam is the stack (the image,
+compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy, the
+`langchain` bump with the audit policy, the weekly run and the ruleset).
+
 - **`Dockerfile`**, multi-stage; every base image pinned by digest.
   - **Install:** `ghcr.io/astral-sh/uv:0.11.8` on `debian:trixie-slim`, with uv-managed
     CPython 3.12.13 (`.python-version`). `uv sync --locked --no-dev --no-install-project`,
@@ -56,7 +60,11 @@ Design: ARCHITECTURE.md §3.1, DEC-24.
     (`RAG_QDRANT_API_KEY`).
   - **`ollama`:** 0.22.1, the host's version (ADR-025), with a named volume and a one-shot
     `ollama-pull` service for the configured model. README: unload the host daemon's model
-    first (`ollama stop mistral`), since both would hold about 5 GB.
+    first (`ollama stop mistral`), since both would hold about 5 GB, and the other way round
+    before a host `rag-query`, which talks to the host's Ollama.
+  - **The cost, surfaced before the first `docker compose up`** (CLAUDE.md; design review 1):
+    the pull downloads mistral again, about 4.1 GB, since the container keeps its own
+    models, and the image build downloads CPU torch, the stack and both HF models.
   - **`app`:**
     - the image, with `init: true` and an `env_file` of `.env`;
     - mounts: `./var` (the lock and the job database, shared with the host's CLI),
@@ -77,6 +85,16 @@ Design: ARCHITECTURE.md §3.1, DEC-24.
   - the status with and without the init;
   - that the lifespan's shutdown lines appear in `docker compose logs`;
   - that a second SIGTERM does not force a stop.
+- **The `eval` extra's `langchain` bump** (moved from S3-11; maintainer, design review 1):
+  `uv lock --upgrade-package langchain`, and nothing else. Checked in a scratch copy on
+  2026-10-15, it moves exactly five packages:
+  - `langchain` 1.3.2 → 1.4.3, which fixes PYSEC-2026-2192;
+  - `langgraph` 1.2.2 → 1.2.15 and `langgraph-checkpoint` 4.2.0 → 4.3.0;
+  - `langgraph-sdk` 0.3.15 → 0.4.7, which fixes CVE-2026-104873;
+  - `websockets` 17.1 → 16.1.1, which the main environment shares through langsmith. The main
+    environment still audits clean.
+
+  No tier-2 part moves: `judge` pins ragas and instructor, not langchain.
 - **CI** (needs the `workflow` scope, caveat 13).
   - **The `container` job:**
     - `docker/setup-buildx-action` v4.4.1 and `docker/build-push-action` v7.4.0, by SHA,
@@ -95,13 +113,20 @@ Design: ARCHITECTURE.md §3.1, DEC-24.
     - `.trivyignore.yaml` entries, each with a statement and an `expired_at` at most 90 days
       out;
     - a weekly `schedule` run of the whole workflow on `main`;
-    - an Audit step for the `eval` extra, from `uv export --extra eval` with no install. Its
-      first entry is PYSEC-2026-2192 (`langchain` 1.3.2), "fixed by S3-11's bump".
+    - an Audit step for the `eval` extra, from `uv export --no-dev --extra eval
+      --no-emit-project` with no install, and torch's `+cpu` label stripped as the main Audit
+      step does (caveat 12: pip-audit skips torch otherwise). After the bump, its two
+      advisories have no fixed release, and are the policy's first entries: `diskcache`
+      5.6.3, PYSEC-2026-2447 (unsafe unpickling, which reaches only ragas's cache folder on a
+      scoring machine), and `ragas` 0.4.3, PYSEC-2026-3046 (SSRF in the multimodal
+      faithfulness metric, which the judge does not use).
   - **The ruleset recipe,** for the maintainer to run: a `gh api` call that requires
-    `check`, `eval-retrieval`, `deploy-config` and `container` on `main`. Record whether
-    the repository's plan allows it.
+    `check`, `eval-retrieval`, `deploy-config` and `container` on `main`. The repository is
+    public, so the free plan has rulesets (checked in design review 1).
 - **README:** a "Deployment" section covering:
   - `cp .env.example .env`, keys (`rag-keys`), `docker compose up -d`, the HTTPS address;
+  - a host shell loads `.env` before a CLI talks to the stack, `set -a; . ./.env; set +a`
+    (caveat 32): `settings.py` reads the environment only, and Qdrant now wants its key;
   - scaling to two replicas, and the memory note;
   - the observability profile;
   - what 143 means on stop.
@@ -117,9 +142,19 @@ Design: ARCHITECTURE.md §3.1, DEC-24.
 ## Verification
 
 ```bash
-uv run rag-eval check; echo "exit $?"                     # 0
+uv run rag-eval check; echo "exit $?"                     # 0: the bump moved no tier-2 part
+# no answer changed: the same contexts as S3-2's on Qdrant (§3.5, design review 1)
+uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-9/contexts.json
+diff ~/dev/rag-s3-2/contexts-qdrant.json ~/dev/rag-s3-9/contexts.json && echo IDENTICAL
 HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q
 uv run ruff check && uv run ruff format --check && uv run mypy
+
+# the bump: exactly five version lines move, then the eval extra's audit as CI runs it
+git diff main -- uv.lock | grep -E '^[-+]version = '
+uv export --no-dev --extra eval --no-emit-project --no-hashes | grep -v "sys_platform == 'darwin'" \
+  | sed 's/^\(torch==[^ ;]*\)+cpu/\1/' > /tmp/s3-9-eval.txt
+uv run --no-sync pip-audit --no-deps --disable-pip -r /tmp/s3-9-eval.txt \
+  --ignore-vuln PYSEC-2026-2447 --ignore-vuln PYSEC-2026-3046   # no known vulnerabilities
 
 docker build -t rag-qa:s3-9 .                              # fails if torch is not +cpu
 docker run --rm --entrypoint python rag-qa:s3-9 -c "import torch; print(torch.__version__)"   # +cpu
@@ -140,6 +175,7 @@ gh pr checks                                               # container and deplo
 - **The Trivy step:** the sha256 is written in `ci.yml`, and the binary is checked before it
   runs.
 - **The Dockerfile's install line, and its `+cpu` check.**
+- **The bump's lock diff:** the five packages above, and nothing else.
 - **Caddy's health check is liveness,** and its body limit matches the app's.
 - **`.env.example` holds names only.**
 

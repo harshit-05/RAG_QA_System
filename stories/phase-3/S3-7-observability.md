@@ -19,6 +19,9 @@ None of it may reopen DEC-14's cancel window. Design: ARCHITECTURE.md §3.1, DEC
 
 ## Scope
 
+**If the plan-first step splits it** (design review 1), the seam is logs, metrics and the two
+benchmarks against traces and alerts, the half that touches DEC-14's cancel guarantee.
+
 - **Dependencies:**
   - main: `structlog`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http`,
     `opentelemetry-instrumentation-fastapi` and `prometheus-client`;
@@ -43,12 +46,15 @@ None of it may reopen DEC-14's cancel window. Design: ARCHITECTURE.md §3.1, DEC
       `run_in_executor` does not.
   - **`metrics.py`:** the histograms, counters and gauges DEC-22 lists, on their own
     listener, `RAG_API_METRICS_PORT` (off unless set). Names follow the GenAI conventions
-    where one exists (`gen_ai_client_token_usage`).
+    where one exists (`gen_ai_client_token_usage`). The 429 counter comes with S3-8, which
+    makes the 429s. Ingest metrics come from the API's jobs: a `rag-ingest` run has no
+    listener, and reports in its log.
 - **Spans:**
   - **The HTTP server span:** `FastAPIInstrumentor` with the `send` and `receive` spans
-    excluded and the health routes left out. If excluding them is not possible on 0.66b1,
-    or the instrumentation disturbs the disconnect path, write a server span by hand and
-    record why.
+    excluded and the health routes left out. 0.66b1 has `exclude_spans`, and with `receive`
+    excluded its ASGI middleware hands Starlette the raw `receive`, so the disconnect path
+    is untouched (checked in design review 1). If the real-uvicorn disconnect test still
+    shows a difference, write a server span by hand and record why.
   - **`rag.retrieve`,** with `rag.embed_query`, `rag.vector_search` (`db.system.name`
     qdrant, the collection, the mode) and `rag.rerank` (candidates, kept, `min_score`);
   - **`chat {model}`.** Its attributes are taken from the semantic-conventions package's own
@@ -74,9 +80,13 @@ None of it may reopen DEC-14's cancel window. Design: ARCHITECTURE.md §3.1, DEC
   against a sha256 written in `ci.yml` (caveat 30).
 - **NFR-1.** `scripts/bench_retrieval.py` fills a scratch collection on the local server
   with 100k synthetic unit vectors, plus sparse vectors, and measures the query embedding
-  plus an exact search, dense and hybrid, over 200 real-looking questions. It reports p50
-  and p95 and deletes its collection. Record the numbers in the README's new "Capacity
-  planning" section, beside NFR-3's table.
+  plus an exact search, dense and hybrid, over 200 real-looking questions, at k=20: the
+  reranker's candidates, stricter than NFR-1's 10 (design review 1). It reports p50 and p95
+  and deletes its collection. Record the numbers in the README's new "Capacity planning"
+  section, beside NFR-3's table.
+- **NFR-2a** (DEC-27, design review 1). The same script times the real retrieval half, the
+  rerank included, over the 25 golden questions with the model idle, and reports the p95 of
+  what the `sources` event waits for. The target is under 2 s; record it beside NFR-1's.
 - **Tests:**
   - an in-memory span exporter shows the spans, their parents and the GenAI attributes;
   - with tracing on, DEC-14's forced-cancel tests and the real-uvicorn disconnect test pass,
@@ -95,6 +105,9 @@ None of it may reopen DEC-14's cancel window. Design: ARCHITECTURE.md §3.1, DEC
 
 ```bash
 uv run rag-eval check; echo "exit $?"                     # 0
+# no answer changed: the same contexts as S3-2's on Qdrant (§3.5, design review 1)
+uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-7/contexts.json
+diff ~/dev/rag-s3-2/contexts-qdrant.json ~/dev/rag-s3-7/contexts.json && echo IDENTICAL
 HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q
 uv run ruff check && uv run ruff format --check && uv run mypy
 
@@ -103,13 +116,18 @@ docker run --rm -d --name jaeger -p 127.0.0.1:16686:16686 -p 127.0.0.1:4318:4318
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 RAG_API_METRICS_PORT=9464 uv run rag-serve 2>&1 | tee -i /tmp/s3-7-serve.log
 # one answer over HTTP, one dropped mid-stream: Jaeger shows both traces, the dropped one
 # marked cancelled; curl -s 127.0.0.1:9464/metrics | grep rag_ shows ttft, sources, tokens
-RAG_LOG_FORMAT=json uv run rag-ingest | head -3          # JSON lines; throughput in the summary
+# JSON lines, and throughput in the summary: a rebuild into a scratch collection, since an
+# up-to-date ingest embeds nothing; then the scratch generations go
+RAG_LOG_FORMAT=json RAG_QDRANT_COLLECTION=s3_7_scratch uv run rag-ingest --rebuild | tail -3
+curl -s 127.0.0.1:6333/collections | jq -r '.result.collections[].name' | grep '^s3_7_scratch--gen-' \
+  | xargs -I{} curl -s -X DELETE 127.0.0.1:6333/collections/{}
 
 # alert rules, as CI runs them (promtool from the image S3-9 pins; no host install)
 docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool prom/prometheus:v3.15.0 check config /p/prometheus.yml
 docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool prom/prometheus:v3.15.0 test rules /p/rules.test.yml
 
-uv run python scripts/bench_retrieval.py                  # p95 < 300 ms at 100k, dense and hybrid
+uv run python scripts/bench_retrieval.py    # p95 < 300 ms at 100k, k=20, dense and hybrid;
+                                            # NFR-2a: the golden questions' p95 < 2 s
 docker stop jaeger
 gh pr checks
 ```

@@ -21,7 +21,7 @@ Tier 1 measures hybrid retrieval against dense on the golden set, with S2-4's di
 question by question, on a scratch config and collection. The measurements become S3-11's
 input. **The real config keeps dense retrieval and sets no sparse encoder**, so neither tier
 2's `query` part nor its `ingestion` part moves, and the switch, if tier 1 earns it, rides
-S3-11's one re-run (DEC-26). Design: ARCHITECTURE.md §3.1, DEC-20; §3.3, §3.4.
+S3-11b's one re-run (DEC-26). Design: ARCHITECTURE.md §3.1, DEC-20; §3.3, §3.4.
 
 ## Scope
 
@@ -54,7 +54,10 @@ S3-11's one re-run (DEC-26). Design: ARCHITECTURE.md §3.1, DEC-20; §3.3, §3.4
 - **The hybrid query:**
   - `query_points` with a dense prefetch (exact) and a sparse one, each with `limit=prefetch`
     (40) and the filter;
-  - fused by `RrfQuery(rrf=Rrf(k=rrf_k))` down to `reranker_candidates`;
+  - fused by `RrfQuery(rrf=Rrf(k=rrf_k))` over their whole union (`limit` 2 × prefetch);
+  - then ordered in `vectorstore` by score, ties by point ID, and cut to
+    `reranker_candidates`. Qdrant's server breaks no ties, so a cut it made could keep a
+    different one of two tied points from one run to the next (DEC-20, design review 1);
   - `rrf_k` is always sent: Qdrant's default is 2 (caveat 31).
 - **The `sources` filter.**
   - **The retrieval half** takes a `RetrievalQuery(question, sources=())`; settle the exact
@@ -84,14 +87,16 @@ S3-11's one re-run (DEC-26). Design: ARCHITECTURE.md §3.1, DEC-20; §3.3, §3.4
     configured retrieval, the answerable questions' hit rate and recall, and the chunks
     that survive on answerable and on unanswerable questions;
   - a recommendation: hybrid on or off, and a `min_score` value.
-- **Server tests** (`qdrant_server`): a hybrid query and a filtered query on the real server.
+- **Server tests** (`qdrant_server`): a hybrid query and a filtered query on the real server,
+  and a fused list with a tie across its two lists, cut where the tie falls: the same points
+  every time.
 - **README:** the `sources` filter (HTTP and CLI) and what hybrid retrieval is, marked as
   measured but not yet on.
 
 ## Out of scope
 
 - Switching the real config to hybrid, setting the sparse encoder there, or setting
-  `min_score`: S3-11, with the re-run.
+  `min_score`: S3-11 chooses, and S3-11b commits the choice with the re-run.
 - Stemming (a backlog line); weighted RRF (unless the table makes a case, recorded for
   S3-11).
 
@@ -101,14 +106,24 @@ S3-11's one re-run (DEC-26). Design: ARCHITECTURE.md §3.1, DEC-20; §3.3, §3.4
 uv run rag-eval check; echo "exit $?"                     # 0: nothing hashed moved
 uv run rag-ingest                                         # the real index: nothing changed
 uv run rag-eval retrieval                                 # unchanged: 0.950 / 0.7958 / 0.8583
+# no answer changed: the same contexts as S3-2's on Qdrant (§3.5, design review 1)
+uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-5/contexts.json
+diff ~/dev/rag-s3-2/contexts-qdrant.json ~/dev/rag-s3-5/contexts.json && echo IDENTICAL
 HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q
 RAG_TEST_QDRANT_URL=http://127.0.0.1:6333 uv run pytest -m qdrant_server -q
 uv run ruff check && uv run ruff format --check && uv run mypy
 
 # tier 1, dense against hybrid, on a scratch collection (caveat 9)
 RAG_QDRANT_COLLECTION=s3_5_hybrid uv run rag-ingest --config <scratch hybrid config>
-RAG_QDRANT_COLLECTION=s3_5_hybrid uv run rag-eval retrieval --config <scratch hybrid config>
+RAG_QDRANT_COLLECTION=s3_5_hybrid uv run rag-eval retrieval --config <scratch hybrid config> \
+  --contexts-out ~/dev/rag-s3-5/hybrid-1.json
+RAG_QDRANT_COLLECTION=s3_5_hybrid uv run rag-eval retrieval --config <scratch hybrid config> \
+  --contexts-out ~/dev/rag-s3-5/hybrid-2.json
+diff ~/dev/rag-s3-5/hybrid-1.json ~/dev/rag-s3-5/hybrid-2.json && echo STABLE   # DEC-20's cut
 # ... the variants and the min_score cutoffs; every table pasted here
+# clean up: deleting the scratch generations removes their alias too
+curl -s 127.0.0.1:6333/collections | jq -r '.result.collections[].name' | grep '^s3_5_hybrid--gen-' \
+  | xargs -I{} curl -s -X DELETE 127.0.0.1:6333/collections/{}
 
 # the filter, over HTTP (rag-serve in a foreground terminal, logged with tee -i)
 curl -sN -X POST 127.0.0.1:8000/v1/query -H 'content-type: application/json' \
@@ -122,7 +137,8 @@ gh pr checks
 
 - **The BM25 arithmetic:** compare one chunk's weights with the formula by hand, and check
   that the query side sends 1 per distinct token. The IDF must come from Qdrant, not twice.
-- **`rrf_k` is always sent.**
+- **`rrf_k` is always sent, and our code makes the cut:** the fused list comes back whole and
+  is ordered by score, then point ID.
 - **The identity rules:** the sparse identity is in the manifest always, and in the
   fingerprint only when set.
 - **Tier 1's table** is a decision input: make sure the scratch config differs from the real

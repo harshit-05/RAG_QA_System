@@ -5,17 +5,21 @@
 
 ## Now
 
-**Next action: design review 1 of the Phase 3 design**, then design review 2, both against
-the pull request that adds it (`chore/phase-3-architecture`). S3-1 starts once both reviews'
-findings are folded in and the pull request is merged.
+**Next action: design review 2 of the Phase 3 design**, against the pull request that adds it
+(`chore/phase-3-architecture`). Design review 1 is folded in (below). S3-1 starts once review
+2's findings are folded in and the pull request is merged.
 
 - **The reviews**, each in a fresh session, as Phase 2's were (2026-10-02):
-  - **Review 1** reads ARCHITECTURE.md Phase 3 and the twelve stories against the SRS, the
-    board and the code, and checks the claims marked "checked" against the installed
-    libraries.
-  - **Review 2** attacks the risky parts: the store's protocol and recovery (DEC-19), keys
-    and limits (DEC-23), the sweep's cost and statistics (DEC-26), and cancellation under
-    tracing and behind the proxy (DEC-22, DEC-24).
+  - **Review 1 is done** (2026-10-15). It read ARCHITECTURE.md Phase 3 and the stories
+    against the SRS, the board and the code, and checked the claims marked "checked"
+    against the installed libraries. Its record is below.
+  - **Review 2** attacks the risky parts:
+    - the store's protocol and recovery (DEC-19);
+    - keys and limits (DEC-23);
+    - the sweep's cost and statistics (DEC-26);
+    - cancellation under tracing and behind the proxy (DEC-22, DEC-24);
+    - review 1's own fixes: the fusion cut (DEC-20), the restore under the lock (DEC-25),
+      the fallback's routing (DEC-21) and the job's own lock (DEC-23).
 - **The maintainer, in parallel** (no session needed):
   - hand-label faithfulness for the 20 answerable v0.3 answers, before S3-11 (format in
     DEC-26);
@@ -32,17 +36,70 @@ findings are folded in and the pull request is merged.
   that makes the exit executable and Phase 3's own SRS differences.
 - DEC-3 and DEC-9 are resolved, DEC-2 and DEC-5 point at their stories, and DEC-19 … DEC-28
   are new (Decisions log).
-- The phase is sharded into S3-1 … S3-12 (below), and every Phase 3 backlog line names its
-  story.
+- The phase is sharded into S3-1 … S3-12 (below), with S3-11b split off in design review 1,
+  and every Phase 3 backlog line names its story.
 - **The maintainer's decisions:** Qdrant, with three additions (backup and restore tested
   against a real server; the sparse vectors' source decided, and switched on only in the
   batched re-run; the quickstart change stated); NFR-2 revised; the hosted fallback as an
   opt-in seam plus one real check; named, scoped API keys; `ruff format` once, gated.
-- **Tier 2 is re-run once in the phase,** in S3-11 (DEC-26). Every earlier story shows that
-  it moves no hashed input.
+- **Tier 2 is re-run once in the phase,** in S3-11b, after S3-11's sweep (DEC-26). Every
+  earlier story shows that it moves no hashed input.
 - **The pass ran on Opus 5.5 at max effort,** in place of Fable (ADR-018).
 - **Versions were checked** by resolving in a scratch copy of the project; the real
   `uv.lock` was not touched.
+
+**Design reviews of the Phase 3 design (before any code).** Review 1 is folded into the pull
+request; review 2 is next.
+
+**Design review 1 (2026-10-15, breadth): 4 blockers, 16 findings and 11 nits, all fixed in
+the docs.** It checked:
+
+- the SRS coverage, and Phase 2's decisions;
+- the tier-2 promise, story by story;
+- the backlog, and the stories;
+- every claim marked "checked", against installed source, Qdrant's own code at v1.19.2,
+  release lists and a scratch resolve. The real `uv.lock` was not touched.
+
+What it found, and what changed:
+
+- **The blockers:**
+  - **Hybrid retrieval would not repeat.** Qdrant's server sorts fused points by score alone,
+    in hash-map order ("Does not break ties"), and ties are common in RRF. Our code now asks
+    for the whole union and makes the cut itself, ties by point ID (DEC-20, caveat 31).
+  - **A restore raced recovery.** It took the writer lock only to switch, so an ingest
+    starting mid-restore would delete the uploaded generation. The lock is now held from the
+    upload to the end (DEC-25).
+  - **The fallback contradicted the breaker.** Ollama down meant a 503 and an exit 2, in the
+    very case the fallback is for, so S3-6's one real check could not run. With a fallback
+    configured, Ollama's breaker now routes to it (DEC-21).
+  - **The `eval` extra has four advisories, not one,** all published before the pass.
+    langchain's and langgraph-sdk's have fixes; diskcache's and ragas's do not. The policy
+    allows no ignore for a fixed one, so the langchain bump moves into S3-9 (DEC-24).
+- **Findings that changed the design:**
+  - readers resolve the alias again per question, since a Qdrant generation is gone two
+    switches later (DEC-19);
+  - each Qdrant call's retry semantics are stated (DEC-21);
+  - an abandoned job is told by a lock of its own, and the health routes are exempt from
+    rate limits (DEC-23);
+  - S3-2 writes manifest version 2 whole;
+  - every story from S3-3 to S3-10 diffs the contexts digest against S3-2's;
+  - NFR-1 is benchmarked at k=20, and NFR-2a is measured as a p95 (DEC-22, DEC-27);
+  - the gap-closure table has one row per requirement, adding §9's error handling, §11's
+    hygiene, NFR-4 and the whole of §2.4;
+  - the SRS differences are corrected and extended to 16;
+  - a host shell loads Qdrant's key after S3-9 (caveat 32).
+- **Two claims failed:** the advisories, and the bump. The langchain bump moves five
+  packages, not one, among them websockets 17.1 → 16.1.1 in the main environment, which
+  still audits clean.
+- **The rest held:** every version and release, qdrant-client's local mode, the BM25
+  arithmetic, the torch variant, the Trivy compromise, and `ruff format`'s 30 files and
+  868 lines.
+- **The maintainer's calls (2026-10-15):**
+  - the bump in S3-9;
+  - `max_file_mb: 50`;
+  - S3-12 runs the SRS amend session;
+  - S3-11 is split into the sweep and S3-11b, the commit.
+- **The backlog lost nothing:** all 19 of `main`'s Phase 3 lines have an owner.
 
 **The release is done:** `v0.3` is tagged and its CI run is green (below).
 
@@ -535,6 +592,7 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
 - Items 25–28 come from the Phase 2 exit: S2-9's end-to-end run, and S2-8's review.
 - Items 29–31 come from the Phase 3 architecture pass (2026-10-15). Items 9 and 20 change
   when S3-2 lands; each says how.
+- Item 32, and the second half of 31, come from design review 1 of Phase 3 (2026-10-15).
 
 1. **Resolved (2026-09-18), historical.** The three pending commits (baseline,
    S0-1, S0-2) landed as `ee86e1f`, `f702dc8` + `e781b17` and `0987c60`. The
@@ -720,8 +778,20 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
     only as trustworthy as the account that publishes it. Trivy and promtool run as release
     binaries checked against a sha256 written in `ci.yml`.
 31. **Qdrant's default RRF constant is 2, over zero-based ranks** (DEC-20), not the usual
-    60 (checked in `qdrant_client/hybrid/fusion.py`). Always set `rrf_k`, or a top rank in
-    one list will outweigh agreement between the two.
+    60 (checked in `qdrant_client/hybrid/fusion.py`, and in the server's
+    `reciprocal_rank_fusion.rs`). Always set `rrf_k`, or a top rank in one list will
+    outweigh agreement between the two.
+    - **And the server breaks no ties** (design review 1). It sorts the fused points by
+      score alone, in hash-map order. Never let Qdrant make a cut through a fused list: ask
+      for the whole union, and order it by score, then point ID, as `vectorstore` does. Local
+      mode sorts stably, so only a test against the server shows this.
+32. **A host shell talking to the compose stack needs Qdrant's key** (design review 1).
+    - From S3-9, the stack's Qdrant requires `RAG_QDRANT_API_KEY`, which compose reads from
+      `.env`. `settings.py` reads the environment only, never `.env`.
+    - So load it first, `set -a; . ./.env; set +a`, and pass
+      `-H "api-key: $RAG_QDRANT_API_KEY"` to curl.
+    - A host `rag-query` also talks to the host's Ollama, while the stack's holds mistral
+      too: stop one first (caveat 8).
 
 ## GPU offload notes (nothing *requires* GPU; Colab/Kaggle available)
 
@@ -740,9 +810,9 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
   **Decided (DEC-27, 2026-10-14): the SLO is revised.** The `sources` event in under 2 s,
   and the time to first token reported per class of hardware: this CPU's p95 from the
   committed run, and a T4's from S3-11. A GPU host later is a `base_url` edit, with no code.
-- **Phase 3 — the tier-2 sweep (S3-11, DEC-26):** candidates are generated and scored on a
-  Colab T4 (Qdrant's static binary there, an ingest with `minilm_cuda`); only the committed
-  run is generated here. About 4–6 h of T4 time across sessions, plus about 70 min here.
+- **Phase 3 — the tier-2 sweep (S3-11 and S3-11b, DEC-26):** candidates are generated and
+  scored on a Colab T4 (Qdrant's static binary there, an ingest with `minilm_cuda`); only the
+  committed run, S3-11b's, is generated here. About 4–6 h of T4 time across sessions, plus about 70 min here.
 - **Phase 3 — the NFR-1 benchmark (S3-7)** uses 100k synthetic vectors on the local Qdrant
   server: no GPU, and minutes, not hours.
 
@@ -838,10 +908,10 @@ from the numbering in one place, and the Depends column is satisfied throughout:
 ## Phase 3 — Make it production-grade
 
 Exit criterion (SRS §12): the gaps in §9 and §11 are closed. Phase 3 completes the SRS, so
-its remaining requirements close too, or are amended. The exit is executable: the
-gap-closure table in ARCHITECTURE.md's Phase 3 intro names, for every §9 and §11 row, the
-story that closes it and what S3-12 shows from a fresh clone. Exit ⇒ tag `v1.0`, version
-1.0.0. Design: ARCHITECTURE.md §3.1–§3.7.
+its remaining requirements close too, or are amended in S3-12's amend session. The exit is
+executable: the gap-closure table in ARCHITECTURE.md's Phase 3 intro names, for every §9 and
+§11 row and every remaining requirement, the story that closes it and what S3-12 shows from a
+fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1–§3.7.
 
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
@@ -855,8 +925,9 @@ story that closes it and what S3-12 shows from a fresh clone. Exit ⇒ tag `v1.0
 | [S3-8](phase-3/S3-8-api-hardening.md) | API keys, rate limits and a stateless query tier | NFR-5, DEC-23 | S3-7 | Todo |
 | [S3-9](phase-3/S3-9-containers.md) | Containers, compose, TLS and CI scanning | §11 (CI, containers, config), §8.3, §9 LLM05, DEC-24 | S3-8 | Todo |
 | [S3-10](phase-3/S3-10-backup-restore.md) | Backup and restore | §11 (backup and DR), DEC-25 | S3-9 | Todo |
-| [S3-11](phase-3/S3-11-tier2-sweep.md) | The tier-2 sweep: one re-run for every lever | DEC-2, DEC-26, §9 LLM01, NFR-2 (numbers) | S3-5, S3-10 | Todo |
-| [S3-12](phase-3/S3-12-phase-3-exit.md) | Phase 3 exit: end to end on the stack, docs, 1.0.0 | — (exit) | S3-1 … S3-11 | Todo |
+| [S3-11](phase-3/S3-11-tier2-sweep.md) | The tier-2 sweep: measure every lever on a T4 | DEC-2, DEC-26 (the sweep) | S3-5, S3-10 | Todo |
+| [S3-11b](phase-3/S3-11b-tier2-commit.md) | Commit the tier-2 re-run: v1.0's configuration and floors | DEC-26 (the re-run), §9 LLM01, NFR-2 (numbers) | S3-11 | Todo |
+| [S3-12](phase-3/S3-12-phase-3-exit.md) | Phase 3 exit: end to end on the stack, the SRS amended, docs, 1.0.0 | — (exit); the SRS amend session | S3-1 … S3-11b | Todo |
 
 **Order.** The numbering is the order, and the Depends column holds throughout.
 
@@ -866,11 +937,13 @@ story that closes it and what S3-12 shows from a fresh clone. Exit ⇒ tag `v1.0
   is still installed; S3-3 removes it afterwards.
 - **S3-5 measures; S3-11 switches.** Hybrid retrieval lands with the real config unchanged,
   so its tier-1 table becomes S3-11's input.
-- **S3-11 comes last before the exit,** so the one committed tier-2 run describes the code
-  that ships as v1.0.
+- **S3-11 and S3-11b come last before the exit,** so the one committed tier-2 run describes
+  the code that ships as v1.0. S3-11 measures from its branch and merges nothing hashed;
+  S3-11b commits the choices with the run (design review 1).
 
-**Tier 2 is re-run once** (DEC-26). From S3-1 to S3-10, each story's verification shows
-`rag-eval check` exiting 0; S3-2 also shows the contexts digest unchanged.
+**Tier 2 is re-run once** (DEC-26), in S3-11b. From S3-1 to S3-11, each story's verification
+shows `rag-eval check` exiting 0, and from S3-2 to S3-10 the contexts digest unchanged against
+S3-2's (design review 1).
 
 **Story setup.**
 
@@ -905,15 +978,15 @@ story that closes it and what S3-12 shows from a fresh clone. Exit ⇒ tag `v1.0
 | DEC-16 | Reranker: `langchain_classic`'s `ContextualCompressionRetriever`, or our own | **Resolved 2026-10-02: our own `CrossEncoderReranker` on `sentence-transformers`** (DEC-5 step 2) | A `langchain_core` `BaseDocumentCompressor` that writes `rerank_score` into metadata. k=20 candidates are cut to `top_n` 5, and tier-1 numbers decide whether it is on. `langchain_classic.` and `langchain_community.` leave `ALLOWED_PREFIXES`. The `min_score` knob is for the Sources-relevance backlog line. S2-4. **Outcome (S2-4, 2026-10-04): on.** Hit rate 0.950, MRR 0.7958, recall 0.8583, against dense 0.800, 0.5875, 0.7167; 8 questions won, 4 lost (still hits), 1.4 s per answer on CPU. |
 | DEC-17 | Incremental ingestion: change detection, failure handling, write safety | **Resolved 2026-10-02: a sha256 manifest beside the index, generation directories published by an atomic symlink flip, one writer** (the flip replaced a two-rename swap in the second review) | **Updates:** only added and changed documents are re-embedded. A failed document keeps its chunks, which dissolves DEC-13. **Full rebuild** when the embedder identity or the splitter changes. Device keys are left out of the identity, so Colab's `_cuda` equals local `_cpu`. **IDs and metadata:** uuid5 chunk IDs, ready for Qdrant (DEC-3). `source` becomes corpus-relative, plus `source_sha256` and `ingested_at` (SRS §7.3). **Query side:** `rag-query` refuses a mismatched index. **Breaking:** re-ingest once. S2-6. **As implemented (2026-10-05):** `multi_process` stays in the identity, since langchain-huggingface 1.2.2's multi-process path drops `encode_kwargs` (maintainer). An empty `model_kwargs` counts as none. Generation stamps carry microseconds and always sort after the live one. Only a folder holding exactly `index.faiss` and `index.pkl` is migrated as v0.2, and anything else at the path exits 2. Every update opens the live index, and an update probes the embedder's dimension. ARCHITECTURE.md DEC-17 has the dated notes. |
 | DEC-18 | HTTP API shape: SSE library, auth, concurrency, ingest jobs | **Resolved 2026-10-02: FastAPI ≥ 0.135 native SSE; a token is required off localhost (maintainer); one generation at a time** | **Surface:** `rag-serve`. `QueryRequest` is `{question}` with `extra="forbid"`, so the API never supplies components, and a `trust_remote_code` load guard comes with it. **Load:** 503 with `Retry-After` when busy. A disconnect cancels generation: under uvicorn (ASGI 2.3) Starlette cancels the stream, and `stream_answer` runs inside it, with no producer task (second review). Requests with an `Origin` header are refused. **Ingest:** single-flight jobs in memory, which swap only the retrieval half. **Privacy:** no host paths over HTTP. S2-7. **As built (S2-7, 2026-10-12):** FastAPI's native SSE runs the generator in its own producer task. The cancel still reaches `stream_answer`, and the slot's teardown closes a stream that a drop between events left paused (the spike's window). Retrieval is serialized by a lock, not the slot. The API opens the index itself (`chain.open_retrieval`), and `require_index` is gone. `rag-serve` checks Ollama before uvicorn starts. ARCHITECTURE.md DEC-18 has the dated notes. |
-| DEC-19 | The Qdrant store: how an index is written, published, recovered and found | **Resolved 2026-10-14: a generation is a collection behind an atomic alias switch; the manifest lives in the collection's metadata; our own module on `qdrant-client`** | Qdrant v1.19.2, `qdrant-client` 1.19.1 (resolves with the stack; adds grpcio, protobuf, portalocker, h2; no locked version moves). ADR-024's pattern carries over: build `<collection>--gen-<stamp>-<hex>`, then one `update_collection_aliases` call, then recovery keeps the target and the newest older one. Manifest version 2: identities plus per-document records, with chunk counts in place of ID lists. Search is always exact, by cosine (MiniLM's vectors are unit length). `paths.state` (`var/`) holds the lock and S3-8's job database. **Breaking:** `paths.vector_store` and `RAG_VECTOR_STORE_PATH` are refused at load; a scratch index is `RAG_QDRANT_COLLECTION`. **Quickstart:** `docker compose up -d qdrant` first; local mode with `path=` is not offered (its folder lock admits one process). Parity with FAISS is proven by a contexts digest of all 25 golden questions, so no tier-2 re-run. S3-2. ARCHITECTURE.md §3.1. |
-| DEC-20 | Hybrid retrieval: where the sparse vectors come from, how they are fused, how it is switched on | **Resolved 2026-10-14: our own BM25 encoder; Qdrant prefetch + RRF with an explicit constant; then the cross-encoder; tier 1 decides, S3-11 switches** | `rag_qa/sparse.py`, about 80 lines with no dependency; IDF applied by Qdrant. Rejected: fastembed's `Qdrant/bm25` (onnxruntime, a model download, a tokenizer that moves with releases) and Qdrant's own BM25 (needs `cloud_inference=True`, which local mode refuses; its tokenizer changes with the server). Qdrant's default RRF constant is 2, so `rrf_k` is always set (60). A `sources` filter by document path (API and CLI) is FR-3's metadata filtering. The real config sets no sparse encoder until S3-11, so nothing hashed moves before the batched re-run. S3-5, S3-11. |
-| DEC-21 | NFR-6 and the hosted fallback | **Resolved 2026-10-14: timeouts, safe retries and circuit breakers on network calls; an opt-in OpenAI-compatible fallback, with one real check** (maintainer) | Ollama: connect 5 s, read 600 s; retries only before the first token. Qdrant: 10 s; every call retried (all idempotent). Our own breaker per dependency; open means 503 with `Retry-After` before the first byte. The fallback (`pipeline.query.fallback_llm`, a `fallback` extra with `langchain-openai`) answers only while Ollama's breaker is open or after a connection error before the first token; streamed itself, never `.with_fallbacks()`; its key from the environment only; never used by tier 2. It absorbs the backlog's reopen back-off. S3-6. |
+| DEC-19 | The Qdrant store: how an index is written, published, recovered and found | **Resolved 2026-10-14: a generation is a collection behind an atomic alias switch; the manifest lives in the collection's metadata; our own module on `qdrant-client`** | Qdrant v1.19.2, `qdrant-client` 1.19.1 (resolves with the stack; adds grpcio, protobuf, portalocker, h2; no locked version moves). ADR-024's pattern carries over: build `<collection>--gen-<stamp>-<hex>`, then one `update_collection_aliases` call, then recovery keeps the target and the newest older one. Manifest version 2: identities plus per-document records, with chunk counts in place of ID lists. Search is always exact, by cosine (MiniLM's vectors are unit length). `paths.state` (`var/`) holds the lock and S3-8's job database. **Breaking:** `paths.vector_store` and `RAG_VECTOR_STORE_PATH` are refused at load; a scratch index is `RAG_QDRANT_COLLECTION`. **Quickstart:** `docker compose up -d qdrant` first; local mode with `path=` is not offered (its folder lock admits one process). Parity with FAISS is proven by a contexts digest of all 25 golden questions, so no tier-2 re-run. **Design review 1 (2026-10-15):** readers resolve the alias again per question, since a generation is deleted two switches later; S3-2 writes manifest version 2 whole; a retry counts a create that finds our collection, or a delete that finds none, as done; S3-3 … S3-10 repeat the digest. S3-2. ARCHITECTURE.md §3.1. |
+| DEC-20 | Hybrid retrieval: where the sparse vectors come from, how they are fused, how it is switched on | **Resolved 2026-10-14: our own BM25 encoder; Qdrant prefetch + RRF with an explicit constant; then the cross-encoder; tier 1 decides, S3-11 switches** | `rag_qa/sparse.py`, about 80 lines with no dependency; IDF applied by Qdrant. Rejected: fastembed's `Qdrant/bm25` (onnxruntime, a model download, a tokenizer that moves with releases) and Qdrant's own BM25 (needs `cloud_inference=True`, which local mode refuses; its tokenizer changes with the server). Qdrant's default RRF constant is 2, so `rrf_k` is always set (60). A `sources` filter by document path (API and CLI) is FR-3's metadata filtering. The real config sets no sparse encoder until S3-11b, so nothing hashed moves before the batched re-run. **Design review 1:** Qdrant's server breaks no RRF ties, so the fusion returns its whole union and our code cuts it, ties by point ID; S3-5 runs hybrid tier 1 twice. S3-5, S3-11, S3-11b. |
+| DEC-21 | NFR-6 and the hosted fallback | **Resolved 2026-10-14: timeouts, safe retries and circuit breakers on network calls; an opt-in OpenAI-compatible fallback, with one real check** (maintainer) | Ollama: connect 5 s, read 600 s; retries only before the first token. Qdrant: 10 s; every call retried (all idempotent). Our own breaker per dependency; open means 503 with `Retry-After` before the first byte. The fallback (`pipeline.query.fallback_llm`, a `fallback` extra with `langchain-openai`) answers only while Ollama's breaker is open or after a connection error before the first token; streamed itself, never `.with_fallbacks()`; its key from the environment only; never used by tier 2. It absorbs the backlog's reopen back-off. **Design review 1:** with a fallback configured, an open Ollama breaker routes to it, and the start-up checks warn instead of exiting 2; retry semantics are stated per call; the retry before the first token is a hand-written loop. S3-6. |
 | DEC-22 | NFR-10: logs, traces, metrics, alerts | **Resolved 2026-10-14: structlog; OpenTelemetry spans we create ourselves; prometheus-client; burn-rate alerts; Jaeger** | No LangChain callback handlers: one that suspends reopens DEC-14's cancel window. Spans are never current across a `yield`, and end in a `finally`. Metrics on their own port. Alert rules tested by `promtool` in CI. NFR-1 by a 100k synthetic benchmark; NFR-3 reported by `rag-ingest`. S3-7. |
-| DEC-23 | The API beyond localhost (DEC-18's Phase 3 half) and NFR-5 | **Resolved 2026-10-14: named, scoped API keys (maintainer); token-bucket rate limits; a 64 KiB body limit; job records in SQLite; a stateless query tier; TLS at the proxy** | A keys file of sha256 hashes with scopes `query` and `ingest`, managed by `rag-keys`; `RAG_API_TOKEN` still works as one all-scope key. A running job holds the ingest `flock`, so a "running" row whose lock is free reads as abandoned. Limits per replica, documented. S3-8. |
-| DEC-24 | Containers, compose, overlays and CI scanning | **Resolved 2026-10-14: one image (uv, CPU torch, models baked in, offline), one compose file with Caddy for TLS and balancing, `RAG_CONFIG_OVERLAY`, Trivy run as a binary pinned by sha256** | Not `aquasecurity/trivy-action` (tags hijacked, CVE-2026-33634). SIGTERM ends `rag-serve` with 143 under an init, and that stays. The audit policy: ignores only for advisories with no fix, each with a reason and a date; a weekly run; the `eval` extra audited. A ruleset makes every stage block a merge. S3-9. |
-| DEC-25 | Backup and restore | **Resolved 2026-10-14: snapshots of immutable generations to a directory; a restore is a new generation and an alias switch** | Checksums verified both ways; a snapshot from another embedder is refused; RPO and RTO stated; tested against a real server in CI and by drills (maintainer's addition). S3-10. |
-| DEC-26 | Tier-2 re-runs in Phase 3 | **Resolved 2026-10-14: one, in S3-11, batching every lever** | The judge (from the hand labels), the prompt fixes and LLM01's delimiting, the hybrid switch, `min_score`, the model (DEC-2), the `langchain` bump, `check` recomputing aggregates, and a per-question context digest. Staged so the grid stays small: about 4–6 h of T4 time plus about 70 min here. S3-11. |
-| DEC-27 | NFR-2: revise the SLO, serve from a GPU, or a hosted model | **Resolved 2026-10-14: revised** (maintainer) | (a) the `sources` event in under 2 s at p95 with the model idle; (b) the time to first token reported per class of hardware, this CPU's from the committed run and a T4's from S3-11. A GPU host later is a `base_url` edit. Resolves ADR-016 at the amend session. |
+| DEC-23 | The API beyond localhost (DEC-18's Phase 3 half) and NFR-5 | **Resolved 2026-10-14: named, scoped API keys (maintainer); token-bucket rate limits; a 64 KiB body limit; job records in SQLite; a stateless query tier; TLS at the proxy** | A keys file of sha256 hashes with scopes `query` and `ingest`, managed by `rag-keys`; `RAG_API_TOKEN` still works as one all-scope key. A job holds a lock of its own, so an unfinished row whose job lock is free reads as abandoned. Limits per replica, documented. **Design review 1:** the job's own lock replaces probing the writer lock, which could call a live job abandoned and make a starting writer exit 2; the health routes are exempt from rate limits; failed authentication is limited to 10 a minute per address. S3-8. |
+| DEC-24 | Containers, compose, overlays and CI scanning | **Resolved 2026-10-14: one image (uv, CPU torch, models baked in, offline), one compose file with Caddy for TLS and balancing, `RAG_CONFIG_OVERLAY`, Trivy run as a binary pinned by sha256** | Not `aquasecurity/trivy-action` (tags hijacked, CVE-2026-33634). SIGTERM ends `rag-serve` with 143 under an init, and that stays. The audit policy: ignores only for advisories with no fix, each with a reason and a date; a weekly run; the `eval` extra audited. A ruleset makes every stage block a merge. **Design review 1:** the `eval` extra has four advisories, not one. The `langchain` bump moves into S3-9 (maintainer) and clears two; diskcache's and ragas's have no fix, and are the policy's first ignores. The repository is public, so rulesets are available. S3-9. |
+| DEC-25 | Backup and restore | **Resolved 2026-10-14: snapshots of immutable generations to a directory; a restore is a new generation and an alias switch** | Checksums verified both ways; a snapshot from another embedder is refused; RPO and RTO stated; tested against a real server in CI and by drills (maintainer's addition). **Design review 1:** a restore holds the writer lock from the upload to the end, or an ingest could delete its generation mid-restore; the sidecar keeps the whole manifest. S3-10. |
+| DEC-26 | Tier-2 re-runs in Phase 3 | **Resolved 2026-10-14: one, batching every lever; S3-11 measures them and S3-11b commits** | The judge (from the hand labels), the prompt fixes and LLM01's delimiting, the hybrid switch, `min_score`, the model (DEC-2), `check` recomputing aggregates, and a per-question context digest. Staged so the grid stays small: about 4–6 h of T4 time plus about 70 min here. **Design review 1:** split into S3-11 (the sweep) and S3-11b (the commit), as S2-5 and S2-5b were (maintainer); the `langchain` bump moved to S3-9; the answers file records Qdrant's version. S3-11, S3-11b. |
+| DEC-27 | NFR-2: revise the SLO, serve from a GPU, or a hosted model | **Resolved 2026-10-14: revised** (maintainer) | (a) the `sources` event in under 2 s at p95 with the model idle; (b) the time to first token reported per class of hardware, this CPU's from the committed run and a T4's from S3-11. A GPU host later is a `base_url` edit. Resolves ADR-016 at the amend session, which S3-12 runs. **Design review 1:** (a) is measured as a p95 over the golden questions (S3-7, and S3-11b if hybrid retrieval is on). |
 | DEC-28 | `ruff format` | **Resolved 2026-10-14: format the code once and gate it** (maintainer) | 30 Python files, about 860 lines, in one commit of S3-1; Markdown excluded (ruff 0.16 would rewrite examples in two docs and two closed stories); then a CI gate and `.git-blame-ignore-revs`. |
 
 ## Backlog
@@ -937,7 +1010,8 @@ Reconciled in the Phase 3 architecture pass (2026-10-15). Every line that read *
 now leads with its owning story, **S3-n —**, or with the decision that settled it, and the
 detail below is that story's input. The lines waiting on a trigger keep it: the ragas import
 shim (ragas 0.4.3 is still the newest release, checked 2026-10-14), the timing-based Ctrl-C
-tests, a stalled CI step, the CUDA 12 fallback and torch parity.
+tests, a stalled CI step, the CUDA 12 fallback and torch parity. Design review 1 (2026-10-15)
+diffed this backlog against `main`'s: no line was dropped.
 
 ### Opened in the Phase 3 architecture pass (2026-10-15)
 
@@ -1166,7 +1240,8 @@ tests, a stalled CI step, the CUDA 12 fallback and torch parity.
 - **Closed by S2-5b (2026-10-11) —** tier-2 runs resume: `generate` and `score` keep each
   finished item in `<name>.partial.jsonl`, and the same command skips them
   (`evaluation/checkpoint.py`).
-- **S3-11, the batched re-run (DEC-26) — what the baseline's answers and hand check found.**
+- **S3-11 (measured) and S3-11b (committed), the batched re-run (DEC-26) — what the
+  baseline's answers and hand check found.**
   Each fix is a change to measure with this harness (a re-run, caveat 24), not to make by
   eye. **Re-deferred at the Phase 2 exit:** each lever (the prompt, `min_score`, the model)
   moves a hashed input, so batching them into the DEC-2 revisit's sweep costs one tier-2
@@ -1202,8 +1277,18 @@ tests, a stalled CI step, the CUDA 12 fallback and torch parity.
       Phase 3. Either moves `judge` and needs a re-score.
   - **Answer relevancy is all-or-nothing on hedging.** ragas zeroes a "noncommittal"
     answer, so one hedge in an otherwise right answer costs about 0.04 of the mean.
-- **S3-9 (the policy's entry) and S3-11 (the bump to 1.4.3, which resolves) — the `eval` extra's `langchain` 1.3.2 has
-  PYSEC-2026-2192** (fixed in 1.3.9; found in S2-7's audit). ragas pulls it in. CI never
+- **S3-9, the bump and the policy (design review 1) — the `eval` extra's advisories.**
+  Design review 1 found four, all published before the Phase 3 pass:
+  - `langchain` 1.3.2, PYSEC-2026-2192, fixed in 1.3.9;
+  - `langgraph-sdk` 0.3.15, CVE-2026-104873, fixed in 0.4.4;
+  - `diskcache` 5.6.3, PYSEC-2026-2447, with no fix;
+  - `ragas` 0.4.3, PYSEC-2026-3046, with no fix.
+
+  S3-9 bumps `langchain` to 1.4.3 (maintainer), which clears the first two and moves five
+  packages: websockets drops to 16.1.1 in the main environment, which still audits clean. The
+  other two become the policy's first ignore entries, each with its reason. The history
+  below is kept, as first found: `langchain` 1.3.2 has
+  PYSEC-2026-2192 (fixed in 1.3.9; found in S2-7's audit). ragas pulls it in. CI never
   installs the extra, so its audit never sees it. Bump it with the next ragas change
   (which re-scores), or decide whether the extra should be audited at all (the audit-gate
   policy line above). **Re-deferred at the Phase 2 exit:** the extra runs only on a
@@ -1288,14 +1373,14 @@ tests, a stalled CI step, the CUDA 12 fallback and torch parity.
   `config.yaml` and caveat 3.
 - **Closed by S2-6 (2026-10-05) —** the ingestion manifest records the embedder's identity and dimension;
   refuse to open an index built with a different embedder (DEC-17).
-- **Decided in DEC-27 (the SLO is revised); its numbers come from S3-11 —** NFR-2 (<2 s first token) is unachievable CPU-only: revise the SLO
+- **Decided in DEC-27 (the SLO is revised); its numbers come from S3-7, S3-11 and S3-11b —** NFR-2 (<2 s first token) is unachievable CPU-only: revise the SLO
   or plan GPU serving in the Phase 3 arch pass. Phase 2 measures it: `ttft_ms` on
   every answer (DEC-14) and in every tier-2 run. Since S2-4 the rerank sits before the
   first token: about 1.4 s of every `ttft_ms` on this CPU, plus 2.5 s of model loading
   at startup. **S2-9's numbers:** first token at 154.6 s over HTTP, on `num_thread` 10;
   and while the runner holds 10 of 12 threads, the API's own retrieval slows from 0.78 s
   to 7 s (caveat 26). A serving box would need headroom for both.
-- **S3-5 (a tier-1 table of cutoffs) and S3-11 (the setting) — tune the reranker's `min_score`.** **Re-deferred at
+- **S3-5 (a tier-1 table of cutoffs), S3-11 (the choice) and S3-11b (the setting) — tune the reranker's `min_score`.** **Re-deferred at
   the Phase 2 exit:** a cutoff changes what reaches the prompt, so it moves `query` and
   needs a tier-2 re-run, which the revisit's sweep provides. CLI "Sources" lists what was
   retrieved, not what the answer used, so a refusal still shows a source. S2-4 added the
@@ -1338,7 +1423,8 @@ tests, a stalled CI step, the CUDA 12 fallback and torch parity.
   result feeds the Phase 3 serving decision, and the tier-2 follow-ups above ride the
   same re-run.
 - Phase 2 was sharded on 2026-10-02 (S2-1 … S2-9) and delivered on 2026-10-13. Phase 3
-  was sharded on 2026-10-15 (S3-1 … S3-12), after its architecture pass.
+  was sharded on 2026-10-15 (S3-1 … S3-12), after its architecture pass; design review 1
+  split S3-11b off the same day.
 
 ## Done
 
@@ -1370,7 +1456,7 @@ ADR-026; per-story detail in `stories/phase-2/`.
 | 0 | 2026-09-18 | DEC-1, DEC-2, DEC-4 (later DEC-5) | — |
 | 1 | 2026-09-25 | DEC-6 … DEC-12 | S1-1 … S1-8 |
 | 2 | 2026-10-02 | DEC-14 … DEC-18 | S2-1 … S2-9 |
-| 3 | 2026-10-15 | DEC-3, DEC-9 resolved; DEC-19 … DEC-28 | S3-1 … S3-12 |
+| 3 | 2026-10-15 | DEC-3, DEC-9 resolved; DEC-19 … DEC-28 | S3-1 … S3-12, with S3-11b split off in design review 1 |
 
 The Phase 2 pass ran on Opus 5.5 by the maintainer's choice; ADR-018 routes
 architecture passes to Fable. The Phase 3 pass ran on Opus 5.5 at max effort, since Fable is

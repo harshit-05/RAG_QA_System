@@ -16,8 +16,8 @@ Two SRS targets that need configuration, not architecture.
 - **§7.2:** a document type can have its own chunking.
 - **§7.1:** the corpus can declare how large a file may be.
 
-Both default to today's behaviour, so the real index, tier 2's fingerprint and every answer
-stay as they are. The identity rules follow ADR-026: an identity holds exactly what
+The splitter map defaults to today's behaviour, and the 50 MB limit skips no corpus file, so
+the real index, tier 2's fingerprint and every answer stay as they are. The identity rules follow ADR-026: an identity holds exactly what
 determines the output. Design: ARCHITECTURE.md §3.3; DEC-17's identities.
 
 ## Scope
@@ -33,11 +33,15 @@ determines the output. Design: ARCHITECTURE.md §3.3; DEC-17's identities.
   - **What re-embeds:** a document whose effective splitter changed is re-embedded, as a
     changed loader identity is (DEC-17). A change to the default splitter changes every
     document that uses it.
+  - **Which record decides** (design review 1): the per-document splitter identities, which
+    S3-2 writes as the default's. The manifest's top-level splitter record names the default
+    and decides nothing, so DEC-17's full rebuild on a splitter change gives way to this.
   - **One entry for use:** `components.splitters.markdown`
     (`langchain_text_splitters.MarkdownTextSplitter`, 1,000 / 150), referenced by nothing
     by default, as the GPU embedders are (keep the alternatives as config axes).
-- **A maximum file size.** `pipeline.ingestion.max_file_mb`, a positive number, unset by
-  default.
+- **A maximum file size.** `pipeline.ingestion.max_file_mb`, a positive number.
+  `config.yaml` sets 50: a declared limit, as SRS §7.1 asks, above the largest corpus file
+  (25.4 MB) (maintainer, design review 1). Unset means no limit.
   - A file above it is skipped and reported, the way an unmapped suffix is, with its size
     and the limit in the line and in `IngestReport`. The API job's report carries the same.
   - The walk is shared, so tier 2's `corpus` part leaves a skipped file out, exactly as
@@ -45,21 +49,26 @@ determines the output. Design: ARCHITECTURE.md §3.3; DEC-17's identities.
   - A file that was indexed and later exceeds a lowered limit is removed, like a deleted
     file. README says so.
 - **The fingerprint stays put.** `ingestion` hashes the per-extension map only when it is
-  not empty. Unit tests hold the real config's six parts unchanged with the new keys unset,
-  and show that each one moves `ingestion` or `corpus` once it is set.
+  not empty. `max_file_mb` is never hashed: what it changes reaches `corpus` through the
+  shared walk, so a limit that skips nothing moves nothing (ADR-026). Unit tests hold the real
+  config's six parts unchanged with the 50 MB limit set, and show a non-empty map moving
+  `ingestion` and a limit below a file's size moving `corpus`.
 - **Docs:** README's Configuration section shows both keys; `config.yaml` comments them.
 
 ## Out of scope
 
 - Sparse vectors and their identity (S3-5).
 - Using the markdown splitter for this corpus: it has no Markdown files, and any change
-  that moves a hashed input waits for S3-11.
+  that moves a hashed input waits for S3-11b.
 
 ## Verification
 
 ```bash
 uv run rag-eval check; echo "exit $?"                 # 0: the real config's parts unchanged
 uv run rag-ingest                                     # "Nothing changed: the index is up to date."
+# no answer changed: the same contexts as S3-2's on Qdrant (§3.5, design review 1)
+uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-4/contexts.json
+diff ~/dev/rag-s3-2/contexts-qdrant.json ~/dev/rag-s3-4/contexts.json && echo IDENTICAL
 HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q
 uv run ruff check && uv run ruff format --check && uv run mypy
 
@@ -69,6 +78,9 @@ export RAG_DATA_PATH=$(mktemp -d) RAG_QDRANT_COLLECTION=s3_4_scratch
 uv run rag-ingest --config <scratch config>           # the manifest records the md splitter
 # change the md splitter's chunk_size, ingest again: only the .md document is re-embedded
 # set max_file_mb below the PDF's size: it is skipped and reported, and its chunks removed
+# clean up: deleting the scratch generations removes their alias too
+curl -s 127.0.0.1:6333/collections | jq -r '.result.collections[].name' | grep '^s3_4_scratch--gen-' \
+  | xargs -I{} curl -s -X DELETE 127.0.0.1:6333/collections/{}
 unset RAG_DATA_PATH RAG_QDRANT_COLLECTION
 gh pr checks
 ```
@@ -76,7 +88,7 @@ gh pr checks
 ## Review notes for the human
 
 - Two rules carry the risk: the per-document splitter identity in `diff`, and the
-  fingerprint leaving the empty map out. Check both against ADR-026's rule: nothing more
+  fingerprint leaving out the empty map and `max_file_mb`. Check both against ADR-026's rule: nothing more
   and nothing less than what determines the chunks.
 
 ## Discovered
