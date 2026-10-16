@@ -24,6 +24,6 @@ Version tracks the release tags: ``.dev0`` between tags, bumped at each phase ex
 shipped 0.3.0 / tag v0.3).
 """
 
-__version__ = "0.3.0"
+__version__ = "1.0.0.dev0"
 
 __all__ = ["__version__"]
