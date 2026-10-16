@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done (2026-10-16): PR #19, in three commits: `5281b0e` the version, `01854a1` the reformat, `a2bbe98` the gate, plus a close-out commit of docs. CI was green on `a2bbe98` (run 38927352954), the new Format step included. Verification 1–4 are run and shown below. Merge it with a merge commit: `.git-blame-ignore-revs` names `01854a1` by its SHA. |
+| **Status** | Done (2026-10-16): PR #19, in three commits: `5281b0e` the version, `01854a1` the reformat, `a2bbe98` the gate, plus two commits of docs: the close-out, `177ffbf`, and the second review's round 2. CI was green on `a2bbe98` (run 38927352954), the new Format step included, and on `177ffbf` (run 38935030666); check `gh pr checks` on the head before the merge. Verification 1–4 are run and shown below. Merge it with a merge commit: `.git-blame-ignore-revs` names `01854a1` by its SHA. |
 | **Closes** | DEC-28; backlog: `ruff format` |
 | **Depends on** | — (the Phase 3 design reviews, merged) |
 | **Model** | opus-fast |
@@ -161,3 +161,31 @@ claims above against a clean snapshot of `main` and the installed ruff.
 - **Notes, no change:** `.claude/` is untracked and not ignored, so keep it out of the
   commit. `ARCHITECTURE.md` lines 325 and 1848 call the code unformatted; they sit in the
   Phase 1 and Phase 2 sections and read as history.
+
+**Second review, round 2 (Opus 5.5, 2026-10-16, on the PR's head `177ffbf`): no blockers;
+1 doc finding and 1 nit, fixed on the PR.** It took in the close-out commit, and treated
+round 1's record as claims to check.
+
+- **Checked and sound:**
+  - **The comments, which a syntax tree leaves out.** In all 30 reformatted files the
+    comments come in the same order, and each of the 22 `noqa`, `type: ignore` and
+    `pragma` comments sits on the same code as before, so none now suppresses another line.
+  - **The reformat, again** from a clean `main` with ruff 0.16.8: byte-identical to
+    `01854a1` but for commit 1's two version lines, with the same syntax trees. Commit 2
+    touches only `.py` files and `pyproject.toml`.
+  - **The gates on `177ffbf`:** `ruff check` clean, "59 files already formatted", mypy
+    clean, **890 passed, 5 xfailed**, coverage 98.37%, and `rag-eval check` exit 0.
+  - **The version's reach:** `__version__` feeds only FastAPI's OpenAPI `version`. No
+    index manifest or tier-2 run file records it, so nothing goes stale.
+  - **The rest:** the blame on `tests/test_vectorstore.py:68`; the four commits' headers,
+    bodies, trailers, and no attribution; CI green on `177ffbf` (run 38935030666); and
+    CLAUDE.md's "S3-12 releases 1.0.0", against the S3-12 story.
+- **Finding, fixed:** CLAUDE.md said to run `uv run ruff format` "over what you change",
+  which reads as naming the changed files, the one case the exclude misses: with it in
+  place, `ruff format --check docs/ADR.md docs/ARCHITECTURE.md` would rewrite both. It now
+  says to run it bare, and why. The backlog line points at that rule.
+- **Nit, fixed:** the Status line and the board named CI on `a2bbe98` only. They now name
+  `177ffbf`'s run too, and say to check the head before the merge.
+- **Note, no change:** the repository allows squash and rebase merges, and `main` has no
+  protection or ruleset, so only the docs ask for a merge commit. PR #18 was merged with
+  one; check the merge button's choice all the same.

@@ -51,7 +51,9 @@ prototype to production via a spec-driven story loop.
 - Python tooling is **uv only** (`uv add`, `uv run`, `uv sync`) — never
   bare pip, never conda. Interpreter is pinned via `.python-version`.
   - Python is ruff-formatted, and CI's Format step gates it (S3-1, DEC-28): run
-    `uv run ruff format` over what you change. Markdown is excluded.
+    `uv run ruff format` before a commit, bare, without file names. Markdown is
+    excluded only while ruff walks the tree: a `.md` file named on the command line
+    gets its Python examples rewritten.
   - Torch comes in two variants, chosen by dependency groups (S1-7). A plain
     `uv sync` gives CPU torch. **Never run `uv sync --no-default-groups` or
     `uv pip install .`**: both install CUDA torch from PyPI. The CUDA variant

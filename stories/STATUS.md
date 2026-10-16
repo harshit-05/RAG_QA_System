@@ -29,7 +29,8 @@ opus-fast). Phase 3 is open at 1.0.0.dev0, the code is formatted, and CI gates i
   - `01854a1`: the reformat alone, 30 Python files and 868 lines, plus the Markdown
     exclusion;
   - `a2bbe98`: CI's Format step, `.git-blame-ignore-revs` and README.
-- **CI** was green on `a2bbe98` (run 38927352954), Format step included.
+- **CI** was green on `a2bbe98` (run 38927352954), Format step included, and on the
+  close-out commit `177ffbf` (run 38935030666). Check the PR's head before the merge.
 - **The reformat is mechanical, checked two ways.** Each file parses to the same syntax
   tree as before, docstrings included, and each is byte-identical to ruff 0.16.8 run over
   `main`'s version.
@@ -52,6 +53,19 @@ byte-identical to `01854a1` and parse to the same trees. It re-ran the gates (89
 - **"CI green on the PR's head"** is now "on `a2bbe98`", since the close-out commit is the
   fourth on the PR.
 - **Keep `.claude/` out of the commit:** it is untracked and not in `.gitignore`.
+
+**Second review of S3-1, round 2 (2026-10-16, on `177ffbf`): no blockers; 1 doc finding and
+1 nit, fixed on the PR.** Beyond round 1, it checked what the syntax-tree test cannot see,
+the comments: the same order in all 30 files, and the 22 `noqa`, `type: ignore` and
+`pragma` comments on the same code. It also checked that the version reaches only the
+OpenAPI document. The gates gave the same results on the head. Detail in the story.
+
+- **CLAUDE.md's format rule** said "over what you change", which invites naming files, and
+  a Markdown file named on the command line is formatted despite the exclude. It now says
+  to run `uv run ruff format` bare.
+- **CI on the head:** the board and the story now name `177ffbf`'s green run as well.
+- **Squash and rebase merges are allowed** on the repository, and `main` has no
+  protection: pick "Create a merge commit" by hand.
 
 **The Phase 3 design is merged** (PR #18, `d491dfb`, 2026-10-16), with both design reviews
 folded in. Their records are below.
@@ -1184,7 +1198,8 @@ diffed this backlog against `main`'s: no line was dropped.
 - **If a tool formats files by name (an editor's format-on-save, a pre-commit hook) —
   `force-exclude = true` under `[tool.ruff]`** (found in S3-1). `[tool.ruff.format]`'s
   `exclude = ["*.md"]` applies only while ruff walks a folder, so `ruff format docs/ADR.md`
-  would still rewrite its Python examples. CI's bare `ruff format --check` is unaffected.
+  would still rewrite its Python examples. CI's bare `ruff format --check` is unaffected,
+  and CLAUDE.md has sessions run it bare for this reason (S3-1's second review, round 2).
 
 ### Closed in Phase 3
 
