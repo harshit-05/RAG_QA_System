@@ -5,17 +5,10 @@
 
 ## Now
 
-**Next action: merge the Phase 3 design pull request** (`chore/phase-3-architecture`), with
-both design reviews folded in, then start S3-1.
+**Next action: merge PR #19 (S3-1) with a merge commit, then start S3-2.** Not a squash or
+a rebase: `.git-blame-ignore-revs` names the reformat, `01854a1`, by its SHA, and only a
+merge commit keeps that commit.
 
-- **The reviews**, each in a fresh session, as Phase 2's were (2026-10-02):
-  - **Review 1 is done** (2026-10-15, breadth). It read ARCHITECTURE.md Phase 3 and the
-    stories against the SRS, the board and the code, and checked the claims marked
-    "checked" against the installed libraries. Its record is below.
-  - **Review 2 is done** (2026-10-16, depth). It attacked the store, keys and limits,
-    cancellation, the sweep and the supply chain, review 1's own fixes among them, against
-    a real Qdrant v1.19.2, a real Caddy 2.11.7 and the installed libraries. Its record is
-    below.
 - **The maintainer, in parallel** (no session needed):
   - hand-label faithfulness for the 20 answerable v0.3 answers, before S3-11 (format in
     DEC-26);
@@ -23,8 +16,45 @@ both design reviews folded in, then start S3-1.
     if one;
   - choose a provider for the hosted fallback, and have its key ready for S3-6 (an
     environment variable, never a file in the repository);
-  - check `gh auth status` for the `workflow` scope: S3-1, S3-2, S3-7 and S3-9 edit
-    `ci.yml`.
+  - check `gh auth status` for the `workflow` scope before S3-2, S3-7 and S3-9, which edit
+    `ci.yml`. S3-1's push had it (2026-10-16);
+  - run `git config blame.ignoreRevsFile .git-blame-ignore-revs` once per clone, so a
+    local `git blame` skips the reformat.
+
+**S3-1 is done** (2026-10-16, PR #19; on Opus 5.5 without /fast, where the story says
+opus-fast). Phase 3 is open at 1.0.0.dev0, the code is formatted, and CI gates it.
+
+- **Three commits:**
+  - `5281b0e`: the version;
+  - `01854a1`: the reformat alone, 30 Python files and 868 lines, plus the Markdown
+    exclusion;
+  - `a2bbe98`: CI's Format step, `.git-blame-ignore-revs` and README.
+- **CI** was green on `a2bbe98` (run 38927352954), Format step included.
+- **The reformat is mechanical, checked two ways.** Each file parses to the same syntax
+  tree as before, docstrings included, and each is byte-identical to ruff 0.16.8 run over
+  `main`'s version.
+- **Caveat 24 held:** `rag-eval check` exited 0. Its prompt probe runs through the
+  reformatted `chain.py`.
+- **The suite:** 890 passed, 5 xfailed, coverage 98.37%.
+- **From now on, CI fails on unformatted Python:** run `uv run ruff format` before a
+  commit.
+- **Discovered:** the Markdown exclude holds only when ruff walks a folder. A file named on
+  the command line is still formatted (backlog line).
+
+**Second review of S3-1 (2026-10-16): no blockers; 2 doc findings, fixed on the PR.** It
+formatted a clean snapshot of `main` with the project's ruff 0.16.8: the 30 files are
+byte-identical to `01854a1` and parse to the same trees. It re-ran the gates (890 passed,
+`rag-eval check` exit 0), counted the 4 Markdown files the exclude protects, and tried
+`force-exclude = true` (it closes the backlog line). Detail in the story.
+
+- **The story's verification 2** used `HEAD~1`, which the close-out commit moves; it now
+  names `01854a1`.
+- **"CI green on the PR's head"** is now "on `a2bbe98`", since the close-out commit is the
+  fourth on the PR.
+- **Keep `.claude/` out of the commit:** it is untracked and not in `.gitignore`.
+
+**The Phase 3 design is merged** (PR #18, `d491dfb`, 2026-10-16), with both design reviews
+folded in. Their records are below.
 
 **The Phase 3 architecture pass is done** (2026-10-15, decisions taken 2026-10-14).
 
@@ -1038,7 +1068,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
-| [S3-1](phase-3/S3-1-open-phase-3.md) | Open Phase 3: 1.0.0.dev0, format the code once and gate it | DEC-28, backlog: `ruff format` | — | Todo |
+| [S3-1](phase-3/S3-1-open-phase-3.md) | Open Phase 3: 1.0.0.dev0, format the code once and gate it | DEC-28, backlog: `ruff format` | — | Done 2026-10-16 (PR #19) |
 | [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Todo |
 | [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Todo |
 | [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Todo |
@@ -1110,7 +1140,7 @@ S3-2's (design review 1).
 | DEC-25 | Backup and restore | **Resolved 2026-10-14: snapshots of immutable generations to a directory; a restore is a new generation and an alias switch** | Checksums verified both ways; a snapshot from another embedder is refused; RPO and RTO stated; tested against a real server in CI and by drills (maintainer's addition). **Design review 1:** a restore holds the writer lock from the upload to the end, or an ingest could delete its generation mid-restore; the sidecar keeps the whole manifest. **Design review 2 (2026-10-16):** the manifest survived a real round trip. Restore refuses a taken name, since an upload overwrites in place, and runs `check_index`'s whole rule. Snapshot files outlive their collections, so restore, `create` and `recover` delete them. The backup service mounts `./var`. S3-10. |
 | DEC-26 | Tier-2 re-runs in Phase 3 | **Resolved 2026-10-14: one, batching every lever; S3-11 measures them and S3-11b commits** | The judge (from the hand labels), the prompt fixes and LLM01's delimiting, the hybrid switch, `min_score`, the model (DEC-2), `check` recomputing aggregates, and a per-question context digest. Staged so the grid stays small: about 4–6 h of T4 time plus about 70 min here. **Design review 1:** split into S3-11 (the sweep) and S3-11b (the commit), as S2-5 and S2-5b were (maintainer); the `langchain` bump moved to S3-9; the answers file records Qdrant's version. **Design review 2 (2026-10-16):** a stage 0 measures the T4 against this CPU; stage 1's re-score is certain; every rule is a margin committed before the first run; Colab restores this host's index and runs Ollama only; about 5–9 h of T4 time, where this row first said 4–6; and about 5 labels outside the 20 after S3-11b. S3-11, S3-11b. |
 | DEC-27 | NFR-2: revise the SLO, serve from a GPU, or a hosted model | **Resolved 2026-10-14: revised** (maintainer) | (a) the `sources` event in under 2 s at p95 with the model idle; (b) the time to first token reported per class of hardware, this CPU's from the committed run and a T4's from S3-11. A GPU host later is a `base_url` edit. Resolves ADR-016 at the amend session, which S3-12 runs. **Design review 1:** (a) is measured as a p95 over the golden questions (S3-7, and S3-11b if hybrid retrieval is on). |
-| DEC-28 | `ruff format` | **Resolved 2026-10-14: format the code once and gate it** (maintainer) | 30 Python files, about 860 lines, in one commit of S3-1; Markdown excluded (ruff 0.16 would rewrite examples in two docs and two closed stories); then a CI gate and `.git-blame-ignore-revs`. |
+| DEC-28 | `ruff format` | **Resolved 2026-10-14: format the code once and gate it** (maintainer) | 30 Python files, about 860 lines, in one commit of S3-1; Markdown excluded (ruff 0.16 would rewrite examples in two docs and two closed stories); then a CI gate and `.git-blame-ignore-revs`. **Delivered in S3-1 (2026-10-16):** the reformat is `01854a1`, 30 files and 868 lines, alone; the gate is the `check` job's Format step, after Lint. The exclude holds when ruff walks a folder, not for a Markdown file named on the command line (backlog line). |
 
 ## Backlog
 
@@ -1148,6 +1178,19 @@ diffed this backlog against `main`'s: no line was dropped.
   live generation point by point, linear in its size (DEC-19): about 1–2 s here.
 - **If tier 1 shows misses it would fix — stemming in the BM25 encoder** (DEC-20). A
   `stemmer` option and a `SPARSE_VERSION` bump.
+
+### Opened in Phase 3 stories
+
+- **If a tool formats files by name (an editor's format-on-save, a pre-commit hook) —
+  `force-exclude = true` under `[tool.ruff]`** (found in S3-1). `[tool.ruff.format]`'s
+  `exclude = ["*.md"]` applies only while ruff walks a folder, so `ruff format docs/ADR.md`
+  would still rewrite its Python examples. CI's bare `ruff format --check` is unaffected.
+
+### Closed in Phase 3
+
+- **S3-1 (PR #19):** Phase 3 opened at 1.0.0.dev0, and the `ruff format` line closed
+  (DEC-28). The reformat is `01854a1`, alone, and CI's Format step keeps the tree formatted.
+  It opens one line: the exclude and a file named on the command line.
 
 ### Closed in Phase 2
 
@@ -1471,7 +1514,7 @@ diffed this backlog against `main`'s: no line was dropped.
   decision (NFR-2), which is the problem it actually solves.
 - **S3-6, decided in DEC-21 — NFR-6** timeout / retry-with-backoff / circuit-breaking, per
   **DEC-9**.
-- **S3-1, decided in DEC-28 (format the code once, Markdown excluded, and gate it) — `ruff format`.** Not gated in Phase 1: the tree is
+- **Closed by S3-1 (2026-10-16), as DEC-28 decided (format the code once, Markdown excluded, and gate it) — `ruff format`.** Not gated in Phase 1: the tree is
   unformatted and a whole-tree reformat is the kind of diff that gets rubber-stamped
   (DEC-11). **Re-deferred at the Phase 2 exit:** a phase boundary is the one time no
   story branch is open to conflict with it, so that pass decides: reformat once, alone,

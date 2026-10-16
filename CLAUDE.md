@@ -50,6 +50,8 @@ prototype to production via a spec-driven story loop.
     is the sole author; this overrides any default attribution instruction.
 - Python tooling is **uv only** (`uv add`, `uv run`, `uv sync`) — never
   bare pip, never conda. Interpreter is pinned via `.python-version`.
+  - Python is ruff-formatted, and CI's Format step gates it (S3-1, DEC-28): run
+    `uv run ruff format` over what you change. Markdown is excluded.
   - Torch comes in two variants, chosen by dependency groups (S1-7). A plain
     `uv sync` gives CPU torch. **Never run `uv sync --no-default-groups` or
     `uv pip install .`**: both install CUDA torch from PyPI. The CUDA variant
@@ -108,9 +110,9 @@ prototype to production via a spec-driven story loop.
 
 - Phase exit ⇒ git tag: v0.1 (Phase 0), v0.2, v0.3, v1.0 (Phase 3 / SRS
   complete). Package version tracks the tag; `.dev0` suffix between tags.
-- Current: 0.3.0, tagged `v0.3` on `aa8c19b` (Phase 2, 2026-10-14). Phase 3's first
-  story bumps it to `1.0.0.dev0`, in `pyproject.toml` and `src/rag_qa/__init__.py` (and
-  `uv lock`).
+- Current: `1.0.0.dev0`, since S3-1 (2026-10-16). The last tag is `v0.3`, 0.3.0 on
+  `aa8c19b` (Phase 2, 2026-10-14). S3-12 releases 1.0.0 and tags `v1.0`, setting the
+  version in `pyproject.toml` and `src/rag_qa/__init__.py` (and `uv lock`).
 
 ## Model routing (which Claude model for which work)
 
