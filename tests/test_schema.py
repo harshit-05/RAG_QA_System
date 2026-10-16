@@ -193,19 +193,27 @@ def with_prompt(system: str, human: str) -> dict[str, Any]:
         pytest.param("Be precise.", "{question}", "it has no {context}", id="no context"),
         pytest.param("Be precise.", "{context}", "it has no {question}", id="no question"),
         pytest.param(
-            "Use {context}.", "{context}\n{question}", "system must not contain {context}",
+            "Use {context}.",
+            "{context}\n{question}",
+            "system must not contain {context}",
             id="context in system",
         ),
         pytest.param(
-            "Be precise.", "{context} {question} {x}", r"unknown placeholder\(s\) \{x\}",
+            "Be precise.",
+            "{context} {question} {x}",
+            r"unknown placeholder\(s\) \{x\}",
             id="a stray placeholder",
         ),
         pytest.param(
-            "Answer as {persona}.", "{context} {question}", r"\{persona\}",
+            "Answer as {persona}.",
+            "{context} {question}",
+            r"\{persona\}",
             id="a stray placeholder in system",
         ),
         pytest.param(
-            "Be precise.", "{} {context} {question}", r"unknown placeholder\(s\) \{\}",
+            "Be precise.",
+            "{} {context} {question}",
+            r"unknown placeholder\(s\) \{\}",
             id="positional",
         ),
         pytest.param(

@@ -315,9 +315,8 @@ def build_rag_chain(config: RagConfig) -> Runnable[dict[str, str], dict[str, Any
     to_prompt_inputs: RunnableLambda[dict[str, Any], dict[str, str]] = RunnableLambda(
         lambda x: {"context": format_docs(x["context"]), "question": x["question"]}
     )
-    return (
-        RunnablePassthrough.assign(context=itemgetter("question") | retrieve)
-        | RunnablePassthrough.assign(
-            answer=to_prompt_inputs | build_prompt(config) | llm | StrOutputParser()
-        )
+    return RunnablePassthrough.assign(
+        context=itemgetter("question") | retrieve
+    ) | RunnablePassthrough.assign(
+        answer=to_prompt_inputs | build_prompt(config) | llm | StrOutputParser()
     )

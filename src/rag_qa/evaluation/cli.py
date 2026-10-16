@@ -353,8 +353,11 @@ def _write(run: Any, path: Path) -> None:
 def _resume_hint(kept: Path) -> None:
     """After a run stopped: where its finished items are, if any were kept."""
     if kept.exists():
-        print(f"Finished items are kept in {_shown(kept.resolve())}: once the problem above "
-              f"is fixed, the same command resumes from them.", file=sys.stderr)
+        print(
+            f"Finished items are kept in {_shown(kept.resolve())}: once the problem above "
+            f"is fixed, the same command resumes from them.",
+            file=sys.stderr,
+        )
 
 
 def _resumable[RunT](
@@ -404,27 +407,41 @@ def run_generate(args: argparse.Namespace) -> int:
         return _cannot_run(e)
     out = Path(args.out) if args.out else setup.eval_dir / RUNS_DIR / ANSWERS_FILE
     total = len(setup.golden) if args.limit is None else min(args.limit, len(setup.golden))
-    print(f"Tier 2: generating answers to {total} golden question(s) with "
-          f"{setup.config.pipeline.query.llm}, through stream_answer")
+    print(
+        f"Tier 2: generating answers to {total} golden question(s) with "
+        f"{setup.config.pipeline.query.llm}, through stream_answer"
+    )
 
     def progress(n: int, of: int, item: AnswerItem) -> None:
-        print(f"[{n}/{of}] {item.id}: ttft {_ms(item.ttft_ms)}, total {_ms(item.total_ms)}",
-              flush=True)
+        print(
+            f"[{n}/{of}] {item.id}: ttft {_ms(item.ttft_ms)}, total {_ms(item.total_ms)}",
+            flush=True,
+        )
 
     kept = checkpoint_path(out)
     run = _resumable(
-        lambda: asyncio.run(generate(
-            setup.config, setup.golden, limit=args.limit, progress=progress, checkpoint=kept,
-            note=lambda line: print(line, flush=True),
-        )),
-        kept, "generation", (FingerprintError, NoIndexError, StaleIndexError),
+        lambda: asyncio.run(
+            generate(
+                setup.config,
+                setup.golden,
+                limit=args.limit,
+                progress=progress,
+                checkpoint=kept,
+                note=lambda line: print(line, flush=True),
+            )
+        ),
+        kept,
+        "generation",
+        (FingerprintError, NoIndexError, StaleIndexError),
     )
     if isinstance(run, int):
         return run
     if (failed := _finish(run, out, kept)) is not None:
         return failed
-    print(f"\nWrote {len(run.items)} answer(s) to {_shown(out.resolve())}. "
-          f"Generator digest: {run.generator.digest or 'not recorded'}")
+    print(
+        f"\nWrote {len(run.items)} answer(s) to {_shown(out.resolve())}. "
+        f"Generator digest: {run.generator.digest or 'not recorded'}"
+    )
     return EXIT_OK
 
 
@@ -441,9 +458,11 @@ def _print_scores(run: ScoresRun) -> None:
         )
         print(f"{name:18} {shown:>6}{extra}")
     judge = run.judge
-    print(f"\nJudge {judge.model} ({judge.digest[:12]}, on {judge.base}), num_ctx {judge.num_ctx}, "
-          f"served {judge.served_context}; largest prompt {judge.max_prompt_tokens} tokens, "
-          f"largest answer {judge.max_completion_tokens}")
+    print(
+        f"\nJudge {judge.model} ({judge.digest[:12]}, on {judge.base}), num_ctx {judge.num_ctx}, "
+        f"served {judge.served_context}; largest prompt {judge.max_prompt_tokens} tokens, "
+        f"largest answer {judge.max_completion_tokens}"
+    )
 
 
 def run_score(args: argparse.Namespace) -> int:
@@ -471,15 +490,18 @@ def run_score(args: argparse.Namespace) -> int:
     )
     run = _resumable(
         lambda: asyncio.run(score(request, progress=lambda line: print(line, flush=True))),
-        kept, "scoring", (ScoringError, FingerprintError),
+        kept,
+        "scoring",
+        (ScoringError, FingerprintError),
     )
     if isinstance(run, int):
         return run
     if (failed := _finish(run, out, kept)) is not None:
         return failed
     _print_scores(run)
-    print(f"\nWrote the scores to {_shown(out.resolve())}. rag-eval check holds them to the "
-          f"floors.")
+    print(
+        f"\nWrote the scores to {_shown(out.resolve())}. rag-eval check holds them to the floors."
+    )
     return EXIT_OK
 
 
@@ -524,21 +546,27 @@ def run_check(args: argparse.Namespace) -> int:
     for name, floor in floors.metric_floors().items():
         value = scores.aggregate.get(name)
         verdict = "BELOW" if name in below else ("ok" if floor is not None else "not gated")
-        print(f"{name:18} {'-' if value is None else f'{value:.3f}':>6} "
-              f"{'-' if floor is None else f'{floor:.3f}':>6}  {verdict}")
+        print(
+            f"{name:18} {'-' if value is None else f'{value:.3f}':>6} "
+            f"{'-' if floor is None else f'{floor:.3f}':>6}  {verdict}"
+        )
     for name, f in scores.failures.items():
         if not (f.parse or f.truncated or f.no_score):
             continue
-        print(f"  {name}: {f.parse} parse failure(s), {f.truncated} truncated, "
-              f"{f.no_score} without a score, of the items scored")
+        print(
+            f"  {name}: {f.parse} parse failure(s), {f.truncated} truncated, "
+            f"{f.no_score} without a score, of the items scored"
+        )
 
     shown = _shown(thresholds_file.resolve())
     if problems:
-        _error("the committed tier-2 run does not stand:\n"
-               + "\n".join(f"  - {p}" for p in problems))
+        _error(
+            "the committed tier-2 run does not stand:\n" + "\n".join(f"  - {p}" for p in problems)
+        )
     if below:
-        missed = "; ".join(f"{name} {scores.aggregate.get(name)} < {getattr(floors, name)}"
-                           for name in below)
+        missed = "; ".join(
+            f"{name} {scores.aggregate.get(name)} < {getattr(floors, name)}" for name in below
+        )
         _error(f"below the floor in {shown}: {missed}")
     if problems or below:
         return EXIT_FLOOR_MISSED
@@ -660,8 +688,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)  # --help and usage errors exit here, before any work
     if getattr(args, "limit", None) is not None and args.out is None:
         # A partial run must never replace the committed one.
-        parser.error(f"{args.command} --limit needs --out: a partial run must not overwrite "
-                     f"the committed file")
+        parser.error(
+            f"{args.command} --limit needs --out: a partial run must not overwrite "
+            f"the committed file"
+        )
     try:
         status: int = args.run(args)
     # The backstop: whatever a command did not foresee is "could not run", never exit 1,

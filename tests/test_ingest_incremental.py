@@ -727,8 +727,13 @@ def test_chunks_carry_the_section_7_3_metadata_with_a_corpus_relative_source(
         assert doc.id in listed
     # citation() reads only the file name, so a relative source prints the same citations.
     assert sorted(citation(doc) for doc in docs) == [
-        "LOUD.TXT", "README.md", "guide.pdf, p. 1", "guide.pdf, p. i", "guide.pdf, p. ii",
-        "notes.txt", "report.docx",
+        "LOUD.TXT",
+        "README.md",
+        "guide.pdf, p. 1",
+        "guide.pdf, p. i",
+        "guide.pdf, p. ii",
+        "notes.txt",
+        "report.docx",
     ]
 
 

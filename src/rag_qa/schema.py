@@ -130,8 +130,7 @@ class ComponentSpec(BaseModel):
         including where the object is defined, happen in ``registry.import_from_string``.
         """
         blocked = [
-            (where, target) for where, target in iter_targets(self.spec())
-            if not is_allowed(target)
+            (where, target) for where, target in iter_targets(self.spec()) if not is_allowed(target)
         ]
         if blocked:
             # A v0.2 reranker entry also gets the way to migrate (S2-4's second review).
@@ -188,7 +187,7 @@ class Components(_Strict):
             raise ValueError(
                 f"loaders {', '.join(map(repr, stale))}: 'extensions' moved out of the loader "
                 f"entries into pipeline.ingestion.loaders (S1-3), which maps each extension "
-                f"to a loader, e.g. \".pdf\": components.loaders.pdf. Remove it here"
+                f'to a loader, e.g. ".pdf": components.loaders.pdf. Remove it here'
             )
         return self
 
@@ -274,8 +273,7 @@ class Prompt(_Strict):
         missing = [f"{{{f}}}" for f in PROMPT_FIELDS if f not in found["human"]]
         if missing:
             problems.append(
-                f"human must contain {{context}} and {{question}}; it has no "
-                f"{' or '.join(missing)}"
+                f"human must contain {{context}} and {{question}}; it has no {' or '.join(missing)}"
             )
         if "context" in found["system"]:
             problems.append(

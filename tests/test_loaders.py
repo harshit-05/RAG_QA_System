@@ -13,7 +13,8 @@ from rag_qa.loaders import DocxLoader, PdfLoader, TextLoader
 from rag_qa.registry import import_from_string
 
 SMALL_REAL_PDF = (
-    REPO_ROOT / "corpus"
+    REPO_ROOT
+    / "corpus"
     / "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf"
 )
 
@@ -118,8 +119,12 @@ def test_docx_and_text_loaders_match_the_old_ones(sample_corpus: Path) -> None:
 def test_discovery_is_recursive_and_sorted(sample_corpus: Path) -> None:
     found = [str(p.relative_to(sample_corpus)) for p in discover_files(sample_corpus).files]
     assert found == [
-        "README.md", "diagram.png", "guide.pdf", "notes.txt",
-        "sub/deeper/LOUD.TXT", "sub/report.docx",
+        "README.md",
+        "diagram.png",
+        "guide.pdf",
+        "notes.txt",
+        "sub/deeper/LOUD.TXT",
+        "sub/report.docx",
     ]
 
 
@@ -128,9 +133,7 @@ def test_discovery_ignores_hidden_paths_and_office_lock_files(sample_corpus: Pat
     # copy would be indexed twice and crowd the top-k, and Word's ~$ lock file ends
     # in .docx, so it would count as a failed file while the document is open.
     found = {p.relative_to(sample_corpus).as_posix() for p in discover_files(sample_corpus).files}
-    assert not found & {
-        ".ipynb_checkpoints/notes-checkpoint.txt", ".draft.md", "sub/~$report.docx"
-    }
+    assert not found & {".ipynb_checkpoints/notes-checkpoint.txt", ".draft.md", "sub/~$report.docx"}
 
 
 def test_missing_corpus_directory_is_named(tmp_path: Path) -> None:
@@ -146,11 +149,11 @@ def test_the_scan_walks_subdirectories_and_uses_the_map(
     scan = scan_corpus(load_config(make_config()), report)
 
     assert {file.name: file.state.loader for file in scan.files} == {
-        "README.md": "components.loaders.txt",        # .md maps to the txt loader
+        "README.md": "components.loaders.txt",  # .md maps to the txt loader
         "guide.pdf": "components.loaders.pdf",
         "notes.txt": "components.loaders.txt",
         "sub/deeper/LOUD.TXT": "components.loaders.txt",  # two levels down, uppercase suffix
-        "sub/report.docx": "components.loaders.docx",     # one level down
+        "sub/report.docx": "components.loaders.docx",  # one level down
     }
     assert report.skipped == ["diagram.png"]
     assert report.failed == []

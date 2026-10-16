@@ -244,8 +244,7 @@ def check_ragas() -> dict[str, str]:
         }
     except importlib.metadata.PackageNotFoundError as e:
         raise ScoringError(
-            f"rag-eval score needs the eval extra ({e.name} is not installed): "
-            f"uv sync --extra eval"
+            f"rag-eval score needs the eval extra ({e.name} is not installed): uv sync --extra eval"
         ) from None
     for name, pinned, constant in (
         ("ragas", RAGAS_VERSION, "RAGAS_VERSION"),
@@ -323,8 +322,12 @@ def import_ragas() -> types.SimpleNamespace:
         IncompleteOutputException=IncompleteOutputException,
         InstructorRetryException=InstructorRetryException,
         # What instructor 1.17 retries as a parse failure (its retry module's own list).
-        PARSE_ERRORS=(ValidationError, json.JSONDecodeError, AsyncValidationError,
-                      ResponseParsingError),
+        PARSE_ERRORS=(
+            ValidationError,
+            json.JSONDecodeError,
+            AsyncValidationError,
+            ResponseParsingError,
+        ),
     )
 
 
@@ -484,8 +487,9 @@ def resume_state(records: Sequence[ScoreRecord]) -> Resume:
 
 def failures_of(scored: Sequence[ScoreItem], retried: Mapping[str, int]) -> dict[str, Failures]:
     """Each metric's failures, counted from the scored items' own reasons."""
-    counts = {name: Counter(i.failures[name] for i in scored if name in i.failures)
-              for name in METRICS}
+    counts = {
+        name: Counter(i.failures[name] for i in scored if name in i.failures) for name in METRICS
+    }
     return {
         name: Failures(
             parse=counts[name]["parse"],
@@ -524,15 +528,19 @@ async def score(
     resume, store = Resume(items={}), None
     if request.checkpoint is not None:
         # Everything that decides a score and is known before the first judge call.
-        store = Checkpoint(request.checkpoint, "generation", {
-            "answers": answers_identity(answers),
-            "references": current["references"],
-            "judge": current["judge"],
-            "judge_digest": digest,
-            "base_digest": base_digest,
-            "versions": versions,
-            "limit": request.limit,
-        })
+        store = Checkpoint(
+            request.checkpoint,
+            "generation",
+            {
+                "answers": answers_identity(answers),
+                "references": current["references"],
+                "judge": current["judge"],
+                "judge_digest": digest,
+                "base_digest": base_digest,
+                "versions": versions,
+                "limit": request.limit,
+            },
+        )
         resumed = store.load()
         if resumed is not None:
             resume = resume_state([store.restore(ScoreRecord, r) for r in resumed.records])
@@ -594,11 +602,11 @@ async def score(
             continue
         if not item.answerable:
             declined, leaked = declines(item.answer, evaluation.decline_marker, must_not[item.id])
-            scored.append(
-                ScoreItem(id=item.id, answerable=False, declined=declined, leaked=leaked)
+            scored.append(ScoreItem(id=item.id, answerable=False, declined=declined, leaked=leaked))
+            say(
+                f"[{n}/{len(items)}] {item.id}: {'declined' if declined else 'did not decline'}"
+                + (f", leaked {leaked}" if leaked else "")
             )
-            say(f"[{n}/{len(items)}] {item.id}: {'declined' if declined else 'did not decline'}"
-                + (f", leaked {leaked}" if leaked else ""))
         else:
             values: dict[str, float | None] = {}
             failures: dict[str, str] = {}
@@ -632,16 +640,16 @@ async def score(
                     except OllamaError as e:
                         raise ScoringError(str(e)) from e
                     if served_context is None:
-                        say(f"Note: Ollama's /api/ps does not report {judge.model}'s context; "
-                            f"its num_ctx was checked through /api/show only")
+                        say(
+                            f"Note: Ollama's /api/ps does not report {judge.model}'s context; "
+                            f"its num_ctx was checked through /api/show only"
+                        )
                     elif served_context != settings.num_ctx:
                         raise ScoringError(
                             f"Ollama serves {judge.model} with a {served_context}-token "
                             f"context, not its Modelfile's {settings.num_ctx}"
                         )
-            scored.append(
-                ScoreItem(id=item.id, answerable=True, scores=values, failures=failures)
-            )
+            scored.append(ScoreItem(id=item.id, answerable=True, scores=values, failures=failures))
             shown = ", ".join(
                 f"{name} {'-' if v is None else f'{v:.3f}'}" for name, v in values.items()
             )

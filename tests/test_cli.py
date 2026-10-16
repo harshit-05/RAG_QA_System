@@ -194,9 +194,7 @@ def test_an_answer_that_fails_before_its_first_token_prints_no_empty_header(
     def broken(question: str) -> list[Document]:
         raise RuntimeError("the index could not be read")
 
-    pipeline = dataclasses.replace(
-        fake_pipeline(ScriptedModel()), retrieve=RunnableLambda(broken)
-    )
+    pipeline = dataclasses.replace(fake_pipeline(ScriptedModel()), retrieve=RunnableLambda(broken))
     assert repl(pipeline, scripted("a question")) == EXIT_OK
     out = capsys.readouterr().out
     assert "Error: RuntimeError: the index could not be read" in out

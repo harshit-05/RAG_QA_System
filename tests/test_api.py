@@ -96,8 +96,6 @@ def serve(
         yield client, app.state.serving
 
 
-
-
 @pytest.fixture
 def scratch_config(
     make_config: MakeConfig, sample_corpus: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -106,8 +104,6 @@ def scratch_config(
     monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
     monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
     return load_config(make_config(use_fakes))
-
-
 
 
 def wait_for_job(client: TestClient, job_id: str, timeout_s: float = 30) -> dict[str, Any]:
@@ -419,8 +415,14 @@ def test_every_route_but_the_health_probes_needs_the_token(
             else:
                 assert status == 401, (method, path)
     assert {path for _, path in requests} == {
-        "/v1/query", "/v1/ingest", "/v1/ingest/x", "/v1/documents",
-        "/docs", "/redoc", "/openapi.json", *HEALTH,
+        "/v1/query",
+        "/v1/ingest",
+        "/v1/ingest/x",
+        "/v1/documents",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        *HEALTH,
     }
 
 
@@ -616,7 +618,10 @@ def test_a_server_with_no_index_starts_refuses_queries_and_serves_after_an_inges
         health = client.get("/v1/health")
         assert health.status_code == 503
         assert health.json()["index"] == {
-            "ready": False, "generation": None, "documents": None, "detail": NO_INDEX_YET
+            "ready": False,
+            "generation": None,
+            "documents": None,
+            "detail": NO_INDEX_YET,
         }
         assert health.json()["llm"]["ready"] is True  # a fake model: nothing to ask
         for response in refused(client):

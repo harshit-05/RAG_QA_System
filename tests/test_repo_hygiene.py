@@ -56,7 +56,7 @@ def test_no_build_artifacts_index_or_media_are_tracked() -> None:
         ("src/rag_qa/vectorstore/__init__.py", False),
         ("src/rag_qa/vectorstore/qdrant.py", False),
         ("indexes/elsewhere/index.faiss", True),  # an index anywhere is still caught, by extension
-        ("corpus/2412.14140v2.pdf", False),    # corpus PDFs are tracked on purpose
+        ("corpus/2412.14140v2.pdf", False),  # corpus PDFs are tracked on purpose
         ("tests/test_registry.py", False),
     ],
 )

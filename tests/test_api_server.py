@@ -301,7 +301,10 @@ def test_loopback_is_localhost_or_a_loopback_address(host: str, loopback: bool) 
 def test_server_settings_default_to_a_tokenless_loopback_server() -> None:
     settings = ServerSettings()
     assert (settings.token, settings.max_concurrent, settings.host, settings.port) == (
-        None, 1, "127.0.0.1", 8000
+        None,
+        1,
+        "127.0.0.1",
+        8000,
     )
 
 

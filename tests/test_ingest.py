@@ -69,7 +69,7 @@ def test_one_corrupt_document_is_reported_does_not_abort_and_fails_the_run(
     out, err = capsys.readouterr()
 
     assert status == EXIT_RUN_FAILED
-    assert store_exists(index)                       # rebuilt from the rest
+    assert store_exists(index)  # rebuilt from the rest
     assert "Loaded 7 document pages/sections" in out  # 3 PDF pages + 4 single-doc files
     assert "Failed 1 item(s)." in out
     # The exception type is recorded. Which pypdf error it is (PdfStreamError here)
@@ -283,7 +283,11 @@ def test_the_summary_accounts_for_everything_not_indexed(
         ),
         pytest.param(
             IngestReport(
-                documents=1, chunks=1, found=1, added=1, rebuild="there is no index yet",
+                documents=1,
+                chunks=1,
+                found=1,
+                added=1,
+                rebuild="there is no index yet",
                 published="g",
             ),
             "Loaded 1 document page/section, split into 1 chunk.\n"
@@ -293,8 +297,15 @@ def test_the_summary_accounts_for_everything_not_indexed(
         ),
         pytest.param(
             IngestReport(
-                documents=4, chunks=9, found=5, added=1, changed=1, unchanged=2, kept=1,
-                skipped=["a.png"], symlinks=["l.md"],
+                documents=4,
+                chunks=9,
+                found=5,
+                added=1,
+                changed=1,
+                unchanged=2,
+                kept=1,
+                skipped=["a.png"],
+                symlinks=["l.md"],
                 failed=[("b.pdf", "PdfReadError: bad"), ("locked/", "PermissionError: no")],
                 published="g",
             ),
