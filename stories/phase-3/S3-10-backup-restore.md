@@ -29,7 +29,9 @@ README states what is lost and how long recovery takes. Design: ARCHITECTURE.md 
        manifest (a few hundred bytes a document), Qdrant's sha256, the server's version and
        the time;
     3. verify the download against the checksum;
-    4. delete the server's copy;
+    4. delete the server's copy, in a `finally`. A snapshot file outlives its collection and
+       cannot be listed or downloaded once the collection goes, so nothing could clean it up
+       later (DEC-25, design review 2);
     5. keep the newest `--keep` (7).
   - **`list`:** what is on disk, newest first, with the sidecar's summary.
   - **`restore FILE`,** holding the writer lock from the upload to the end, as `create` and
@@ -37,13 +39,21 @@ README states what is lost and how long recovery takes. Design: ARCHITECTURE.md 
     ingest starting mid-restore would delete the uploaded generation as a crash's orphan, or
     publish over the restore):
     1. verify the checksum;
-    2. refuse a snapshot whose embedder identity differs from the config's, from its sidecar,
-       as `rag-query` would;
+    2. refuse a snapshot the config cannot use, from its sidecar. The whole manifest must load
+       under the current model, and `check_index`'s rule must pass: the embedder's identity,
+       and the sparse one with a hybrid retriever (design review 2; the first draft checked
+       only the embedder);
     3. take the writer lock;
-    4. upload it under a new generation name, through Qdrant's `snapshots/upload` endpoint:
+    4. check that the new name is free, then upload under it, through Qdrant's
+       `snapshots/upload` endpoint:
        `client.http.snapshots_api.recover_from_uploaded_snapshot(collection_name, wait,
-       priority, checksum, snapshot)`, the only way `qdrant-client` exposes it (checked);
-    5. correct `generation` in the restored metadata;
+       priority, checksum, snapshot)`, the only way `qdrant-client` exposes it (checked).
+       **Uploaded to a name that exists, Qdrant replaces that collection's data in place:**
+       given the alias's name, it overwrote the live generation, with no switch (checked,
+       design review 2). So restore refuses a name taken by a collection or an alias. The
+       checksum goes with the upload, and a wrong one is refused with a 400, leaving nothing;
+    5. delete the copy the upload left in the server's `snapshots/` folder, then write the
+       manifest whole, with `generation` corrected;
     6. switch the alias, then recover.
 
     It prints what it replaced, and says how to switch back (the previous generation is
@@ -54,8 +64,10 @@ README states what is lost and how long recovery takes. Design: ARCHITECTURE.md 
   `restore(store, path, *, expect_embedder)`. `backup.py` never imports `qdrant_client`
   (the architecture test).
 - **Schedule:** a compose `backup` profile, with the app's image running
-  `rag-backup create --every 24h --keep 7` and mounting `./backups`. README gives a cron line
-  and a systemd timer for a host without compose.
+  `rag-backup create --every 24h --keep 7`. It mounts `./backups` and `./var`, under the
+  app's uid: without `./var` it would not share the writer lock (DEC-25, design review 2).
+  Each run takes the lock for itself, and a run that finds an ingest holding it tries again
+  5 minutes later. README gives a cron line and a systemd timer for a host without compose.
 - **Tests.**
   - **Hermetic:** the sidecar, the checksum verification, the refusals, retention and the
     lock, with the snapshot calls faked.
@@ -63,11 +75,21 @@ README states what is lost and how long recovery takes. Design: ARCHITECTURE.md 
     small collection, create, download, checksum, restore, switch, then a query that
     returns the same points.
   - **Its first assertion:** the restored generation carries the manifest in its metadata. A
-    collection's `config.json` holds its metadata, so a snapshot should carry it, but no round
-    trip had run when this was written (design review 1). The sidecar's copy is the fallback.
+    collection's `config.json` holds its metadata, so a snapshot should carry it (design
+    review 1). Design review 2 ran the round trip against the server: the metadata, the
+    payload index on `metadata.source` and every point came back. The sidecar's copy stays
+    the fallback.
+  - **Nothing left behind** (design review 2): a restore to a taken name is refused before
+    any upload, and after `create`, `restore` and `recover`, the server's `snapshots/` folder
+    holds nothing of ours. `recover` deletes a generation's snapshots before the generation.
 - **README: "Backup and restore",** a runbook.
   - **The commands,** and checking a backup's sidecar.
-  - **Restoring, then switching back** if needed.
+  - **Restoring, then switching back** if needed. A switch back by hand makes the generation
+    switched away from a newer orphan, which the next ingest deletes (design review 2).
+  - **A lost live collection:** its alias goes with it, the previous generation survives
+    (DEC-19), and one line points the alias at it.
+  - **Never delete `snapshots/tmp/`** on Qdrant's volume: uploads land there first, and
+    without it every upload fails.
   - **Copying `backups/` off the host** (an rclone or `aws s3 sync` line): the operator's
     step, an SRS difference.
   - **RPO:** the backup interval for the index. The corpus and git are the source of truth,
@@ -102,6 +124,10 @@ uv run rag-backup create && uv run rag-backup list
 # then
 uv run rag-query; echo "exit $?"                           # 2: no index
 time uv run rag-backup restore backups/rag_qa/<newest>.snapshot   # RTO, measured
+# the previous generation survived the loss, and the server keeps no snapshot of ours
+curl -s -H "api-key: $RAG_QDRANT_API_KEY" 127.0.0.1:6333/collections \
+  | jq -r '.result.collections[].name'
+docker compose exec qdrant find /qdrant/snapshots -type f -not -path '*/tmp/*'   # nothing
 uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-10/after.json
 diff ~/dev/rag-s3-10/before.json ~/dev/rag-s3-10/after.json && echo IDENTICAL
 docker compose --profile backup up -d && docker compose logs backup | tail -3
@@ -115,6 +141,8 @@ gh pr checks
   to the end.
 - **A failure before the switch** must leave the live index untouched, and nothing behind
   but an orphan generation, which recovery removes.
+- **No taken name, no leftover** (design review 2): restore refuses a name that exists, and
+  no snapshot file of ours stays on the server.
 
 ## Discovered
 

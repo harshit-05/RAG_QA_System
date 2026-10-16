@@ -1966,7 +1966,25 @@ throughout (DEC-25). With a fallback configured, an open Ollama breaker routes t
 than answering 503 (DEC-21). The `eval` extra has four advisories, not one, so the `langchain`
 bump moves into S3-9 (DEC-24). It also made the gap-closure table one row per requirement,
 corrected and extended the SRS differences, and split S3-11. STATUS.md, "Design reviews",
-lists every finding. Design review 2 is next._
+lists every finding._
+
+_Design review 2 (2026-10-16, depth) attacked the store, keys and limits, cancellation, the
+sweep and the supply chain, against a real Qdrant v1.19.2, a real Caddy 2.11.7 and the
+installed libraries. It found no blocker. Its 18 findings and 9 nits are fixed below, each
+marked "design review 2". The store's write protocol, parity with FAISS, the snapshot round
+trip, and cancellation under tracing and through the proxy all held. What changed:_
+
+- _our code makes every cut and fuses hybrid results itself, since the server decides a tie
+  by the collection's layout (DEC-19, DEC-20);_
+- _a lost live collection no longer costs the previous one, and restores and snapshots leave
+  nothing behind on the server (DEC-19, DEC-25);_
+- _the host and the containers share one uid, and the client's address is trusted from Caddy
+  alone, with bounded rate tables (DEC-23, DEC-24);_
+- _every pin is verified once, by provenance pinned to its workflow and tag (DEC-24);_
+- _the sweep's rules are margins fixed before its first run, and Colab restores this host's
+  index rather than embedding again (DEC-26)._
+
+_STATUS.md, "Design reviews", lists every finding with its evidence._
 
 Phase 2 made the system a service. Phase 3 makes it one that can be deployed, watched and
 recovered. Five things stand in the way:
@@ -2009,7 +2027,7 @@ NFR-4 and the whole of §2.4.
 | SRS row | Gap at v0.3 | Closed by | Evidence at the exit |
 | --- | --- | --- | --- |
 | §9 LLM01, prompt injection | isolation is prompt wording only | S3-11b: retrieved chunks are delimited as data, and the system turn says so | a unit test that a chunk cannot close its delimiter; tier 2's floors hold |
-| §9 LLM05, supply chain | the image is unscanned; the `eval` extra is not audited, and has four advisories | S3-9: Trivy over the image, plus secret and misconfiguration scans; the `eval` extra audited after the `langchain` bump; a weekly run; the audit policy | CI green on the release tag, the `container` job and the `eval` audit included |
+| §9 LLM05, supply chain | the image is unscanned; the `eval` extra is not audited, and has four advisories | S3-9: Trivy over the image, plus secret and misconfiguration scans; the `eval` extra audited after the `langchain` bump; a weekly run that also scans every pinned third-party image; the audit policy; every pin verified once by DEC-24's recipe (design review 2) | CI green on the release tag, the `container` job and the `eval` audit included; each pin's check recorded beside it |
 | §9 LLM07/08, excessive agency | none (the allowlist, S1-2) | the allowlist grows only by `langchain_openai.` (S3-6) | `tests/test_registry.py` |
 | §9 deserialization | the FAISS pickle (ISS-16) | S3-2 and S3-3: no pickle anywhere; a restore verifies its checksum | `allow_dangerous_deserialization` appears nowhere in `src/` |
 | §9 secrets | none in the repository | S3-9's secret scan; API keys stored as hashes; an `api_key` in a component spec refused (S3-6) | CI; a schema test |
@@ -2098,7 +2116,7 @@ release and image tag below published.
 | `langchain-openai` (the `fallback` extra) | 1.6.2 | already locked through ragas, so nothing new resolves |
 | `langchain` (the `eval` extra) | 1.3.2 → 1.4.3 | the bump resolves, in S3-9 (DEC-24). It also moves langgraph to 1.2.15, langgraph-checkpoint to 4.3.0, langgraph-sdk to 0.4.7, and websockets, which the main environment shares through langsmith, down from 17.1 to 16.1.1. The main environment still audits clean (design review 1). ragas 0.4.3 is still the newest release |
 | Jaeger, Prometheus, Alertmanager, Caddy | 2.22.0, v3.15.0, v0.34.1, 2.11.7 | from their release lists |
-| Trivy | v0.75.0 | run as a binary pinned by sha256 (DEC-24); v0.76.0 appeared on 2026-10-14 |
+| Trivy | v0.75.0 | run as a binary pinned by sha256 (DEC-24); v0.76.0 appeared on 2026-10-14, too new to pin. Design review 2 verified v0.75.0 by DEC-24's recipe: provenance signed by `reusable-release.yaml` at the tag, built from `591e979` on `main`, sha256 `c6e65abd…` |
 
 ### 3.1 Decisions
 
@@ -2123,19 +2141,38 @@ switch, and the manifest travels in the collection's metadata.**
     2. copy the live generation's points, without the deleted ones (a scroll with vectors
        and payload);
     3. upsert the new points with `wait=True`, then check the point count;
-    4. switch the alias in one `update_collection_aliases` call that deletes and creates it.
-       Qdrant documents that "multiple alias actions are performed atomically";
-    5. recover, to prune.
+    4. mark it complete: `complete: true`, beside the manifest (design review 2, below);
+    5. switch the alias in one `update_collection_aliases` call that deletes and creates it.
+       Qdrant documents that "multiple alias actions are performed atomically". Design review
+       2 checked it on the server: the same call works on the first publish, with no alias
+       to delete, and a batch that fails leaves the alias as it was;
+    6. recover, to prune.
 
     Every step can be repeated: chunk IDs are uuid5 and generation names are unique, so a
     retry never doubles a point. A create or a delete repeated after a lost response is not
     a no-op, though, so DEC-21 states what a retry of each call counts as done (design
-    review 1).
+    review 1). Design review 2 killed a prototype of this protocol after each step, and at 8
+    random moments, against the real server. The alias always kept the old generation, with
+    its full count, and one recovery left exactly the live generation and the previous one.
   - **Recovery**, under the writer lock: delete every `<collection>--gen-*` collection that
     is neither the alias's target nor the newest older one. A crash before the switch leaves
     a newer orphan, which goes.
+  - **With no alias, recovery deletes only incomplete generations** (design review 2).
+    Qdrant deletes an alias together with its target (checked), so losing the live
+    collection, by hand or in S3-10's drill, leaves no alias at all. "Keep the target and the
+    newest older one" would then delete every generation, the previous one included, which is
+    by then the last usable copy. FAISS's dangling link kept the target's name, so its
+    previous generation survived (`_live_name` in v0.3's `vectorstore.py`).
+    - A generation is complete once its metadata says `complete: true` and its manifest
+      names the collection itself; with no alias, only the others go.
+    - `rag-query`'s "no index" message then names the newest complete generation, and the
+      README line that points the alias at it. The next publish prunes as usual.
   - **Something in the way**, a real collection named like the alias, or an alias pointing
     outside the pattern, is refused with exit 2 and never renamed (S2-6's second review).
+    It is told from the two listings, `get_collections()`, which omits aliases, and
+    `get_aliases()`. Never from `collection_exists` or `get_collection`, which resolve an
+    alias to its target (checked, design review 2). The server refuses the collision too: a
+    collection named like an alias (400), and an alias named like a collection (409).
   - **Readers bind to the generation they resolved**, not to the alias, so a switch between
     the check and the query cannot mix two generations. The previous generation survives one
     more switch, for readers still on it.
@@ -2144,11 +2181,22 @@ switch, and the manifest travels in the collection's metadata.**
     item. A FAISS reader held its index in memory, so deleting a generation never broke it.
     A Qdrant reader's collection lives on the server and is deleted two switches later, so a
     REPL session or a long `rag-eval generate` that outlived two ingests would fail. A search
-    whose collection has gone resolves the alias once more.
+    whose collection has gone resolves the alias once more. The server answers that search
+    with a 404, mid-search too and never a 500, so the 404 is the signal, and it is never
+    retried (design review 2). In the same review, 6 readers through the alias got answers
+    from one generation in each of 2,973 queries while it switched 500 times.
   - **Cost:** the copy is linear in the index, about 1–2 s for 1,708 chunks. A clone from a
     snapshot is the path for a much larger corpus, not built in this phase.
 - **Manifest version 2, kept in the collection's metadata.** Qdrant has had collection
   metadata since 1.16; the client and its local mode were checked in 1.19.1.
+  - **Under one key, written whole** (design review 2). A metadata update merges top-level
+    keys, a `null` deletes one, and a nested object is replaced whole (checked on the
+    server). So the manifest sits under a key of its own, beside `complete`, and every write
+    sends all of it. No stale field can then survive inside it, after a restore included.
+  - **Its size.** A request is limited to 32 MiB, about 100,000 documents at 300 bytes each.
+    And `GET /collections/{name}` returns the whole manifest: 9.5 MB came back for a 10 MB
+    one. So hot paths never call `get_collection`: the refresh compares `/aliases`, counts
+    come from `count`, and the manifest is read once per new generation.
   - **It holds** the identities (the embedder and its dimension, the splitter, the chunking
     version, the sparse encoder once one is set, and the store's own
     `{distance: cosine, exact: true}`), and, per document, `sha256`, `loader`,
@@ -2165,16 +2213,27 @@ switch, and the manifest travels in the collection's metadata.**
     the metadata near 200 bytes per document.
   - **Its readers keep their interface:** `check_index`, `generate`'s staleness check and
     `/v1/documents`.
-- **Search is always exact,** `SearchParams(exact=True)`, inside a hybrid query's prefetches
-  too (the field exists there, checked). Tier 1 stays deterministic across machines, as
-  FAISS's flat index was. An exact search over 100k vectors of 384 dimensions stays far
-  below NFR-1's 300 ms, which S3-7 measures.
+- **Search is always exact,** `SearchParams(exact=True)`, in each hybrid branch too. Tier 1
+  stays deterministic across machines, as FAISS's flat index was. One exact search over 100k
+  vectors of 384 dimensions took 28 ms on the review server (design review 2), far below
+  NFR-1's 300 ms, which S3-7 measures.
+- **Our code makes every cut** (design review 2). Where several points tie at a limit, the
+  server keeps a set that depends on how the collection was built. With 60 points tied and
+  a limit of 10, three insertion orders kept three different sets, dense and sparse alike,
+  and each set changed after a server restart, while every repeat within one process agreed.
+  So `vectorstore` asks for more than it needs, extends the limit while the point at the cut
+  ties with the next, orders by score, then point ID, and cuts. The real corpus has no such
+  tie today: it has no duplicate chunk, and no tie straddles a cut of 20 or 40 for any golden
+  question.
 - **The distance is cosine.** MiniLM's pipeline ends in a `Normalize` module (checked in the
   cached model), so its vectors have unit length, and cosine ranks exactly as FAISS's L2 did.
 - **State that is not the index.** `paths.state` (default `var/`) replaces
   `paths.vector_store`. It holds the writer lock, a `flock` on `var/ingest.lock` as in
   DEC-17, and S3-8's job database and job locks (`var/jobs/`). There is one writer per host.
-  Compose bind-mounts `var/`, so the CLI and the containers share the locks.
+  Compose bind-mounts `var/`, so the CLI and the containers share the locks. A `flock` holds
+  across the host and a container on that mount, and so does SQLite's WAL, written from six
+  containers and the host at once (both checked). Both sides need one uid (DEC-24, design
+  review 2).
 - **Breaking.** The story's commit carries `!` and a `BREAKING-CHANGE:` trailer.
   - `paths.vector_store` and `RAG_VECTOR_STORE_PATH` are **refused at load**, with the
     migration in the message. They are never ignored: caveat 9's habit of setting
@@ -2190,8 +2249,11 @@ switch, and the manifest travels in the collection's metadata.**
   - **The check:** S3-2 runs it on FAISS before changing the store, then on Qdrant. Identical
     files, and identical tier 1 question by question, mean every prompt is byte-identical,
     so the committed tier-2 run still describes the system. It runs twice on Qdrant, and the
-    two files must match too: an exact search must not vary between runs (DEC-20 has how a
-    cut can).
+    two files must match too: an exact search must not vary between runs (the cut rule
+    above). Design review 2 ran it on a prototype: the live FAISS generation's 1,708 vectors
+    and payloads, written to the review server in walk, ID and shuffled order, gave FAISS's
+    top 20 in FAISS's order for all 25 questions, and the same rendered contexts. Every
+    payload came back equal, with `page` still an int and `page_label` a str.
   - **Every later story repeats it** (design review 1). The fingerprint does not hash code,
     and S3-3 to S3-10 change code on the retrieval path, so each diffs a new contexts file
     against S3-2's Qdrant one: about 45 s.
@@ -2220,8 +2282,8 @@ Rejected:
 - **Local mode with `path=` for real use:** the one-process lock.
 - **HNSW by default:** approximate, so tier 1 would vary, for no latency the corpus needs.
 
-**DEC-20 — Hybrid retrieval. Our own BM25 encoder writes the sparse vectors, Qdrant fuses
-dense and sparse candidates with RRF, and the cross-encoder ranks what survives.**
+**DEC-20 — Hybrid retrieval. Our own BM25 encoder writes the sparse vectors, our code fuses
+the dense and sparse candidates with RRF, and the cross-encoder ranks what survives.**
 
 - **Where the sparse vectors come from** (the maintainer asked for this to be explicit):
   `rag_qa/sparse.py`, a `Bm25Encoder` of about 80 lines with no new dependency.
@@ -2245,23 +2307,28 @@ dense and sparse candidates with RRF, and the cross-encoder ranks what survives.
     sends text to the server only with `cloud_inference=True`, which local mode refuses
     (checked), so the hermetic suite could not run it. And its tokenizer changed in v1.15.3
     and v1.19.0: a dependency on the server's version that the fingerprint cannot see.
-- **The query.** `query_points` with two prefetches, dense (`using="dense"`, a limit of `P`,
-  exact, the filter) and sparse (`using="bm25"`, a limit of `P`, the filter), fused by
-  `RrfQuery(rrf=Rrf(k=rrf_k))` over their whole union (a limit of 2`P`). `vectorstore` then
-  orders the fused points by score, ties by point ID, and cuts them to
-  `reranker_candidates`; the cross-encoder takes them down to `top_n` 5.
-  - **Qdrant's default RRF constant is 2, over zero-based ranks** (checked in the client's
-    fusion code, and in the server's `reciprocal_rank_fusion.rs` at v1.19.2), not the usual
-    60. So `rrf_k` is always set: 60 by default, tuned by tier 1. `P` defaults to 40 per
-    branch, so fusion has more than 20 candidates to choose from.
-  - **The server breaks no ties** (design review 1). It sorts the fused points by score
-    alone, in hash-map order, and its own comment says "Does not break ties". Ties are the
-    rule in RRF: a point at position i of one list scores the same whichever list it is in.
-    A cut made by Qdrant could therefore keep a different one of two tied points from one
-    process to the next, and tier 1 would move with it. Local mode sorts stably, so the
-    hermetic suite cannot show this; a `qdrant_server` test with a tie across the two lists
-    does, and S3-5 runs hybrid tier 1 twice.
-  - Weighted RRF (Qdrant 1.17) is available and unused unless tier 1 shows a need.
+- **The query: two searches, fused by our code** (design review 2).
+  - Dense (`using="dense"`, exact, the filter) and sparse (`using="bm25"`, the filter) run as
+    two `query_points` calls, each cut to `P` by DEC-19's cut rule.
+  - `vectorstore` fuses the two lists by RRF with `rrf_k`: each point scores the sum of
+    `1 / (rrf_k + rank)` over the lists it is in, with one-based ranks. It orders the fused
+    points by score, ties by point ID, and cuts them to `reranker_candidates`.
+  - The cross-encoder then takes them down to `top_n` 5.
+  - **Why not Qdrant's prefetch and fusion.** Design review 1 found that the server sorts
+    fused points by score alone, in hash-map order ("Does not break ties"), so it had Qdrant
+    return the whole union and let our code make the last cut. But each prefetch still cut
+    its own list on the server. Design review 2 found the server decides a tie at such a cut
+    by the collection's layout: three insertion orders kept three different sets, and a
+    restart changed each. So no cut is left to the server. Two searches cost one more round
+    trip, and the hermetic suite now tests the fusion that runs, where local mode
+    reimplemented the server's.
+  - **Ties are the rule in RRF:** a point at position i of one list scores the same
+    whichever list it is in. Our order breaks them by point ID.
+  - **`rrf_k` is always explicit,** 60 by default and tuned by tier 1. Qdrant's own default
+    was 2 over zero-based ranks (design review 1, caveat 31). It no longer applies, since the
+    fusion is ours. `P` defaults to 40 per branch, so fusion has more than 20 candidates to
+    choose from.
+  - Weights per list are a parameter of our function, unused unless tier 1 shows a need.
 - **The retriever spec.** `RetrieverSpec` gains `mode` (absent means dense), `prefetch` and
   `rrf_k`. Unset keys stay out of `kwargs()`, as they do today, so `vector_search`'s dump,
   and with it tier 2's `query` part, do not move. `search_type` narrows to `similarity`: our
@@ -2271,7 +2338,7 @@ dense and sparse candidates with RRF, and the cross-encoder ranks what survives.
   - **Over HTTP:** `POST /v1/query {"question": ..., "sources": [...]}`, at most 50 entries,
     each one in the served manifest, else 422.
   - **In the CLI:** `rag-query --source PATH`, repeatable.
-  - **In Qdrant:** a `MatchAny` on the indexed `metadata.source`, inside each prefetch.
+  - **In Qdrant:** a `MatchAny` on the indexed `metadata.source`, in each branch's search.
   - It is data, never a component (DEC-18). Tiers 1 and 2 pass none.
 - **Tier 1 decides; the batched re-run switches.**
   - **S3-5** compares dense with hybrid retrieval, both reranked, with `rrf_k` and prefetch
@@ -2301,6 +2368,14 @@ Ollama gets an opt-in hosted fallback.** This resolves DEC-9, and NFR-6.
   - **Ollama:** only before the first token, only on a connection error, 2 attempts. A retry
     after a token would duplicate text. The loop is written by hand in `stream_answer`:
     tenacity retries a call, and the model's stream is an async generator.
+  - **A bounded budget inside the retrieval lock** (design review 2, from the code).
+    `serialized` holds the retrieval lock for a whole retrieval (`api/state.py`), and a hung
+    Qdrant costs a timeout per attempt. So the breaker wraps each attempt, not the retried
+    call, and an open breaker ends the retry loop. One deadline covers a retrieval's
+    attempts, 15 s by default. A 404 for a generation is never retried: the generation is
+    gone, and the reader resolves the alias once more (DEC-19).
+  - tenacity's async retry awaits in the caller's task and creates none (checked, design
+    review 2).
 - **Circuit breakers,** in `rag_qa/resilience.py`: about 60 lines of our own, since
   pybreaker is synchronous only.
   - One per dependency. It opens after N consecutive failures, and lets one probe through
@@ -2314,7 +2389,10 @@ Ollama gets an opt-in hosted fallback.** This resolves DEC-9, and NFR-6.
   check).
   - **Config:** `pipeline.query.fallback_llm` names an llms entry built on
     `langchain_openai.ChatOpenAI` with a `base_url`. Any OpenAI-compatible provider works;
-    the maintainer names one when S3-6 starts.
+    the maintainer names one when S3-6 starts. The entry sets `max_retries: 0` and a
+    `timeout`. Otherwise the OpenAI SDK retries twice on its own, with a 600 s timeout
+    (`openai/_constants.py`, design review 2), which would hide failures from the
+    fallback's breaker for minutes.
   - **Dependency:** a `fallback` extra, `langchain-openai>=1`. Version 1.6.2 is locked
     already, through ragas, so nothing new resolves. The allowlist gains
     `langchain_openai.`: it is used, so it is allowed (ADR-020).
@@ -2332,7 +2410,9 @@ Ollama gets an opt-in hosted fallback.** This resolves DEC-9, and NFR-6.
     every rule above stands.
   - **How it streams:** `stream_answer` streams the fallback model itself, in the consuming
     task. Never `.with_fallbacks()`, whose wrapper would put back the Runnable machinery
-    DEC-14 removed from the stream.
+    DEC-14 removed from the stream. Checked in design review 2: langchain-openai 1.6.2 reads
+    the stream inside `async with`, so a cancel closes it. Its per-chunk timeout (120 s)
+    awaits through `asyncio.wait_for`, which on Python 3.12 runs in the caller's task.
   - **Visibility:** the `done` event's `model` names the model that answered, and so does
     the server log. The README says that retrieved chunks leave the host only then.
   - **Tier 2:** `rag-eval generate` builds no fallback, and the fallback's spec is not
@@ -2378,6 +2458,14 @@ ourselves, Prometheus metrics, and burn-rate alerts** (NFR-10).
     The context is copied into executor threads by hand, because `Serving`'s `serialized`
     wrapper calls `run_in_executor`, which does not copy context variables. The real-uvicorn
     disconnect tests run with tracing on.
+  - **Checked in design review 2:**
+    - a span made current across a `yield`, then closed from another task, logged "Failed
+      to detach context"; one with an explicit parent logged nothing;
+    - `run_in_executor` did not copy context, while `copy_context().run` did;
+    - with `exclude_spans`, the ASGI middleware hands Starlette the raw `receive`
+      (`opentelemetry-instrumentation-asgi` 0.66b1, `_get_otel_receive`);
+    - a client dropped during 30 s of silence cancelled the stream within milliseconds, with
+      the instrumentation off, excluded or full, and every span ended.
 - **Metrics.** prometheus-client 0.26.0, served on a port of its own
   (`RAG_API_METRICS_PORT`, off unless set).
   - Histograms: `rag_retrieval_seconds` (NFR-1: the query embedding plus the search),
@@ -2416,11 +2504,27 @@ durable job records and a stateless query tier** (NFR-5; DEC-18's Phase 3 half).
     `scopes` (some of `query` and `ingest`), the token's `sha256`, and `created`. It is
     written atomically, read again within 5 s of a change, and never holds a token. A
     32-byte random token needs no slow hash.
+  - **Where it lives, and how a change is seen** (design review 2).
+    - It lives in `var/`, which compose mounts as a folder. A file bind-mounted on its own
+      keeps its old inode when the host replaces it atomically, so a revocation would never
+      reach the container (checked).
+    - A change is seen when `(st_ino, st_mtime_ns, st_size)` moves, and `rag-keys` takes a
+      lock around its read and rewrite, so two at once lose nothing.
+    - A file that does not parse fails closed: its keys are refused with a 503, and health
+      says why, until it parses again. `RAG_API_TOKEN` still works.
   - **The command:** `rag-keys add NAME --scope query,ingest` prints a new token once;
     `rag-keys list` and `rag-keys revoke NAME` complete it.
   - **The check** hashes the presented token and compares it with each stored hash through
-    `hmac.compare_digest`, on bytes.
+    `hmac.compare_digest`, on bytes. A wrong token meets every hash, so wrong tokens all
+    take the same time; an early exit on a match tells only that key's own holder where it
+    sits. 10,000 keys take 0.36 ms (design review 2).
   - `RAG_API_TOKEN` keeps working, as one key named `token` with both scopes.
+  - **"No credential" means neither a token nor a keys file** (design review 2). DEC-18's
+    Host check and `rag-serve`'s refusal to listen beyond loopback both test
+    `settings.token is None` today (`api/routes.py`). With a keys file and no token, the
+    Host check would refuse every request through Caddy under a public name, and Caddy's own
+    health probe, whose `Host` is `app:8000`, while S3-9's `https://localhost` check passed.
+    Both rules move to "no key and no token".
   - **Scopes:** `query` for `POST /v1/query` and `GET /v1/documents`; `ingest` for the two
     ingest routes. The docs and the schema need any valid key; health stays open; metrics
     have their own port. A valid key without the scope gets 403.
@@ -2429,15 +2533,36 @@ durable job records and a stateless query tier** (NFR-5; DEC-18's Phase 3 half).
   - Per key: `RAG_API_RATE_LIMIT`, 60 a minute by default.
   - Per client IP, for requests without a key (a loopback server with none configured), and
     a strict per-IP bucket for failed authentication, 10 a minute, which slows token
-    guessing.
+    guessing. That bucket gates only requests that fail authentication: a valid key is
+    never refused because someone else failed from the same address (design review 2).
   - **The health routes are exempt** (design review 1). Docker's `HEALTHCHECK` and Caddy's
     active checks poll them from one address, and a 429 there would mark a replica unhealthy.
     The 5 s single-flight probe cache already bounds their cost.
-  - The answer is 429 with `Retry-After`. Behind the proxy, the client's address comes from
-    `X-Forwarded-For`, trusted from the proxy only (`RAG_API_TRUSTED_PROXIES`).
+  - **The tables are bounded** (design review 2): at most 10,000 buckets each, full ones
+    evicted first, then the least recently used, and an IPv6 client counted by its /64. A
+    bucket costs 180 bytes, and one /64 holds 2^64 addresses. Unbounded, the tables grew by
+    36 MB per 200,000 addresses (measured).
+  - The answer is 429 with `Retry-After`.
+- **The client's address** (design review 2).
+  - uvicorn 0.54.0 reads `X-Forwarded-For` by default, and trusts it from `127.0.0.1` and
+    `::1` (its `config.py`). So today any local client can name its own address: `curl -H
+    'X-Forwarded-For: 1.2.3.4'` was seen as `1.2.3.4`, a fresh bucket per request.
+  - So `rag-serve` passes `forwarded_allow_ips` itself: `RAG_API_TRUSTED_PROXIES`, or no one
+    when it is unset.
+  - In the stack that is Caddy's own address, which compose fixes, never the network's range.
+    A published port's connections arrive from the network's gateway, inside that range
+    (`peer=172.18.0.1`, checked), and every container sits in it too. So the app's port is
+    never published.
+  - Caddy itself replaces a client's `X-Forwarded-For` with the real address (checked).
 - **Body size.** A pure ASGI middleware answers 413 to a body over 64 KiB, by its
   `Content-Length` or as it streams, before FastAPI parses anything. That closes the
   pre-authentication gap S2-7's first review found.
+  - **As it streams, it raises `HTTPException(413)`** from the `receive` it wraps (design
+    review 2). FastAPI turns any other exception raised while it reads a body into a 400,
+    "There was an error parsing the body" (`fastapi/routing.py`). Checked with a chunked
+    body that had no `Content-Length`: our own exception gave 400, `HTTPException` gave 413.
+  - It passes `http.disconnect` through untouched, and the real-uvicorn disconnect test runs
+    with it on: it wraps `receive`, as the instrumentation can.
 - **Health.** Each dependency's probe is cached for 5 s and runs single-flight, so a flood of
   probes costs at most one call per dependency per 5 s. `/v1/health` reports the breakers.
 - **Durable job records** in SQLite (the standard library), at `var/jobs.sqlite3`, in WAL
@@ -2450,6 +2575,12 @@ durable job records and a stateless query tier** (NFR-5; DEC-18's Phase 3 half).
     writer lock. The kernel releases a `flock` with its process, so an unfinished row whose
     job lock is free belongs to a process that died. It reads as `failed`, with
     `abandoned: true`, and ADR-024's recovery handles what the run left.
+  - **In this order** (design review 2): read the row, probe the job lock, and, when it is
+    free, read the row again; only a row still unfinished is abandoned. Without the second
+    read, a job that finished between the two steps read as abandoned in 92 of 400 runs of a
+    simulation, and in none with it. A verdict written back uses `UPDATE … WHERE status IN
+    ('queued', 'running')`, so it never overwrites a final status. The start transaction
+    applies the same rule, so a dead job's row never holds the 409.
   - **Not the writer lock.** The first draft probed the ingest `flock` itself. A row is
     written before its thread takes that lock, so a live job could read as abandoned, and a
     probe that took the lock to test it would make a writer starting at that moment exit 2.
@@ -2478,13 +2609,26 @@ a separate ingest worker (on one host there is no CPU to isolate it on).
     installed torch is `+cpu`.
   - **Models:** a stage builds the embedder and the reranker from `config.yaml`, as CI's
     warm-up step does, and the runtime runs with `HF_HUB_OFFLINE=1`.
-  - **Runtime:** a non-root user, and a `HEALTHCHECK` on `/v1/health/live`.
+  - **Runtime:** any non-root uid, and a `HEALTHCHECK` on `/v1/health/live`. The image runs
+    under whatever uid compose gives it: the models readable by all, nothing written outside
+    `var/`.
+  - **One uid on both sides** (design review 2). Compose runs `app` and `backup` as
+    `user: "${UID}:${GID}"`, both set in `.env`, since neither bash nor zsh exports them.
+    Under any other uid (all three checked):
+    - the host CLI could not open a lock file a container had created (`PermissionError`);
+    - nor write a WAL database a container had created ("attempt to write a readonly
+      database");
+    - and the container could not read the host's 0600 keys file.
+
+    `_writer_lock` turns such a `PermissionError` into exit 2, naming the file.
 - **Signals.** Compose sets `init: true`. With an init process as PID 1, uvicorn's re-raised
   SIGTERM ends `rag-serve` with status 143, the conventional one, which stays: the backlog
   line about mapping it to 0 closes. Without an init, PID 1 ignores the re-raised signal
   and exits 0. S3-9 checks both with `docker stop`.
 - **`compose.yaml`**, every image pinned by digest. S3-2 creates it with `qdrant` alone.
-  - **`qdrant`:** v1.19.2, on 127.0.0.1, with an API key from `.env`.
+  - **`qdrant`:** v1.19.2, on 127.0.0.1, with an API key from `.env`. It is the
+    `-unprivileged` image, from S3-2 on: the plain one runs as root (`user=0:0`), and a
+    volume that starts unprivileged never holds root's files (design review 2).
   - **`ollama`:** 0.22.1, the version on this host, so ADR-025's digests stay portable, plus
     a one-shot service that pulls the configured model: a second copy, about 4.1 GB for
     mistral, since the container keeps its own models (design review 1).
@@ -2492,7 +2636,9 @@ a separate ingest worker (on one host there is no CPU to isolate it on).
   - **`caddy`:** 2.11.7, with `tls internal` for a local name and ACME for a public one. It
     balances the `app` replicas, health-checked on **liveness**, so a stack with no index
     yet still accepts the ingest that builds it. SSE is flushed at once, and the body limit
-    applies at the edge too.
+    applies at the edge too. It has a fixed address on the stack's network, the one address
+    the app trusts for `X-Forwarded-For` (DEC-23), and the app publishes no port at all
+    (design review 2).
   - **Profiles:** `observability` (Jaeger 2.22.0, Prometheus v3.15.0, Alertmanager v0.34.1)
     and `backup` (DEC-25).
   - **Memory:** about 7.5 GB with mistral loaded. The README says to unload the host's own
@@ -2504,6 +2650,11 @@ a separate ingest worker (on one host there is no CPU to isolate it on).
 - **A disconnect through the proxy.** Caddy cancels its upstream request when the client
   leaves. S3-9 shows against real Ollama that our connection closes within about 1 s of a
   client dropping through Caddy: DEC-14's criterion, one hop further out.
+  - **Design review 2's spike** put Caddy 2.11.7 in front of a stand-in for our SSE route
+    that went silent for 30 s after `sources`, as a prefill does. Over HTTP/1.1, TLS
+    HTTP/1.1 and HTTP/2, the upstream stream was cancelled within milliseconds of the client
+    leaving.
+  - Caddy's 64 KB limit answered 413 to a chunked body too.
 - **Overlays** (§8.3).
   - `RAG_CONFIG_OVERLAY` names a YAML file deep-merged over the base config before it is
     validated: mappings merge, lists and scalars replace.
@@ -2521,15 +2672,54 @@ a separate ingest worker (on one host there is no CPU to isolate it on).
     never through `aquasecurity/trivy-action`. That action's tags were hijacked in
     March 2026 (CVE-2026-33634), when Trivy v0.69.4 and Docker Hub images were malicious
     too. A hash we hold beats a tag, or a checksum file fetched from beside the binary.
+  - **Every pin is verified once, and how is recorded beside it** (design review 2). A
+    signature alone would not have caught that incident. The attacker made v0.69.4 by
+    "Tagging this commit as `v0.69.4`, triggering the release pipeline" (GHSA-69fq-xp46-6x23),
+    so it was signed as every release is. What tells it apart is where its commit came from,
+    and when. So a Trivy pin needs all four of these, and S3-9 has the commands:
+    1. the tarball's sha256 equals GitHub's own asset digest, and the release's checksums
+       file;
+    2. `gh attestation verify` passes, pinned to the signer workflow
+       (`.github/workflows/reusable-release.yaml`), and to the tag's ref and commit;
+    3. that commit is an ancestor of `main`;
+    4. the release is at least 14 days old, and no advisory names it.
+
+    Design review 2 ran all four for v0.75.0. The provenance was signed by that workflow at
+    `refs/tags/v0.75.0`, from `591e979`, which `main` contains; the sha256 is
+    `c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f`; and a wrong commit
+    failed the check. v0.76.0 is too new.
+  - **promtool runs from the Prometheus image,** pinned by its index digest, the image
+    compose runs, rather than as a second tarball. Prometheus publishes no signatures. But
+    Docker Hub and Quay serve the same digest, and the image's `promtool` is byte-identical
+    to the release tarball's (both checked, design review 2).
+  - **Images are pinned by index digest,** each with the date and its check. The check is a
+    second registry serving the same digest, an attestation, or Docker's own provenance. An
+    image on Docker Hub alone gets the age rule. As observed on 2026-10-16:
+
+    | Image | Index digest | Checked by |
+    | --- | --- | --- |
+    | `qdrant/qdrant:v1.19.2-unprivileged` | `sha256:efb96a9425a90d2d5a1a0a474156280df1892dcdf1af3e8515bd2589b1bfd88b` | Docker Hub only: the age rule |
+    | `ollama/ollama:0.22.1` | `sha256:3ca37ec2b9cb6341b62554074205c616778fe98abcf9e4fc50361b79a07407ae` | Docker Hub only: the age rule |
+    | `caddy:2.11.7` | `sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af` | Docker's SLSA provenance |
+    | `debian:trixie-slim` | `sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f` | a Docker Official Image, as Caddy is, so its provenance is checked when it is pinned; a moving tag, bumped deliberately |
+    | `ghcr.io/astral-sh/uv:0.11.8` | `sha256:3b7b60a81d3c57ef471703e5c83fd4aaa33abcd403596fb22ab07db85ae91347` | the same on Docker Hub; GitHub attestations, signed from `main` |
+    | `prom/prometheus:v3.15.0` | `sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e` | the same on Quay |
+    | `prom/alertmanager:v0.34.1` | `sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a` | the same on Quay |
+    | `jaegertracing/jaeger:2.22.0` | `sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17` | the same on Quay |
+
+    A later pin of the same immutable tag that shows another digest is investigated, not
+    accepted.
   - **The `deploy-config` job:** `promtool test rules`, `promtool check config` and
-    `docker compose config -q`, with promtool pinned by sha256 too.
+    `docker compose config -q`, with promtool from the Prometheus image pinned above.
   - **The audit policy** (a backlog line, decided here):
     - `pip-audit --ignore-vuln ID` only for an advisory with no fixed release, with a
       reason and a date beside it in `ci.yml`, and a line in STATUS.md;
     - Trivy's ignores in `.trivyignore.yaml`, each with a statement and an `expired_at` at
       most 90 days out;
     - a weekly scheduled run of the whole workflow on `main`, so an advisory surfaces
-      without a pull request;
+      without a pull request. It also runs `trivy image` over every pinned third-party
+      image, under the same policy: a fixed advisory there means a pin bump (design
+      review 2);
     - the `eval` extra audited from `uv export --no-dev --extra eval`, with no install, and
       torch's `+cpu` label stripped as the main Audit step does (caveat 12: pip-audit skips
       torch otherwise).
@@ -2574,22 +2764,48 @@ generation and an alias switch** (SRS §11, backup and DR).
   switch, so an ingest starting mid-restore would delete the uploaded generation as a crash's
   orphan, or publish over the restore.
   1. verify the checksum;
-  2. refuse a snapshot built with another embedder, from its sidecar, as `rag-query` would;
+  2. refuse a snapshot the config cannot use, from its sidecar. Its whole manifest must load
+     under the current model, and `check_index`'s rule must pass: the embedder's identity,
+     and the sparse one with a hybrid retriever (design review 2; the first draft checked
+     only the embedder);
   3. take the writer lock;
-  4. upload the snapshot as a new generation, through Qdrant's `snapshots/upload` endpoint,
-     which `qdrant-client` exposes only through its generated HTTP API
-     (`client.http.snapshots_api.recover_from_uploaded_snapshot`, checked);
-  5. correct `generation` in the restored manifest;
+  4. check that the new name is free, then upload the snapshot under it, through Qdrant's
+     `snapshots/upload` endpoint, which `qdrant-client` exposes only through its generated
+     HTTP API (`client.http.snapshots_api.recover_from_uploaded_snapshot`, checked).
+     - **An upload to a name that exists replaces that collection's data in place.** Given
+       the alias's name, it overwrote the live generation, with no switch (checked, design
+       review 2). So restore refuses a name taken by a collection or an alias, and the
+       runbook never shows a manual upload.
+     - The checksum goes with the upload, so the server verifies it too; a wrong one is
+       refused with a 400 and leaves nothing;
+  5. delete the copy the upload left in the server's `snapshots/` folder, then write the
+     manifest whole, with `generation` corrected;
   6. switch the alias, then recover.
 - **`rag-backup list`** shows what is on disk.
 - **The manifest in a snapshot.** A collection's `config.json` holds its metadata (Qdrant's
-  `lib/collection/src/config.rs`), so a snapshot should carry the manifest, but no round trip
-  has been run: S3-10's first server test asserts it, and the sidecar's copy is the fallback
-  (design review 1).
+  `lib/collection/src/config.rs`), so a snapshot should carry the manifest (design review 1).
+  Design review 2 ran the round trip against the server: the restored collection carried the
+  source's metadata, its payload index on `metadata.source` and every point, and the
+  download's sha256 matched the server's checksum. S3-10's first server test still asserts
+  it, and the sidecar's copy stays the fallback.
+- **Snapshot files outlive their collections** (design review 2, checked on the server).
+  - An upload leaves a full copy under the new collection's `snapshots/` folder, and a crash
+    between `create_snapshot` and its deletion leaves one under the live generation's.
+  - Deleting a collection deletes neither. They can then no longer be listed or downloaded
+    (404), so nothing could clean them up through the API.
+  - So restore deletes the upload's copy at once (step 5), `create` deletes its server copy
+    in a `finally`, and `recover` deletes a generation's snapshots before the generation.
+  - Never delete `snapshots/tmp/`: uploads land there first, and without it every upload
+    fails with a 500.
+  - Snapshot names have one-second resolution, so two creates in one second share a name;
+    the writer lock keeps them apart.
 - **A stale backup raises no alert:** the backup service has no metrics listener. `rag-backup
   list` shows the newest, and the README says to check it after any change to the schedule.
-- **Schedule:** the compose `backup` profile runs `rag-backup create --every 24h`. A cron or
-  systemd-timer recipe covers a host without compose.
+- **Schedule:** the compose `backup` profile runs `rag-backup create --every 24h`. It mounts
+  `./var` as well as `./backups`, under the app's uid: without `./var` it would not share the
+  writer lock (design review 2). Each run takes the lock for itself, and a run that finds an
+  ingest holding it tries again 5 minutes later. A cron or systemd-timer recipe covers a host
+  without compose.
 - **Object storage:** snapshots land in a directory. Copying it off the host (rclone,
   `aws s3 sync`) is the operator's documented step.
 - **RPO and RTO.** The corpus, with git, is the source of truth, so the index can always be
@@ -2630,23 +2846,67 @@ hashed input, and S3-11b commits them.**
   The `eval` extra's `langchain` bump left this list for S3-9 (maintainer, design review 1):
   it moves no hashed input, and the audit policy allows no ignore for a fixed advisory.
 - **Staged, so the grid stays small.** The estimates are given up front, as CLAUDE.md asks.
+  0. **The hardware** (design review 2). v0.3's exact configuration is generated on the T4,
+     and its 25 answers are diffed with the committed ones, with no scoring (about 15
+     minutes). It measures how far a T4 result carries to this CPU, and the record says so
+     beside every choice.
   1. **The judge.** gemma2:9b's agreement with the hand labels costs no run. If it passed a
      wrong answer as faithful, or its mean error exceeds 0.15, the v0.3 answers are scored
-     again by gemma3:12b at 4 bits (one T4 scoring, about 45 minutes, estimated), and the
-     judge that agrees better stays.
+     again by gemma3:12b at 4 bits, and the better judge stays.
+     - **That scoring is certain** (design review 2): S2-5b found two wrong answers that
+       gemma2:9b scored as faithful. It is one T4 scoring, about 45–50 minutes.
+     - **gemma3:12b fits a T4.** Its weights are 8.2 GB (Ollama's `gemma3:12b`, q4_K_M;
+       Ollama has served Gemma 3 since v0.6.0). At 8k its KV cache is about 0.8 GiB with
+       its 1,024-token sliding window (5 of every 6 layers), or 3 GiB without, so it needs
+       about 9.5 to 12 GB of the T4's 15. Ollama runs with `OLLAMA_NUM_PARALLEL=1`, since
+       each extra slot adds a cache, and `ollama ps` confirms the size first.
+     - **"Better," fixed in advance:** fewer `no`-labelled answers scored faithful (0.5 or
+       more), then the lower mean absolute error. A tie keeps gemma2:9b. If both pass a
+       wrong answer, the better one stays and its leniency is recorded.
   2. **The retrieval levers** come fixed from tier 1; they are not swept in tier 2.
   3. **The prompt:** v0.3's against the revised one, with mistral, generated and scored on a
-     Colab T4.
-  4. **The model:** the chosen prompt with each candidate. Faithfulness and the decline rate
-     choose; the time to first token on this CPU breaks a tie.
+     Colab T4. **Keep the revision** if the decline rate improves, no answerable question
+     newly declines, and no metric falls by more than 0.05 against the v0.3 prompt's own T4
+     run, scored by the same judge (design review 2). The floors are not the bar here: they
+     were set on CPU answers, scored by gemma2:9b.
+  4. **The model:** the chosen prompt with each candidate. **mistral stays** unless a
+     candidate leads by at least 0.10 in faithfulness (2 of 20 items) or 0.2 in the decline
+     rate (1 of 5), with no metric behind by more than 0.05. A tie goes to the time to first
+     token on this CPU (design review 2).
   5. **The commit, S3-11b:** the chosen configuration, generated here (about 70 minutes for
-     mistral) and scored on the T4 (about 35 minutes). Each floor is the baseline minus
-     0.05, and tier 1 is re-baselined if hybrid retrieval is on.
+     mistral) and scored on the T4 (35–50 minutes, by the judge). Each floor is the baseline
+     minus 0.05, and tier 1 is re-baselined if hybrid retrieval is on.
 
-  In all, about 4–6 hours of T4 time across sessions, and about 70 minutes here. Generating
-  on Colab needs Qdrant's static binary there, and an ingest with `minilm_cuda`, which has
-  the same identity. Every candidate is generated on the T4, since a GPU's answers can
-  differ from a CPU's in the last bits; only the committed run is generated here.
+  **The rules are fixed before the first run** (design review 2). The golden set can show
+  only large differences:
+
+  - 4 of the 20 faithfulness items are below 1 (0.0, 0.67, 0.75 and 0.75);
+  - context recall is 1.0 on all 20;
+  - a decline rate of 3 in 5 has a 95% interval of 0.23 to 0.88;
+  - a sign test needs 6 changed items, all one way, for p = 0.03.
+
+  So each rule is a margin with a default, written in S3-11 and committed before stage 0
+  runs. None is a significance claim drawn after the results.
+
+  **In all, about 5–9 hours of T4 time across 3–4 sessions,** and about 70 minutes here
+  (design review 2; the first draft said 4–6 hours). That is 5–7 scorings at 35–50 minutes,
+  generations of about 15 minutes each, and 15–25 minutes of setup per session. The
+  generation time is an estimate: it has not been timed on a T4, so stage 0's run revises it.
+  Every candidate is generated on the T4, since a GPU's answers can differ from a CPU's in
+  the last bits; only the committed run is generated here.
+- **Retrieval on Colab is this host's** (design review 2).
+  - The notebook restores this host's index from a snapshot (S3-10's `rag-backup restore`,
+    into Qdrant's static binary there), rather than ingesting again with `minilm_cuda`. With
+    hybrid retrieval on, the hybrid index is built here and restored there the same way.
+  - Queries are embedded with `minilm_cpu`, and each question's context digest is compared
+    with this host's before anything is generated.
+  - The T4 runs Ollama only. That keeps GPU embedding drift out of the contexts, and the CUDA
+    torch install out of the notebook: S1-7's cu130 wheels need a recent NVIDIA driver,
+    which no Colab run has shown yet (the backlog's CUDA 12 line).
+- **One check outside the labels** (design review 2). The judge is chosen on the 20 answers
+  it is then measured against. So after S3-11b, the maintainer also labels the committed
+  answers that the judge scored below 1, or that the two judges disagree on (about 5).
+  Their agreement is recorded beside stage 1's, with no re-run.
 - **The hand labels** are committed as `eval/hand_labels.jsonl`: one line per answerable
   `id`, with `faithful` (`yes`, `partly` or `no`), `unsupported` (the claims the cited
   pages do not support) and `notes`.
@@ -2692,7 +2952,8 @@ hashed input, and S3-11b commits them.**
 ```text
 src/rag_qa/
 ├── vectorstore.py   REWRITTEN  QdrantStore; generations as collections, the alias switch,
-│                               recovery; the manifest in collection metadata; QdrantRetriever
+│                               recovery; the manifest in collection metadata; QdrantRetriever,
+│                               which makes every cut and fuses the hybrid branches itself
 │                               (S3-2, S3-5); snapshot and restore (S3-10). The only module
 │                               that imports qdrant_client.
 ├── sparse.py        NEW  Bm25Encoder, SPARSE_VERSION; the standard library only (S3-5)
@@ -2835,7 +3096,7 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
 | `RAG_STATE_PATH` | S3-2 | replaces `RAG_VECTOR_STORE_PATH`, which is refused while set |
 | `RAG_LOG_FORMAT`; `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | S3-7 | logs; traces (the standard variables) |
 | `RAG_API_METRICS_PORT` | S3-7 | the metrics listener, off unless set |
-| `RAG_API_KEYS_FILE`, `RAG_API_RATE_LIMIT`, `RAG_API_TRUSTED_PROXIES` | S3-8 | keys, limits, the proxy's address |
+| `RAG_API_KEYS_FILE`, `RAG_API_RATE_LIMIT`, `RAG_API_TRUSTED_PROXIES` | S3-8 | keys (in `var/`), limits, the proxy's own address, never a range (design review 2) |
 | `RAG_CONFIG_OVERLAY` | S3-9 | the overlay file |
 | `RAG_BACKUP_PATH` | S3-10 | overrides `paths.backups` |
 
@@ -2844,18 +3105,25 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
 - **The unit suite stays hermetic** (DEC-11). Qdrant runs in process, as
   `QdrantClient(":memory:")`, through a fixture. Local mode in 1.19.1 supports aliases,
   collection metadata, sparse vectors with IDF, and RRF with a constant and weights
-  (checked). No Docker, no network.
+  (checked). The fusion is ours since design review 2, so the hermetic suite runs the code
+  that fuses. No Docker, no network.
 - **The real server, where local mode is not enough.** Local mode is a reimplementation in
   Python, and it has no snapshots. Tests that need the server carry a `qdrant_server` marker:
-  the generation switch and recovery, the metadata round trip, the hybrid query (with a tie
-  across its two lists), and a snapshot's create, download and restore, with the manifest
-  surviving it. They run in `eval-retrieval`, against its
-  service container (`qdrant/qdrant:v1.19.2`), and are skipped elsewhere unless
-  `RAG_TEST_QDRANT_URL` is set.
+  - the generation switch and recovery, with no alias too;
+  - the metadata round trip;
+  - the cut rule and the hybrid query;
+  - a snapshot's create, download and restore: the manifest survives it, a taken name is
+    refused, and no snapshot file is left behind.
+
+  A tie test compares two collections built in different insertion orders, since within one
+  process the server always agreed with itself (design review 2). The tests run in
+  `eval-retrieval`, against its service container (`qdrant/qdrant:v1.19.2`), and are
+  skipped elsewhere unless `RAG_TEST_QDRANT_URL` is set.
 - **Parity and invariance:**
   - the contexts digest before and after the store move (S3-2), twice on Qdrant, and again in
     every story from S3-3 to S3-10 against S3-2's file (design review 1);
-  - hybrid tier 1 run twice in S3-5, with identical contexts (DEC-20's cut);
+  - hybrid tier 1 run twice in S3-5, the second after a server restart, with identical
+    contexts (DEC-19's cut rule);
   - `rag-eval check` exiting 0 on every story from S3-1 to S3-11;
   - unit tests that each new optional key, unset, leaves the real config's six fingerprint
     parts unchanged.
@@ -2863,6 +3131,7 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
   - with tracing on: the forced-cancel tests and the real-uvicorn drop, with an in-memory
     span exporter showing every span ended and no context-detach error (S3-7);
   - through the fallback's stream (S3-6);
+  - with the body-limit middleware on (S3-8), since it wraps `receive` too (design review 2);
   - through the proxy, against real Ollama, by hand (S3-9).
 - **The architecture test grows:**
   - only `vectorstore` imports `qdrant_client`;
@@ -2870,7 +3139,8 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
   - `sparse` and `resilience` load no LangChain;
   - `stream_answer` passes the model no callbacks and no config (a spy model).
 - **CI at the exit:** `check` (with the format gate), `eval-retrieval` (with the Qdrant
-  service and the server tests), `deploy-config`, `container`, and the weekly schedule.
+  service and the server tests), `deploy-config`, `container`, and the weekly schedule,
+  which also scans every pinned third-party image (design review 2).
   Coverage stays at 80% or more.
 
 ### 3.6 Deliberately not built in Phase 3
@@ -2890,7 +3160,7 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
 | Target-stack row | Phase 3 | After v1.0 |
 | --- | --- | --- |
 | Vector store | Qdrant: generations behind an alias, exact search, the manifest in metadata | a cluster; a clone from a snapshot |
-| Hybrid retrieval (FR-3) | our own BM25, RRF in Qdrant, then the cross-encoder; a source filter | stemming; weighted RRF if tier 1 asks |
+| Hybrid retrieval (FR-3) | our own BM25, fused by our own RRF, then the cross-encoder; a source filter | stemming; weighted RRF if tier 1 asks |
 | Own components (DEC-5) | step 3 done: `langchain-community` and FAISS leave (ragas keeps them in the `eval` extra) | the ragas import shim goes when ragas allows |
 | Resilience (NFR-6) | timeouts, safe retries, breakers, the opt-in fallback | — |
 | Observability (NFR-10) | structlog, our own spans, Prometheus, burn-rate alerts, Jaeger | dashboards |

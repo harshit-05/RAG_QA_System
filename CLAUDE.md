@@ -99,9 +99,10 @@ prototype to production via a spec-driven story loop.
   refuses both: the reranker is our own (`rag_qa.rerankers`, DEC-16).
   `vectorstore.py` still imports FAISS from `langchain_community` until Phase 3.
 
-- Docker 29.8.1 installed. `gh` 2.101.0, authenticated as `harshit-05`; the
-  token needs the `workflow` scope to push changes to `.github/workflows/`, so
-  check `gh auth status` after any re-login (STATUS.md prerequisites).
+- Docker 29.9.0 installed (re-checked 2026-10-16). `gh` 2.101.0, authenticated as
+  `harshit-05`; the token needs the `workflow` scope to push changes to
+  `.github/workflows/`, so check `gh auth status` after any re-login (STATUS.md
+  prerequisites).
 
 ## Releases
 

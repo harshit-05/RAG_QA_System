@@ -43,7 +43,9 @@ decision here.
 2. **Dependency:** `uv add "qdrant-client>=1.19.1"`. Record the resolved versions; no locked
    version should move (checked in the architecture pass).
 3. **`compose.yaml`**, with one service, `qdrant`:
-   - `qdrant/qdrant:v1.19.2`, pinned by digest;
+   - `qdrant/qdrant:v1.19.2-unprivileged`, pinned by its index digest (DEC-24's table). The
+     plain image runs as root, and a volume that starts unprivileged never holds root's
+     files (design review 2);
    - published on `127.0.0.1:6333` only, with a named volume and
      `restart: unless-stopped`.
 
@@ -70,6 +72,12 @@ decision here.
      records are strict, so a field added in a later story would make every version-2
      manifest unreadable.
    - Version 1 is no longer read: it only ever lived beside a FAISS index.
+   - **Under one metadata key, written whole, beside `complete`** (DEC-19, design review 2).
+     A metadata update merges top-level keys, a `null` deletes one, and a nested object is
+     replaced whole, so no stale field can survive inside the manifest.
+   - **Never read in a hot path.** `GET /collections/{name}` returns the whole manifest, so
+     the refresh compares `/aliases`, counts come from `count`, and the manifest is read once
+     per new generation. A request is limited to 32 MiB, about 100,000 documents.
 6. **`vectorstore.py`, rewritten on `qdrant-client`** (the seam).
    - **What it provides:** `QdrantStore`, `live_index`, `in_the_way`, `open_generation`,
      `write_generation`, `recover`, and a dense `retriever`, as in §3.4.
@@ -77,12 +85,23 @@ decision here.
      named `dense` (cosine), a payload index on `metadata.source`, and the manifest in
      `metadata`.
    - **An update** copies the live generation without the deleted points, upserts the new
-     ones (`wait=True`), checks the count, then switches the alias with one
-     `update_collection_aliases` call (delete plus create).
+     ones (`wait=True`), checks the count, marks the generation `complete: true`, then
+     switches the alias with one `update_collection_aliases` call (delete plus create).
    - **Recovery,** under the lock, keeps the alias's target and the newest older generation.
+     **With no alias, it deletes only incomplete generations** (DEC-19, design review 2):
+     Qdrant deletes an alias with its target, so a lost live collection would otherwise cost
+     the previous one too. A generation is complete when its metadata says so and its
+     manifest names the collection itself. `rag-query`'s "no index" message then names the
+     newest complete generation, and the README line that points the alias at it.
    - **In the way:** a real collection named like the alias, or an alias pointing outside
-     the pattern, exits 2 and is never renamed.
-   - **Search** is `exact=True`.
+     the pattern, exits 2 and is never renamed. It is told from `get_collections()`, which
+     omits aliases, and `get_aliases()`, never from `collection_exists`, which resolves an
+     alias to its target (checked, design review 2).
+   - **Search** is `exact=True`, and **our code makes every cut** (DEC-19, design review 2).
+     The server decides a tie at a limit by the collection's layout, which changes with the
+     insertion order and across restarts. So every search asks for more than the cut,
+     extends while the point at the cut ties with the next, orders by score, then point ID,
+     and cuts. The real corpus has no tie at the cut today, so parity is unaffected.
    - **Documents come back as FAISS returned them:** the same `page_content` and metadata.
      No `_id` or `_collection_name` keys, since the prompt and `SourceRef` read the
      metadata.
@@ -96,7 +115,9 @@ decision here.
    - **Readers resolve the alias again for each question** (DEC-19, design review 1):
      `rag-query` before each question, `rag-eval` before each item, as the API does per
      request. Two switches delete a generation, and a REPL session can outlive two ingests.
-     A search whose collection has gone resolves once more.
+     A search whose collection has gone resolves once more. The server answers that search
+     with a 404, mid-search too and never a 500, so the 404 is the signal, and it is never
+     retried (design review 2).
    - **v0.3's folder:** with `vectorstore/db_faiss*` still on disk, `rag-query`'s "no index"
      message says that v0.3's index is no longer read.
 9. **The API** (`api/state.py`): `refresh()` compares the alias's target with the generation
@@ -113,6 +134,11 @@ decision here.
     - A hermetic test makes `update_collection_aliases` fail mid-update: the live generation
       is untouched, and the next recovery removes the orphan. The moment between the new
       collection and the switch lasts a second or two, too short to hit by hand.
+    - With no alias, recovery keeps every complete generation and deletes the rest: a test
+      deletes the live collection, then runs an ingest (design review 2).
+    - The cut rule: points tied at the cut give the same result whatever the insertion
+      order, hermetically, and under `qdrant_server` from two collections built in
+      different orders (design review 2).
     - A `qdrant_server` marker (in `pyproject.toml`'s pytest settings) covers tests that
       need the real server: the alias switch and recovery, and the metadata round trip.
       They are skipped unless `RAG_TEST_QDRANT_URL` is set.
@@ -126,7 +152,8 @@ decision here.
       `docker compose up -d qdrant` before `rag-ingest`. A new "Upgrading from v0.3": start
       Qdrant, re-ingest, delete `vectorstore/`, and set `RAG_QDRANT_COLLECTION` where
       `RAG_VECTOR_STORE_PATH` was used. Configuration and layout are updated, and the pickle
-      limitation goes.
+      limitation goes. It also gains the line that points the alias at a named generation,
+      which the "no index" message cites (design review 2).
     - **CLAUDE.md:** the environment facts mention the Qdrant container.
 14. **The commit that changes the config** carries `!` and a `BREAKING-CHANGE:` trailer.
 
@@ -193,6 +220,8 @@ gh pr checks
   and the re-run moves to S3-11b; nothing else changes.
 - **The in-memory fixture** must share one client between ingest and the query side, or the
   tests pass against an empty store.
+- **Every cut is ours, and a lost alias costs no complete generation** (design review 2):
+  read the cut rule's extension loop, and `recover`'s branch for no alias.
 
 ## Discovered
 

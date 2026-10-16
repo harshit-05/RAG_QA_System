@@ -31,10 +31,27 @@ ARCHITECTURE.md §3.1, DEC-26, DEC-27.
 
 ## Scope
 
-**Before any run, the estimates** (CLAUDE.md: surface them first). About 4–6 h of T4 time
-across sessions, this story's and S3-11b's together; S3-11b adds about 70 min of generation
-here.
+**Before any run, the estimates** (CLAUDE.md: surface them first). About 5–9 h of T4 time
+across 3–4 sessions, this story's and S3-11b's together (DEC-26, design review 2; the first
+draft said 4–6 h). That is 5–7 scorings at 35–50 min, generations of about 15 min each, and
+15–25 min of setup per session. Generation has not been timed on a T4, so stage 0's run
+revises the estimate. S3-11b adds about 70 min of generation here.
 
+**The rules are committed before stage 0 runs** (DEC-26, design review 2). Each stage's rule
+below is a margin with a default, fixed in this file in a commit before the first run, never
+read off the results. The golden set can show only large differences:
+
+- 4 of the 20 faithfulness items are below 1 (0.0, 0.67, 0.75 and 0.75);
+- context recall is 1.0 on all 20;
+- a decline rate of 3 in 5 has a 95% interval of 0.23 to 0.88;
+- a sign test needs 6 changed items, all one way, for p = 0.03.
+
+**The stages, in order:**
+
+- **Stage 0, the hardware** (no scoring; design review 2). Generate v0.3's exact
+  configuration on the T4, and diff its 25 answers with the committed ones (about 15 min).
+  It measures how far a T4 result carries to this CPU, and the record says so beside every
+  choice below.
 - **Stage 1, the judge** (no generation). The maintainer's `eval/hand_labels.jsonl` gives
   one line per answerable `id`: `faithful` (`yes`, `partly` or `no`), `unsupported` and
   `notes`. Commit it; tier 2 never reads it, so nothing hashed moves.
@@ -42,9 +59,18 @@ here.
     error against yes = 1, partly = 0.5, no = 0, and every answer labelled `no` that it
     scored faithful.
   - **If it fails** (any false "faithful", or an error over 0.15): score the v0.3 answers on
-    the T4 with a stronger judge, `gemma3:12b` at 4 bits (about 45 min, estimated), through
-    a candidate Modelfile, `eval/judge.<name>.Modelfile`. It is hashed only once the config
-    names it, which S3-11b does if it wins. Keep whichever judge agrees better.
+    the T4 with a stronger judge, `gemma3:12b` at 4 bits, through a candidate Modelfile,
+    `eval/judge.<name>.Modelfile`. It is hashed only once the config names it, which S3-11b
+    does if it wins.
+  - **It will fail** (design review 2): S2-5b found two wrong answers it scored as faithful.
+    So this scoring is certain, about 45–50 min.
+  - **gemma3:12b fits a T4.** Its weights are 8.2 GB, and at 8k context its KV cache is
+    about 0.8 GiB with its sliding window, or 3 GiB without, so it takes about 9.5–12 GB of
+    the T4's 15. Run Ollama with `OLLAMA_NUM_PARALLEL=1`, and check the size with `ollama ps`
+    before scoring.
+  - **"Better," fixed in advance:** fewer `no`-labelled answers scored faithful (0.5 or
+    more), then the lower mean absolute error. A tie keeps gemma2:9b. If both pass a wrong
+    answer, keep the better one and record its leniency.
   - **Record both tables here.**
 - **Stage 2, retrieval, fixed from tier 1** (S3-5's tables; no tier-2 sweep):
   - hybrid on or off;
@@ -62,22 +88,36 @@ here.
     - LLM01: each chunk delimited as data in `format_docs`, with a closing delimiter that a
       chunk cannot forge, and a system sentence that the documents are data, not
       instructions.
-  - **The rule:** keep the revision if the decline rate improves and no floor falls.
+  - **The rule** (design review 2): keep the revision if all three hold:
+    - the decline rate improves;
+    - no answerable question newly declines;
+    - no metric falls by more than 0.05 against the v0.3 prompt's own T4 run, scored by the
+      same judge. The floors are not the bar here: they were set on CPU answers, scored by
+      gemma2:9b.
 - **Stage 4, the model** (DEC-2), with the chosen prompt and retrieval, on the T4.
   - **Candidates:** mistral, phi3, `qwen2:7b` if the maintainer pulled it, and a current
     model if they named one. Its Ollama support on 0.22.1 is checked first; a newer Ollama
     would ride the re-run (backlog line).
-  - **The choice:** faithfulness and the decline rate first. Then each finalist's time to
-    first token on this CPU, from one timed question here.
+  - **The choice** (design review 2): mistral stays unless a candidate leads by at least
+    0.10 in faithfulness (2 of 20 items) or 0.2 in the decline rate (1 of 5), with no metric
+    behind by more than 0.05. A tie goes to the time to first token on this CPU, from one
+    timed question here.
   - The chosen model becomes `pipeline.query.llm` in S3-11b; the others stay as entries
     (keep the alternatives as config axes).
-- **Colab generation** (the notebook from S2-5b, extended):
+- **Colab generation** (the notebook from S2-5b, extended; DEC-26, design review 2):
   - Qdrant's static binary, started in the background;
-  - the repository at this branch's commit;
-  - `rag-ingest` with `minilm_cuda` (the same identity);
+  - the repository at this branch's commit, synced with a plain `uv sync`: CPU torch, since
+    the T4 runs Ollama only;
+  - this host's index, restored from a snapshot made here (`rag-backup create` here,
+    `rag-backup restore` there), not ingested again with `minilm_cuda`. With hybrid on, the
+    hybrid index is built here too;
+  - queries embedded with `minilm_cpu`, and each question's context digest compared with
+    this host's contexts file before anything is generated;
   - `rag-eval generate --out`, with Ollama 0.22.1 on the T4.
 
-  Every candidate is generated there, so they share hardware.
+  Every candidate is generated there, so they share hardware. No CUDA torch is installed:
+  S1-7's cu130 wheels need a recent NVIDIA driver, which no Colab run has shown yet (the
+  backlog's CUDA 12 line), and GPU embeddings could move a near-tie in the contexts.
 - **Code that the runs need, merged here.** It moves no hashed input.
   - **`rag-eval check` recomputes the aggregates** from the items, and refuses a file whose
     aggregates disagree (backlog; S2-5b's second review). A test edits an item and expects
@@ -91,7 +131,8 @@ here.
   - every stage's table goes here, with what it cost;
   - the choices for S3-11b: the judge, the prompt revision, the retrieval settings, and the
     model;
-  - the T4's time to first token (DEC-27 b).
+  - the T4's time to first token (DEC-27 b);
+  - stage 0's count of answers that differ, and the context digests' comparison.
 
 ## Out of scope
 
@@ -121,6 +162,8 @@ The stage tables and the costs are pasted below, run by run.
   and the model table. Each needs its numbers here, not a summary.
 - **Nothing hashed lands on `main` here:** the revisions under test stay on the branch, for
   S3-11b.
+- **The rules came first** (design review 2): the commit that fixed them precedes the first
+  run's results.
 
 ## Discovered
 

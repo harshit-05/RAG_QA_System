@@ -34,7 +34,8 @@ design review 1). The docs then describe v1.0 as delivered, and 1.0.0 is release
   5. Ollama stopped: a 503 with `Retry-After` before the first byte, and a recovery when it
      returns;
   6. a backup, the live generation deleted, a restore: tier 1 and the contexts digest are
-     unchanged (DEC-25);
+     unchanged (DEC-25). The previous generation survives the loss (DEC-19), and Qdrant's
+     `snapshots/` folder holds nothing of ours afterwards (design review 2);
   7. a `kill -9` during an ingest: the live generation is untouched, and the next run
      recovers (§11, resilience);
   8. the observability profile: a trace in Jaeger, the metrics scraped, and the alert rules

@@ -13,7 +13,7 @@
 
 FR-3's two SHOULDs.
 
-- **Hybrid retrieval.** BM25 sparse vectors beside the dense ones, fused by RRF in Qdrant,
+- **Hybrid retrieval.** BM25 sparse vectors beside the dense ones, fused by our own RRF,
   then reranked by the cross-encoder.
 - **Metadata filtering.** A question can be limited to named documents.
 
@@ -51,14 +51,15 @@ S3-11b's one re-run (DEC-26). Design: ARCHITECTURE.md §3.1, DEC-20; §3.3, §3.
   - **The manifest** records the encoder's identity (its spec and `SPARSE_VERSION`). A
     changed identity, or one appearing or disappearing, rebuilds in full: the vector
     configuration changes.
-- **The hybrid query:**
-  - `query_points` with a dense prefetch (exact) and a sparse one, each with `limit=prefetch`
-    (40) and the filter;
-  - fused by `RrfQuery(rrf=Rrf(k=rrf_k))` over their whole union (`limit` 2 × prefetch);
-  - then ordered in `vectorstore` by score, ties by point ID, and cut to
-    `reranker_candidates`. Qdrant's server breaks no ties, so a cut it made could keep a
-    different one of two tied points from one run to the next (DEC-20, design review 1);
-  - `rrf_k` is always sent: Qdrant's default is 2 (caveat 31).
+- **The hybrid query** (DEC-20, as design review 2 changed it):
+  - two `query_points` calls, dense (exact) and sparse, each with the filter and each cut to
+    `prefetch` (40) by S3-2's cut rule. No cut is left to the server, which decides a tie by
+    the collection's layout: review 1's whole-union fusion still let each prefetch cut its
+    own list there;
+  - fused in `vectorstore` by our own RRF: `1 / (rrf_k + rank)` summed over the lists a point
+    is in, with one-based ranks and `rrf_k` always explicit (60). Qdrant's own fusion, and its
+    default constant of 2 (caveat 31), are no longer used;
+  - then ordered by score, ties by point ID, and cut to `reranker_candidates`.
 - **The `sources` filter.**
   - **The retrieval half** takes a `RetrievalQuery(question, sources=())`; settle the exact
     type in the plan, with tier 1's call sites in mind.
@@ -68,8 +69,8 @@ S3-11b's one re-run (DEC-26). Design: ARCHITECTURE.md §3.1, DEC-20; §3.3, §3.
     `extra="forbid"`.
   - **CLI:** `rag-query --source PATH`, repeatable, checked against the manifest the same way
     at start-up.
-  - **In Qdrant:** a `MatchAny` on the indexed `metadata.source`, in each prefetch (and as
-    the query filter in dense mode).
+  - **In Qdrant:** a `MatchAny` on the indexed `metadata.source`, in each branch's search
+    (and as the query filter in dense mode).
 - **The fingerprint.** `ingestion` includes the sparse encoder's identity only when one is
   set: an absent key is left out, so v0.3's hash holds. Unit tests show the real config's
   six parts unchanged, and the scratch config's `ingestion` and `query` parts moved.
@@ -87,9 +88,12 @@ S3-11b's one re-run (DEC-26). Design: ARCHITECTURE.md §3.1, DEC-20; §3.3, §3.
     configured retrieval, the answerable questions' hit rate and recall, and the chunks
     that survive on answerable and on unanswerable questions;
   - a recommendation: hybrid on or off, and a `min_score` value.
-- **Server tests** (`qdrant_server`): a hybrid query and a filtered query on the real server,
-  and a fused list with a tie across its two lists, cut where the tie falls: the same points
-  every time.
+- **Server tests** (`qdrant_server`):
+  - a hybrid query and a filtered query on the real server;
+  - a fused list with a tie across its two lists, cut where the tie falls;
+  - a tie at a branch's own cut, which must give the same points from two collections built
+    in different insertion orders (design review 2). Within one process the server always
+    agrees with itself, so two runs there prove nothing.
 - **README:** the `sources` filter (HTTP and CLI) and what hybrid retrieval is, marked as
   measured but not yet on.
 
@@ -117,9 +121,11 @@ uv run ruff check && uv run ruff format --check && uv run mypy
 RAG_QDRANT_COLLECTION=s3_5_hybrid uv run rag-ingest --config <scratch hybrid config>
 RAG_QDRANT_COLLECTION=s3_5_hybrid uv run rag-eval retrieval --config <scratch hybrid config> \
   --contexts-out ~/dev/rag-s3-5/hybrid-1.json
+docker compose restart qdrant   # the second run after a restart, where the server's own tie
+                                # order changes (design review 2)
 RAG_QDRANT_COLLECTION=s3_5_hybrid uv run rag-eval retrieval --config <scratch hybrid config> \
   --contexts-out ~/dev/rag-s3-5/hybrid-2.json
-diff ~/dev/rag-s3-5/hybrid-1.json ~/dev/rag-s3-5/hybrid-2.json && echo STABLE   # DEC-20's cut
+diff ~/dev/rag-s3-5/hybrid-1.json ~/dev/rag-s3-5/hybrid-2.json && echo STABLE   # the cut rule
 # ... the variants and the min_score cutoffs; every table pasted here
 # clean up: deleting the scratch generations removes their alias too
 curl -s 127.0.0.1:6333/collections | jq -r '.result.collections[].name' | grep '^s3_5_hybrid--gen-' \
@@ -137,8 +143,8 @@ gh pr checks
 
 - **The BM25 arithmetic:** compare one chunk's weights with the formula by hand, and check
   that the query side sends 1 per distinct token. The IDF must come from Qdrant, not twice.
-- **`rrf_k` is always sent, and our code makes the cut:** the fused list comes back whole and
-  is ordered by score, then point ID.
+- **Our code makes every cut, and the fusion** (design review 2): two searches, each cut by
+  S3-2's rule, fused by our RRF with `rrf_k` explicit, then ordered by score, then point ID.
 - **The identity rules:** the sparse identity is in the manifest always, and in the
   fingerprint only when set.
 - **Tier 1's table** is a decision input: make sure the scratch config differs from the real

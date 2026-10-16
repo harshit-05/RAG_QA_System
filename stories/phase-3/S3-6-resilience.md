@@ -45,6 +45,11 @@ retries and breakers) against the fallback, which waits on the provider's key.
     what a repeat counts as done stated per call (DEC-21, design review 1): a create that
     finds our uniquely named collection, or a delete that finds nothing, has succeeded; a
     snapshot is never retried.
+  - **A bounded budget** (DEC-21, design review 2). Retrieval holds the retrieval lock
+    throughout (`serialized`), so a hung Qdrant would hold it for a timeout per attempt. The
+    breaker therefore wraps each attempt, and an open breaker ends the loop. One deadline
+    covers a retrieval's attempts, 15 s by default. A 404 for a generation is never
+    retried: the generation is gone, and the reader resolves the alias once more (DEC-19).
   - **Ollama:** only before the first token, and only on a connection error, 2 attempts. A
     retry after a token would duplicate text.
   - The retry loop runs in the consuming task: no new task near the stream (DEC-14). It is
@@ -70,6 +75,9 @@ retries and breakers) against the fallback, which waits on the provider's key.
   - **Config:** a `components.llms` entry on `langchain_openai.ChatOpenAI`, with `model`,
     `base_url`, `temperature: 0` and a token limit. It is referenced by nothing in the
     committed `config.yaml`; the real check uses a scratch overlay or config.
+  - **`max_retries: 0` and a `timeout` on it** (DEC-21, design review 2). The OpenAI SDK
+    otherwise retries twice on its own, with a 600 s timeout (`openai/_constants.py`), which
+    would hide failures from the fallback's breaker for minutes.
   - **The extra:** `uv add --optional fallback "langchain-openai>=1"`; 1.6.2 is already
     locked through ragas, so nothing new should resolve (check). Building a fallback without
     the extra is a load error: "install it with `uv sync --extra fallback`".
@@ -96,7 +104,9 @@ retries and breakers) against the fallback, which waits on the provider's key.
     successful probe;
   - a cancel during the fallback's stream, forced at the worst moment, as DEC-14's tests do:
     the stream is closed before the consumer returns;
-  - Qdrant's retries, with a fake transport.
+  - Qdrant's retries, with a fake transport;
+  - a hung Qdrant, a fake transport that never answers: the breaker opens within one
+    retrieval's deadline, and the retrieval lock is released (design review 2).
 - **A config test:** if a test imports every `_target_` in `config.yaml`, give an entry whose
   extra CI does not install a way through. CI does not install `fallback`.
 

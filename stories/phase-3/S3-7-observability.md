@@ -76,8 +76,10 @@ benchmarks against traces and alerts, the half that touches DEC-14's cancel guar
   - **`deploy/prometheus/prometheus.yml`** and **`deploy/alertmanager/alertmanager.yml`:**
     a null receiver, with an email example commented.
 - **CI** (needs the `workflow` scope): a `deploy-config` job runs `promtool check config`
-  and `promtool test rules`. promtool is the Prometheus v3.15.0 release binary, checked
-  against a sha256 written in `ci.yml` (caveat 30).
+  and `promtool test rules`. promtool runs from the Prometheus v3.15.0 image, pinned by its
+  index digest, the one S3-9's compose runs (DEC-24's table, caveat 30). Prometheus publishes
+  no signatures, but Docker Hub and Quay serve the same digest, and the image's `promtool`
+  is byte-identical to the release tarball's (design review 2).
 - **NFR-1.** `scripts/bench_retrieval.py` fills a scratch collection on the local server
   with 100k synthetic unit vectors, plus sparse vectors, and measures the query embedding
   plus an exact search, dense and hybrid, over 200 real-looking questions, at k=20: the

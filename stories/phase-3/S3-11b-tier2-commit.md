@@ -22,8 +22,8 @@ DEC-27.
 
 ## Scope
 
-**Before any run, the estimate** (CLAUDE.md): about 70 min of generation here, then about
-35 min of scoring on the T4.
+**Before any run, the estimate** (CLAUDE.md): about 70 min of generation here, then 35–50 min
+of scoring on the T4, by the judge S3-11 chose.
 
 - **The choices, from S3-11's records:**
   - **the judge:** `evaluation.judge` points at the chosen Modelfile, and
@@ -45,6 +45,10 @@ DEC-27.
     together).
   - **Score on the T4,** with Ollama pinned to 0.22.1.
   - **Set the floors** to the baseline minus 0.05, with `max_unscored` kept.
+- **One check outside the labels** (DEC-26, design review 2). The judge was chosen on the
+  20 answers it is measured against. So the maintainer labels the committed answers that it
+  scored below 1, or that the two judges disagree on (about 5), and their agreement is
+  recorded beside S3-11's stage 1. No re-run follows from it.
 - **NFR-2's numbers** (DEC-27):
   - (b): the p95 of `ttft_ms` here, from this run, and on the T4, from S3-11's runs;
   - (a): if hybrid retrieval is on, the `sources` p95 again, with S3-7's script.

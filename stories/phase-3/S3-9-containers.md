@@ -39,7 +39,8 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
   - **A `models` stage** runs `build_embedder` and `build_reranker` on `config.yaml`, as
     CI's warm-up does, then copies the Hugging Face cache into the runtime.
   - **Runtime:**
-    - a non-root user;
+    - any non-root uid, the one compose gives it: the models readable by all, nothing
+      written outside `var/` (design review 2);
     - `HF_HUB_OFFLINE=1`;
     - `HEALTHCHECK` on `/v1/health/live`;
     - `ENTRYPOINT ["rag-serve"]`, `CMD ["--host", "0.0.0.0"]`, which needs a key or a token:
@@ -56,8 +57,8 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
   - **Tests:** the merge rules, and the six fingerprint parts unchanged by an overlay that
     sets only runtime keys.
 - **`compose.yaml`**, extending S3-2's; every image pinned by digest.
-  - **`qdrant`:** v1.19.2, published on 127.0.0.1 only, with its API key from `.env`
-    (`RAG_QDRANT_API_KEY`).
+  - **`qdrant`:** v1.19.2's `-unprivileged` image (S3-2), published on 127.0.0.1 only, with
+    its API key from `.env` (`RAG_QDRANT_API_KEY`).
   - **`ollama`:** 0.22.1, the host's version (ADR-025), with a named volume and a one-shot
     `ollama-pull` service for the configured model. README: unload the host daemon's model
     first (`ollama stop mistral`), since both would hold about 5 GB, and the other way round
@@ -67,11 +68,19 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     models, and the image build downloads CPU torch, the stack and both HF models.
   - **`app`:**
     - the image, with `init: true` and an `env_file` of `.env`;
-    - mounts: `./var` (the lock and the job database, shared with the host's CLI),
-      `./corpus` read-only, and the overlay;
+    - **`user: "${UID}:${GID}"`, the host user's, both set in `.env`,** since neither bash
+      nor zsh exports them (design review 2). The lock, the job database and the keys file
+      in `var/` are shared with the host's CLI, and under another uid neither side can use
+      the other's files (caveat 33). `_writer_lock` turns a `PermissionError` on the lock
+      file into exit 2, naming the file;
+    - mounts: `./var` (the lock, the job database and the keys file, shared with the host's
+      CLI), `./corpus` read-only, and the overlay;
+    - no published port: only Caddy reaches it;
     - it waits for healthy dependencies (`depends_on`);
     - it scales with `--scale app=2`.
   - **`caddy`:** 2.11.7, with a `deploy/Caddyfile`.
+    - **A fixed address** on a subnet compose defines: the one address
+      `RAG_API_TRUSTED_PROXIES` names (DEC-23, design review 2).
     - **TLS:** `tls internal` for a local name; ACME when a public name is set.
     - **Upstreams:** `reverse_proxy` over the `app` replicas, health-checked on
       `/v1/health/live`. Liveness, not readiness: a stack with no index must still accept
@@ -79,7 +88,8 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     - **SSE and bodies:** `flush_interval -1`, and `request_body max_size 64KB`.
   - **Profile `observability`:** Jaeger 2.22.0, Prometheus v3.15.0 (scraping the app's
     metrics port on the internal network) and Alertmanager v0.34.1, with S3-7's files.
-  - **`.env.example`** (committed): every variable named, no values. `.env` stays gitignored.
+  - **`.env.example`** (committed): every variable named, `UID` and `GID` included, no
+    values. `.env` stays gitignored.
 - **Signals** (the backlog line). With `init: true`, `docker stop` ends `rag-serve` with
   status 143, which stays. Check, and record here:
   - the status with and without the init;
@@ -105,6 +115,30 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
       (never `aquasecurity/trivy-action`, caveat 30): `trivy image --severity
       HIGH,CRITICAL --ignore-unfixed --exit-code 1` and `trivy fs --scanners
       secret,misconfig --exit-code 1 .`.
+  - **The pins, verified once** (DEC-24, design review 2), each with how it was checked in a
+    comment beside it. A signature alone would have passed Trivy's March release, which went
+    through the real pipeline. So a Trivy pin also needs the provenance pinned to the
+    workflow, the tag and its commit; that commit on `main`; and a release 14 days old or
+    more that no advisory names:
+
+    ```bash
+    gh release download v0.75.0 -R aquasecurity/trivy \
+      -p 'trivy_0.75.0_Linux-64bit.tar.gz' -p trivy_0.75.0_checksums.txt
+    sha256sum trivy_0.75.0_Linux-64bit.tar.gz         # = the checksums file, and GitHub's:
+    gh release view v0.75.0 -R aquasecurity/trivy --json assets \
+      --jq '.assets[] | select(.name == "trivy_0.75.0_Linux-64bit.tar.gz") | .digest'
+    tag=$(gh api repos/aquasecurity/trivy/commits/v0.75.0 --jq .sha)
+    gh attestation verify trivy_0.75.0_Linux-64bit.tar.gz -R aquasecurity/trivy \
+      --signer-workflow aquasecurity/trivy/.github/workflows/reusable-release.yaml \
+      --source-ref refs/tags/v0.75.0 --source-digest "$tag"
+    gh api "repos/aquasecurity/trivy/compare/$tag...main" --jq .status   # ahead, or identical
+    ```
+
+    Design review 2 ran it on 2026-10-16: every check passed, and a wrong `--source-digest`
+    failed with exit 1. Images are pinned by index digest
+    (`docker buildx imagetools inspect <image> --format '{{json .Manifest.Digest}}'`) and
+    compared with DEC-24's table. Another digest for the same immutable tag is investigated,
+    not accepted.
   - **`deploy-config`** (S3-7's job) adds `docker compose config -q`, with `.env.example`
     as the environment.
   - **The audit policy,** as DEC-24 states it:
@@ -112,7 +146,9 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
       and a date in `ci.yml` and a STATUS.md line;
     - `.trivyignore.yaml` entries, each with a statement and an `expired_at` at most 90 days
       out;
-    - a weekly `schedule` run of the whole workflow on `main`;
+    - a weekly `schedule` run of the whole workflow on `main`. It also runs `trivy image`
+      over every pinned third-party image, under the same policy: a fixed advisory there
+      means a pin bump (design review 2);
     - an Audit step for the `eval` extra, from `uv export --no-dev --extra eval
       --no-emit-project` with no install, and torch's `+cpu` label stripped as the main Audit
       step does (caveat 12: pip-audit skips torch otherwise). After the bump, its two
@@ -161,6 +197,11 @@ docker run --rm --entrypoint python rag-qa:s3-9 -c "import torch; print(torch.__
 cp .env.example .env   # then fill in a token and Qdrant's key, by hand
 docker compose up -d && docker compose ps                  # all healthy
 curl -sk https://localhost/v1/health/live                  # 200, through Caddy's TLS
+# one uid (caveat 33): an ingest job in the stack, then `uv run rag-ingest` and `rag-keys
+#   revoke` on the host: no PermissionError, and the revoked key gets 401 from the stack
+#   within 5 s (the keys file is in var/, mounted as a folder)
+# with a keys file and no RAG_API_TOKEN: a public Host through Caddy is served, Caddy's
+#   health check keeps both replicas, and a spoofed X-Forwarded-For is replaced
 # ingest over HTTPS, then ask a question; with --scale app=2, both replicas serve the
 # new generation, and either one reports the job
 # a client dropped through Caddy during the prefill: our connection to Ollama closes
@@ -178,6 +219,8 @@ gh pr checks                                               # container and deplo
 - **The bump's lock diff:** the five packages above, and nothing else.
 - **Caddy's health check is liveness,** and its body limit matches the app's.
 - **`.env.example` holds names only.**
+- **One uid, the keys file in `var/`, and Caddy the only trusted proxy** (design review 2).
+- **Each pin's comment** says how it was checked, as DEC-24's recipe and table require.
 
 ## Discovered
 
