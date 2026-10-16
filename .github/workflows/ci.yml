@@ -2,7 +2,8 @@
 #
 # Gates run cheapest first and all block. Each gate is added by the story that
 # makes it passable: ruff + pytest here (S1-2), coverage (S1-5), mypy (S1-6),
-# pip-audit (S1-8), the tier-1 retrieval eval (S2-3), the tier-2 check (S2-5b).
+# pip-audit (S1-8), the tier-1 retrieval eval (S2-3), the tier-2 check (S2-5b),
+# the format check (S3-1).
 #
 # The check job is hermetic by design: no Ollama, no model download, no network in
 # the suite. HF_HUB_OFFLINE is the tripwire for that: a test that tries to fetch an
@@ -64,6 +65,13 @@ jobs:
 
       - name: Lint
         run: uv run ruff check
+
+      # Formatting (DEC-28, S3-1). The code was formatted once, in the commit that
+      # .git-blame-ignore-revs names, and this keeps it so: red here means
+      # `uv run ruff format` has something to change. Markdown is excluded in
+      # pyproject.toml's [tool.ruff.format].
+      - name: Format
+        run: uv run ruff format --check
 
       # Types (NFR-9, S1-6). Settings live in pyproject.toml's [tool.mypy];
       # warn_unreachable there is ISS-12's only guard (code after a return).

@@ -1,0 +1,7 @@
+# Commits that `git blame` skips: mechanical changes that would otherwise take the
+# blame for every line they touched. GitHub's blame view reads this file. Locally,
+# once per clone:
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# S3-1 (DEC-28): `ruff format` over the Python code, once, and nothing else.
+01854a1164dd39b6dbd665a0047da5b85ce23bb8

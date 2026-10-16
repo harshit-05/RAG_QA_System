@@ -449,6 +449,7 @@ release tag. Its `check` job runs these gates, and each one blocks:
 
 ```bash
 uv run ruff check                       # lint
+uv run ruff format --check              # formatting; `uv run ruff format` fixes it
 uv run mypy                             # types
 uv run pytest --cov=rag_qa              # tests, with an 80% coverage floor
 uv run rag-eval check                   # tier 2: the committed run is fresh and meets its floors
@@ -472,6 +473,14 @@ guard stops a pass that audited nothing:
 
 The parentheses keep `pipefail` out of your shell. CI also fails if the installed torch
 is not the CPU build.
+
+The code was formatted once, in a single commit that `.git-blame-ignore-revs` names, so
+that `git blame` can skip it. GitHub's blame view reads that file. For a local
+`git blame` to skip it too, run this once per clone:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
 
 CI's second job, `eval-retrieval`, ingests the corpus and runs tier 1 against its floors.
 It is CI's only job that downloads models: it fetches the two from Hugging Face and
