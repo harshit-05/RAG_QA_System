@@ -108,6 +108,11 @@ line-length = 100
 [tool.ruff.lint]
 extend-select = ["E501"]
 
+# Formatting (DEC-28, S3-1). Python only: ruff 0.16 also formats the Python blocks
+# inside Markdown, which would rewrite the examples in docs/ and closed story files.
+[tool.ruff.format]
+exclude = ["*.md"]
+
 # Types (NFR-9, ISS-19). Every function in src/rag_qa carries annotations, and
 # code after a return is an error: warn_unreachable is ISS-12's only guard
 # (ruff 0.16 has no unreachable-code rule, even in preview). Tests are linted by

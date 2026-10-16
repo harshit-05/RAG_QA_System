@@ -65,8 +65,12 @@ def test_recovery_keeps_the_live_and_the_previous_generation_only(tmp_path: Path
     assert sorted(recover(store)) == sorted([gen(1), gen(4), "db_faiss.tmp-0badc0de"])
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
         [
-            "db_faiss", gen(2), gen(3),
-            "db_faiss.v02-20261005T120000.000000Z", "unrelated", "db_faiss.lock",
+            "db_faiss",
+            gen(2),
+            gen(3),
+            "db_faiss.v02-20261005T120000.000000Z",
+            "unrelated",
+            "db_faiss.lock",
         ]
     )
 

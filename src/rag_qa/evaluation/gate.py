@@ -118,9 +118,7 @@ def load_thresholds(path: str | Path) -> Thresholds:
 def below_floors(values: Mapping[str, float], floors: BaseModel) -> list[str]:
     """The names of the metrics in ``values`` that are below their floor, in the floors'
     order. A metric exactly at its floor meets it."""
-    return [
-        name for name, floor in floors.model_dump().items() if values[name] < floor
-    ]
+    return [name for name, floor in floors.model_dump().items() if values[name] < floor]
 
 
 def below_generation_floors(
@@ -427,9 +425,7 @@ def ollama_context(root: str, model: str) -> int | None:
     return None
 
 
-def digest_drift(
-    answers: AnswersRun, scores: ScoresRun, live: Mapping[str, str]
-) -> list[str]:
+def digest_drift(answers: AnswersRun, scores: ScoresRun, live: Mapping[str, str]) -> list[str]:
     """``check --with-ollama``: the recorded digests against the live ones. Re-pulling a
     model behind the same tag changes answers without changing any hashed input."""
     problems = []
@@ -459,4 +455,3 @@ def digest_drift(
                 f"re-run {rerun}"
             )
     return problems
-

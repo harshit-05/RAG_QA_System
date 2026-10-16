@@ -33,13 +33,27 @@ from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_DATA_PATH, ENV_VECTOR_STORE_PATH
 
 GOLDEN = [
-    {"id": "notes", "question": "What do the notes say?", "ground_truth": "Plain text notes.",
-     "answerable": True, "expected_sources": [{"source": "notes.txt"}]},
-    {"id": "report", "question": "What is the report about?", "ground_truth": "A report.",
-     "answerable": True, "expected_sources": [{"source": "sub/report.docx"}]},
-    {"id": "capital", "question": "What is the capital of Australia?",
-     "ground_truth": "I could not find the answer in the provided documents.",
-     "answerable": False, "must_not_contain": ["Canberra"]},
+    {
+        "id": "notes",
+        "question": "What do the notes say?",
+        "ground_truth": "Plain text notes.",
+        "answerable": True,
+        "expected_sources": [{"source": "notes.txt"}],
+    },
+    {
+        "id": "report",
+        "question": "What is the report about?",
+        "ground_truth": "A report.",
+        "answerable": True,
+        "expected_sources": [{"source": "sub/report.docx"}],
+    },
+    {
+        "id": "capital",
+        "question": "What is the capital of Australia?",
+        "ground_truth": "I could not find the answer in the provided documents.",
+        "answerable": False,
+        "must_not_contain": ["Canberra"],
+    },
 ]
 
 
@@ -76,7 +90,9 @@ def test_generate_records_every_answer_with_its_fingerprint(
         assert item.ttft_ms is not None and item.total_ms >= item.ttft_ms
     # Not an Ollama model: there is no digest to record, and no Ollama was asked.
     assert (run.generator.ref, run.generator.model, run.generator.digest) == (
-        "components.llms.fake", None, None
+        "components.llms.fake",
+        None,
+        None,
     )
     out = capsys.readouterr().out
     assert "[3/3] capital: ttft" in out and "Wrote 3 answer(s)" in out
@@ -109,8 +125,11 @@ def test_a_limited_run_goes_where_out_says(evals: Path, tmp_path: Path) -> None:
 
 
 def test_no_index_cannot_run(
-    make_config: MakeConfig, sample_corpus: Path, tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    make_config: MakeConfig,
+    sample_corpus: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
     monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "no-index"))
@@ -201,11 +220,18 @@ def test_a_finished_checkpoint_writes_without_loading_a_model(
     run = load_answers(out)
     # Put every answer back in the checkpoint, as if the run file's write had failed.
     kept = out.with_name("answers-latest.partial.jsonl")
-    identity = {"fingerprint": run.fingerprint, "generator": run.generator.model_dump(),
-                "limit": None}
+    identity = {
+        "fingerprint": run.fingerprint,
+        "generator": run.generator.model_dump(),
+        "limit": None,
+    }
     header = {"kind": "answers", "started_at": run.generated_at, "identity": identity}
-    kept.write_text("".join(json.dumps(line) + "\n" for line in [
-        header, *[item.model_dump(mode="json") for item in run.items]]))
+    kept.write_text(
+        "".join(
+            json.dumps(line) + "\n"
+            for line in [header, *[item.model_dump(mode="json") for item in run.items]]
+        )
+    )
 
     def no_model(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("nothing was left to ask, so no model should load")
@@ -245,7 +271,9 @@ def test_a_limited_run_neither_resumes_nor_deletes_a_full_runs_checkpoint(
 
 
 def test_an_unknown_digest_is_no_reason_to_delete_the_answers(
-    evals: Path, flaky: list[str], monkeypatch: pytest.MonkeyPatch,
+    evals: Path,
+    flaky: list[str],
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     digest = {"now": MISTRAL_DIGEST}
@@ -266,7 +294,9 @@ def test_an_unknown_digest_is_no_reason_to_delete_the_answers(
 
 
 def test_ctrl_c_says_where_the_finished_answers_are(
-    evals: Path, flaky: list[str], monkeypatch: pytest.MonkeyPatch,
+    evals: Path,
+    flaky: list[str],
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     async def interrupted(pipeline: Any, item: Any) -> Any:

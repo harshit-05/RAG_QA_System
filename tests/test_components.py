@@ -60,9 +60,13 @@ def test_unmapped_files_get_no_loader(
 def test_loaders_are_built_through_the_allowlist(make_config: MakeConfig, tmp_path: Path) -> None:
     # The old ingest path called import_from_string directly; now loaders go through
     # build_object like everything else. A non-class target shows the checks apply.
-    config = load_config(make_config(lambda c: c["components"]["loaders"]["pdf"].update(
-        _target_="rag_qa.registry.build_object"
-    )))
+    config = load_config(
+        make_config(
+            lambda c: c["components"]["loaders"]["pdf"].update(
+                _target_="rag_qa.registry.build_object"
+            )
+        )
+    )
     with pytest.raises(ImportError, match="not a class"):
         build_loader(config, tmp_path / "a.pdf")
 
@@ -70,7 +74,8 @@ def test_loaders_are_built_through_the_allowlist(make_config: MakeConfig, tmp_pa
 def test_build_embedder_always_reads_the_ingestion_embedder(make_config: MakeConfig) -> None:
     def use_fake_embedder(c: dict) -> None:
         c["components"]["embedders"]["fake"] = {
-            "_target_": "langchain_core.embeddings.DeterministicFakeEmbedding", "size": 8
+            "_target_": "langchain_core.embeddings.DeterministicFakeEmbedding",
+            "size": 8,
         }
         c["pipeline"]["ingestion"]["embedder"] = "components.embedders.fake"
 

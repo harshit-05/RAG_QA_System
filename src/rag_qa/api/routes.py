@@ -310,9 +310,7 @@ async def ingest_status(
     """An ingest job: its status, ``rag-ingest``'s exit code, the report and the log."""
     job = serving.jobs.get(job_id)
     if job is None:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND, "no such ingest job (the last 20 are kept)"
-        )
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such ingest job (the last 20 are kept)")
     return job_out(job)
 
 

@@ -210,31 +210,45 @@ MOVES: list[Any] = [
     pytest.param(setter(llm, "temperature", 0.2), "query", id="llm setting"),
     pytest.param(setter(llm, "num_thread", 6), "query", id="llm num_thread (S2-5b)"),
     pytest.param(
-        config_edit(lambda c: c["components"]["retrievers"]["vector_search"]["search_kwargs"]
-                    .__setitem__("k", 4)),
-        "query", id="retriever k",
+        config_edit(
+            lambda c: c["components"]["retrievers"]["vector_search"]["search_kwargs"].__setitem__(
+                "k", 4
+            )
+        ),
+        "query",
+        id="retriever k",
     ),
     pytest.param(setter(reranker, "top_n", 4), "query", id="reranker top_n"),
     pytest.param(setter(query, "reranker_candidates", 30), "query", id="reranker candidates"),
     pytest.param(config_edit(lambda c: one_word(query(c)["prompt"])), "query", id="a prompt word"),
     pytest.param(
         lambda w, mp: mp.setattr("rag_qa.chain.citation", lambda doc: "cited differently"),
-        "query", id="citation code (the probe)",
+        "query",
+        id="citation code (the probe)",
     ),
     # ingestion
     pytest.param(
-        config_edit(lambda c: c["components"]["embedders"]["minilm_cpu"].__setitem__(
-            "model_name", "sentence-transformers/all-mpnet-base-v2")),
-        "ingestion", id="embedder model",
+        config_edit(
+            lambda c: c["components"]["embedders"]["minilm_cpu"].__setitem__(
+                "model_name", "sentence-transformers/all-mpnet-base-v2"
+            )
+        ),
+        "ingestion",
+        id="embedder model",
     ),
     pytest.param(
-        config_edit(lambda c: c["components"]["splitters"]["english_recursive"].__setitem__(
-            "chunk_size", 800)),
-        "ingestion", id="splitter",
+        config_edit(
+            lambda c: c["components"]["splitters"]["english_recursive"].__setitem__(
+                "chunk_size", 800
+            )
+        ),
+        "ingestion",
+        id="splitter",
     ),
     pytest.param(
         config_edit(lambda c: c["components"]["loaders"]["txt"].__setitem__("encoding", "utf-8")),
-        "ingestion", id="a loader's spec",
+        "ingestion",
+        id="a loader's spec",
     ),
     pytest.param(
         lambda w, mp: mp.setattr(fp, "CHUNKING_VERSION", 2), "ingestion", id="chunking version"
@@ -243,32 +257,60 @@ MOVES: list[Any] = [
     pytest.param(append_to_file("notes.txt", "More.\n"), "corpus", id="a file's bytes"),
     pytest.param(add_file("added.txt"), "corpus", id="a new indexed file"),
     # questions
-    pytest.param(first(lambda r: r.__setitem__("question", "What do notes say?")), "questions",
-                 id="a question"),
-    pytest.param(second(lambda r: r.__setitem__("must_not_contain", ["Sydney"])), "questions",
-                 id="must_not_contain"),
+    pytest.param(
+        first(lambda r: r.__setitem__("question", "What do notes say?")),
+        "questions",
+        id="a question",
+    ),
+    pytest.param(
+        second(lambda r: r.__setitem__("must_not_contain", ["Sydney"])),
+        "questions",
+        id="must_not_contain",
+    ),
     # references
-    pytest.param(first(lambda r: r.__setitem__("ground_truth", "Notes, in plain text.")),
-                 "references", id="a ground_truth"),
+    pytest.param(
+        first(lambda r: r.__setitem__("ground_truth", "Notes, in plain text.")),
+        "references",
+        id="a ground_truth",
+    ),
     # judge
-    pytest.param(lambda w, _: setattr(w, "modelfile", w.modelfile.replace("seed 42", "seed 7")),
-                 "judge", id="the Modelfile"),
-    pytest.param(lambda w, _: setattr(w, "modelfile", w.modelfile + SYSTEM_LINE),
-                 "judge", id="a SYSTEM line in the Modelfile"),
+    pytest.param(
+        lambda w, _: setattr(w, "modelfile", w.modelfile.replace("seed 42", "seed 7")),
+        "judge",
+        id="the Modelfile",
+    ),
+    pytest.param(
+        lambda w, _: setattr(w, "modelfile", w.modelfile + SYSTEM_LINE),
+        "judge",
+        id="a SYSTEM line in the Modelfile",
+    ),
     pytest.param(setter(judge, "model", "other-judge"), "judge", id="the judge model"),
-    pytest.param(setter(judge, "embedding_model", "sentence-transformers/all-mpnet-base-v2"),
-                 "judge", id="the embedder"),
-    pytest.param(config_edit(lambda c: c["evaluation"].__setitem__("decline_marker",
-                                                                     "could not find")),
-                 "judge", id="the decline marker"),
-    pytest.param(lambda w, mp: mp.setattr(fp, "RAGAS_VERSION", "0.4.4"), "judge",
-                 id="the ragas version"),
+    pytest.param(
+        setter(judge, "embedding_model", "sentence-transformers/all-mpnet-base-v2"),
+        "judge",
+        id="the embedder",
+    ),
+    pytest.param(
+        config_edit(lambda c: c["evaluation"].__setitem__("decline_marker", "could not find")),
+        "judge",
+        id="the decline marker",
+    ),
+    pytest.param(
+        lambda w, mp: mp.setattr(fp, "RAGAS_VERSION", "0.4.4"), "judge", id="the ragas version"
+    ),
     # instructor writes part of every judge prompt in JSON mode (second reviewer).
-    pytest.param(lambda w, mp: mp.setattr(fp, "INSTRUCTOR_VERSION", "1.18.0"), "judge",
-                 id="the instructor version"),
-    pytest.param(lambda w, mp: mp.setitem(fp.METRICS, "answer_relevancy",
-                                          {"class": "AnswerRelevancy", "strictness": 3}),
-                 "judge", id="a metric setting"),
+    pytest.param(
+        lambda w, mp: mp.setattr(fp, "INSTRUCTOR_VERSION", "1.18.0"),
+        "judge",
+        id="the instructor version",
+    ),
+    pytest.param(
+        lambda w, mp: mp.setitem(
+            fp.METRICS, "answer_relevancy", {"class": "AnswerRelevancy", "strictness": 3}
+        ),
+        "judge",
+        id="a metric setting",
+    ),
 ]
 
 
@@ -290,19 +332,28 @@ STAYS: list[Any] = [
     pytest.param(setter(llm, "validate_model_on_init", False), id="the start-up model check"),
     pytest.param(setter(llm, "keep_alive", "10m"), id="keep_alive"),
     pytest.param(setter(llm, "client_kwargs", {"timeout": 600}), id="the client's timeout"),
-    pytest.param(lambda w, _: setattr(w, "modelfile", "# a note\n\n" + w.modelfile + "# end\n"),
-                 id="a comment in the Modelfile"),
-    pytest.param(setter(query, "reranker", "components.rerankers.ms_marco_minilm_cuda"),
-                 id="the reranker's device"),
     pytest.param(
-        config_edit(lambda c: c["pipeline"]["ingestion"].__setitem__(
-            "embedder", "components.embedders.minilm_cuda")),
+        lambda w, _: setattr(w, "modelfile", "# a note\n\n" + w.modelfile + "# end\n"),
+        id="a comment in the Modelfile",
+    ),
+    pytest.param(
+        setter(query, "reranker", "components.rerankers.ms_marco_minilm_cuda"),
+        id="the reranker's device",
+    ),
+    pytest.param(
+        config_edit(
+            lambda c: c["pipeline"]["ingestion"].__setitem__(
+                "embedder", "components.embedders.minilm_cuda"
+            )
+        ),
         id="the embedder's device",
     ),
     pytest.param(config_edit(rename_llm), id="a renamed component entry"),
     pytest.param(first(lambda r: r.__setitem__("notes", "edited")), id="notes"),
-    pytest.param(first(lambda r: r.__setitem__("expected_sources", [{"source": "README.md"}])),
-                 id="expected_sources"),
+    pytest.param(
+        first(lambda r: r.__setitem__("expected_sources", [{"source": "README.md"}])),
+        id="expected_sources",
+    ),
     pytest.param(golden_edit(lambda g: g.reverse()), id="the golden set's order"),
     pytest.param(add_file("photo.png"), id="a file no loader takes"),
     pytest.param(add_file(".hidden/notes.txt"), id="a hidden folder"),
@@ -325,7 +376,11 @@ def test_the_corpus_part_is_exactly_what_rag_ingest_indexes(world: World) -> Non
     world.write()
     scan = fp.corpus_scan(load_config(world.config_file))
     assert sorted(f.name for f in scan.files) == [
-        "README.md", "guide.pdf", "notes.txt", "sub/deeper/LOUD.TXT", "sub/report.docx"
+        "README.md",
+        "guide.pdf",
+        "notes.txt",
+        "sub/deeper/LOUD.TXT",
+        "sub/report.docx",
     ]
 
 
@@ -415,7 +470,10 @@ def test_the_modelfile_is_parsed_for_what_score_needs() -> None:
     assert (settings.base, settings.num_ctx, settings.num_predict) == ("gemma2:9b", 8192, 2048)
     assert (settings.temperature, settings.seed) == (0.0, 42)
     assert dict(settings.parameters) == {
-        "num_ctx": "8192", "num_predict": "2048", "temperature": "0", "seed": "42"
+        "num_ctx": "8192",
+        "num_predict": "2048",
+        "temperature": "0",
+        "seed": "42",
     }
 
 
@@ -451,7 +509,8 @@ def test_the_modelfile_s_system_and_template_are_read_for_the_judge_check() -> N
     assert settings.system == "You judge.\n# not a comment in here\nBe brief."
     assert settings.template == "{{ .Prompt }}"
     assert (fp.parse_modelfile("FROM x\nPARAMETER num_ctx 8192\n").system, settings.base) == (
-        None, "gemma2:9b"
+        None,
+        "gemma2:9b",
     )
 
 
@@ -483,9 +542,11 @@ def test_generation_floors_may_be_null_but_never_missing(tmp_path: Path) -> None
 
 def test_a_negative_generation_floor_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "thresholds.yaml"
-    path.write_text(yaml.safe_dump(
-        {**THRESHOLDS, "generation": dict(THRESHOLDS["generation"], decline_rate=-0.1)}
-    ))
+    path.write_text(
+        yaml.safe_dump(
+            {**THRESHOLDS, "generation": dict(THRESHOLDS["generation"], decline_rate=-0.1)}
+        )
+    )
     with pytest.raises(ThresholdsError, match="decline_rate"):
         load_thresholds(path)
 
@@ -518,23 +579,35 @@ def test_below_generation_floors() -> None:
 def runs_for(world: World, **aggregate: float | None) -> tuple[AnswersRun, ScoresRun]:
     """A committed run made from ``world`` as it is now: fresh, covering every question."""
     parts = world.parts()
-    generator = Generator(ref="components.llms.mistral_ollama", model="mistral",
-                          digest=MISTRAL_DIGEST)
+    generator = Generator(
+        ref="components.llms.mistral_ollama", model="mistral", digest=MISTRAL_DIGEST
+    )
     answers = AnswersRun(
         generated_at="2026-10-07T00:00:00Z",
         limit=None,
         fingerprint={p: parts[p] for p in fp.GENERATION_PARTS},
         generator=generator,
         items=[
-            AnswerItem(id=r["id"], question=r["question"], answerable=r["answerable"],
-                       answer="An answer.", contexts=["A chunk."], sources=[], ttft_ms=1.0,
-                       total_ms=2.0)
+            AnswerItem(
+                id=r["id"],
+                question=r["question"],
+                answerable=r["answerable"],
+                answer="An answer.",
+                contexts=["A chunk."],
+                sources=[],
+                ttft_ms=1.0,
+                total_ms=2.0,
+            )
             for r in world.golden
         ],
     )
     values = {
-        "faithfulness": 0.9, "answer_relevancy": 0.9, "context_precision": 0.9,
-        "context_recall": 0.9, "decline_rate": 1.0, **aggregate,
+        "faithfulness": 0.9,
+        "answer_relevancy": 0.9,
+        "context_precision": 0.9,
+        "context_recall": 0.9,
+        "decline_rate": 1.0,
+        **aggregate,
     }
     scores = ScoresRun(
         generated_at=answers.generated_at,
@@ -544,9 +617,16 @@ def runs_for(world: World, **aggregate: float | None) -> tuple[AnswersRun, Score
         fingerprint=parts,
         generator=generator,
         judge=JudgeRecord(
-            model="rag-judge", digest=JUDGE_DIGEST, base="gemma2:9b", base_digest=BASE_DIGEST,
-            num_ctx=8192, served_context=8192, max_prompt_tokens=2753, max_completion_tokens=258,
-            mode="json", embedding_model="sentence-transformers/all-MiniLM-L6-v2",
+            model="rag-judge",
+            digest=JUDGE_DIGEST,
+            base="gemma2:9b",
+            base_digest=BASE_DIGEST,
+            num_ctx=8192,
+            served_context=8192,
+            max_prompt_tokens=2753,
+            max_completion_tokens=258,
+            mode="json",
+            embedding_model="sentence-transformers/all-MiniLM-L6-v2",
         ),
         versions={"ragas": "0.4.3", "instructor": "1.17.0", "openai": "3.3.0"},
         failures={name: Failures() for name in fp.METRICS},
@@ -603,8 +683,10 @@ def test_check_reads_another_eval_dir(world: World, tmp_path: Path) -> None:
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     (scratch / "stale.yaml").write_text(world.config_file.read_text())
-    assert main(["check", "--config", str(scratch / "stale.yaml"),
-                 "--eval-dir", str(world.eval_dir)]) == EXIT_OK
+    assert (
+        main(["check", "--config", str(scratch / "stale.yaml"), "--eval-dir", str(world.eval_dir)])
+        == EXIT_OK
+    )
 
 
 def test_a_floor_missed_fails(world: World, capsys: pytest.CaptureFixture[str]) -> None:
@@ -626,9 +708,7 @@ def test_scores_from_another_answers_file_fail(
     world: World, capsys: pytest.CaptureFixture[str]
 ) -> None:
     answers, scores = runs_for(world)
-    answers = answers.model_copy(
-        update={"fingerprint": dict(answers.fingerprint, corpus="0" * 64)}
-    )
+    answers = answers.model_copy(update={"fingerprint": dict(answers.fingerprint, corpus="0" * 64)})
     commit(world, answers, scores)
     assert check(world) == EXIT_FLOOR_MISSED
     err = capsys.readouterr().err
@@ -667,10 +747,16 @@ def test_an_unexpected_error_exits_2_never_1(
     ("damage", "problem"),
     [
         (lambda w: (w.eval_dir / "runs" / "generation-latest.json").unlink(), "cannot read"),
-        (lambda w: (w.eval_dir / "runs" / "answers-latest.json").write_text("{}"),
-         "is not the answers file this version writes"),
-        (lambda w: (w.eval_dir / "thresholds.yaml").write_text(
-            yaml.safe_dump({"retrieval": THRESHOLDS["retrieval"]})), "no generation: section"),
+        (
+            lambda w: (w.eval_dir / "runs" / "answers-latest.json").write_text("{}"),
+            "is not the answers file this version writes",
+        ),
+        (
+            lambda w: (w.eval_dir / "thresholds.yaml").write_text(
+                yaml.safe_dump({"retrieval": THRESHOLDS["retrieval"]})
+            ),
+            "no generation: section",
+        ),
         (lambda w: (w.eval_dir / "judge.Modelfile").unlink(), "cannot read the judge's Modelfile"),
     ],
 )

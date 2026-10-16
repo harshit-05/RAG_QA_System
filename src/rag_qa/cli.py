@@ -54,7 +54,12 @@ from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_CONFIG
 
 GREEN, YELLOW, BLUE, RED, DIM, RESET = (
-    "\033[92m", "\033[93m", "\033[94m", "\033[91m", "\033[2m", "\033[0m"
+    "\033[92m",
+    "\033[93m",
+    "\033[94m",
+    "\033[91m",
+    "\033[2m",
+    "\033[0m",
 )
 
 EXIT_OK = 0
@@ -128,8 +133,7 @@ def _connection_failed(error: Exception) -> bool:
     raises unwrapped (``ConnectError: All connection attempts failed``). httpx is matched
     by name rather than imported: it comes with ollama, and is not a dependency of ours."""
     return isinstance(error, ConnectionError) or any(
-        kind.__module__ == "httpx" and kind.__name__ in _UNREACHABLE
-        for kind in type(error).__mro__
+        kind.__module__ == "httpx" and kind.__name__ in _UNREACHABLE for kind in type(error).__mro__
     )
 
 
@@ -223,8 +227,10 @@ def close_session(runner: asyncio.Runner, pipeline: QueryPipeline) -> None:
     # Best effort, for the same reason: the user has already left, and an error while
     # closing (httpx's, say) must not turn a clean exit into a traceback and exit 1.
     except Exception as e:  # noqa: BLE001
-        print(f"\n{YELLOW}(could not close the model's connections cleanly: "
-              f"{type(e).__name__}){RESET}")
+        print(
+            f"\n{YELLOW}(could not close the model's connections cleanly: "
+            f"{type(e).__name__}){RESET}"
+        )
     finally:
         runner.close()
 

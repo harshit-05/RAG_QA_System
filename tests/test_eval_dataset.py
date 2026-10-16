@@ -305,7 +305,7 @@ def test_every_quoted_passage_is_on_the_page_the_notes_name(golden: list[GoldenI
             continue
         found = QUOTE.findall(item.notes)
         # A note whose quotes stopped matching the pattern would make this test vacuous.
-        assert found, f"{item.id}: notes quote no passage as p. N: \"...\""
+        assert found, f'{item.id}: notes quote no passage as p. N: "..."'
         for label, quote in found:
             quotes += 1
             matched = False

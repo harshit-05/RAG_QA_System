@@ -59,9 +59,7 @@ class ServerSettings(BaseSettings):
     a time. ``host`` and ``port`` are the defaults ``rag-serve --host/--port`` override.
     """
 
-    model_config = SettingsConfigDict(
-        env_prefix=ENV_API_PREFIX, env_ignore_empty=True, frozen=True
-    )
+    model_config = SettingsConfigDict(env_prefix=ENV_API_PREFIX, env_ignore_empty=True, frozen=True)
 
     token: SecretStr | None = None
     max_concurrent: int = Field(default=1, ge=1)

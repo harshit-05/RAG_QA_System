@@ -82,7 +82,12 @@ def test_the_gate_loads_without_the_model_stack(module: str) -> None:
     # The fingerprint may bring in langchain_core, but never any of these: `rag-eval check`
     # must stay a CPU-only, model-free step, and CI never installs the eval extra.
     heavy = {
-        "ragas", "openai", "instructor", "torch", "sentence_transformers", "langchain_huggingface"
+        "ragas",
+        "openai",
+        "instructor",
+        "torch",
+        "sentence_transformers",
+        "langchain_huggingface",
     }
     loaded = modules_loaded_by(module)
     assert sorted(m for m in loaded if m.split(".")[0] in heavy) == []

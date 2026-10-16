@@ -369,11 +369,14 @@ class FakeOllama:
             "rag-judge:latest": "\n".join(
                 f"{name:<30} {value}"
                 for name, value in [
-                    ("num_ctx", "8192"), ("num_predict", "2048"), ("seed", "42"),
-                    ("stop", '"<end>"'), ("temperature", "0"),
+                    ("num_ctx", "8192"),
+                    ("num_predict", "2048"),
+                    ("seed", "42"),
+                    ("stop", '"<end>"'),
+                    ("temperature", "0"),
                 ]
             ),
-            "gemma2:9b": f"{'stop':<30} \"<end>\"",
+            "gemma2:9b": f'{"stop":<30} "<end>"',
         }
     )
     #: /api/show's ``details.parent_model``: what each created model was built FROM.

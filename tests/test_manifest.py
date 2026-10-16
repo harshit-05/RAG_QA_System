@@ -201,14 +201,23 @@ def test_a_manifest_round_trips_in_the_documented_shape(tmp_path: Path) -> None:
 
     data = json.loads(path.read_text())  # ARCHITECTURE.md §2.4, key for key
     assert sorted(data) == [
-        "chunking", "documents", "embedder", "generation", "splitter", "version",
+        "chunking",
+        "documents",
+        "embedder",
+        "generation",
+        "splitter",
+        "version",
     ]
     assert data["version"] == 1
     assert data["chunking"] == 1
     assert sorted(data["embedder"]) == ["dimension", "identity", "ref"]
     assert sorted(data["splitter"]) == ["identity", "ref"]
     assert sorted(data["documents"]["guide.pdf"]) == [
-        "chunk_ids", "ingested_at", "loader", "loader_identity", "sha256",
+        "chunk_ids",
+        "ingested_at",
+        "loader",
+        "loader_identity",
+        "sha256",
     ]
     assert load_manifest(path) == original
     assert not path.with_name("manifest.json.tmp").exists()

@@ -29,10 +29,20 @@ from rag_qa.settings import ENV_DATA_PATH, ENV_VECTOR_STORE_PATH
 MARKER = "could not find the answer"
 REFUSAL = "I could not find the answer in the provided documents."
 GOLDEN = [
-    {"id": "notes", "question": "What do the notes say?", "ground_truth": "Plain text notes.",
-     "answerable": True, "expected_sources": [{"source": "notes.txt"}]},
-    {"id": "capital", "question": "What is the capital of Australia?", "ground_truth": REFUSAL,
-     "answerable": False, "must_not_contain": ["Canberra"]},
+    {
+        "id": "notes",
+        "question": "What do the notes say?",
+        "ground_truth": "Plain text notes.",
+        "answerable": True,
+        "expected_sources": [{"source": "notes.txt"}],
+    },
+    {
+        "id": "capital",
+        "question": "What is the capital of Australia?",
+        "ground_truth": REFUSAL,
+        "answerable": False,
+        "must_not_contain": ["Canberra"],
+    },
 ]
 
 
@@ -44,12 +54,17 @@ GOLDEN = [
     [
         pytest.param(REFUSAL, True, [], id="the refusal sentence"),
         pytest.param("Sorry, I COULD NOT FIND THE ANSWER here.", True, [], id="any case"),
-        pytest.param("I could not find the answer to that in these papers.", True, [],
-                     id="a paraphrase that keeps the marker"),
+        pytest.param(
+            "I could not find the answer to that in these papers.",
+            True,
+            [],
+            id="a paraphrase that keeps the marker",
+        ),
         pytest.param("The documents do not say.", False, [], id="a paraphrase that loses it"),
         pytest.param("It is Canberra.", False, ["Canberra"], id="an answer from prior knowledge"),
-        pytest.param(f"{REFUSAL} It may be Canberra.", False, ["Canberra"],
-                     id="a refusal that leaks"),
+        pytest.param(
+            f"{REFUSAL} It may be Canberra.", False, ["Canberra"], id="a refusal that leaks"
+        ),
         pytest.param(f"{REFUSAL} (canberra?)", False, ["Canberra"], id="a leak in another case"),
         pytest.param(f"{REFUSAL} Canberrans live there.", True, [], id="not as a whole word"),
     ],
@@ -90,16 +105,27 @@ def test_the_mean_leaves_out_what_was_not_scored() -> None:
 
 
 def test_an_empty_answer_or_no_context_is_never_sent_to_the_judge() -> None:
-    answered = AnswerItem(id="q", question="?", answerable=True, answer="", contexts=["c"],
-                          sources=[], ttft_ms=None, total_ms=1.0)
+    answered = AnswerItem(
+        id="q",
+        question="?",
+        answerable=True,
+        answer="",
+        contexts=["c"],
+        sources=[],
+        ttft_ms=None,
+        total_ms=1.0,
+    )
     inputs = rs.metric_inputs(answered, "ref")
     assert [name for name, i in inputs.items() if rs.unscorable(i)] == [
-        "faithfulness", "answer_relevancy"
+        "faithfulness",
+        "answer_relevancy",
     ]
     no_context = answered.model_copy(update={"answer": "a", "contexts": []})
     inputs = rs.metric_inputs(no_context, "ref")
     assert [name for name, i in inputs.items() if rs.unscorable(i)] == [
-        "faithfulness", "context_precision", "context_recall"
+        "faithfulness",
+        "context_precision",
+        "context_recall",
     ]
 
 
@@ -178,11 +204,23 @@ def checkout(tmp_path: Path, fake_ollama: FakeOllama, records: list[dict[str, An
     golden = load_golden(eval_dir / "eval_dataset.jsonl")
     parts = fp.fingerprint(load_config(config_file), golden, parts=fp.GENERATION_PARTS)
     answers = AnswersRun(
-        generated_at="2026-10-07T00:00:00Z", limit=None, fingerprint=parts,
+        generated_at="2026-10-07T00:00:00Z",
+        limit=None,
+        fingerprint=parts,
         generator=Generator(ref="components.llms.mistral_ollama", model="mistral", digest=None),
-        items=[AnswerItem(id=r["id"], question=r["question"], answerable=r["answerable"],
-                          answer=REFUSAL, contexts=["c"], sources=[], ttft_ms=1.0, total_ms=2.0)
-               for r in records],
+        items=[
+            AnswerItem(
+                id=r["id"],
+                question=r["question"],
+                answerable=r["answerable"],
+                answer=REFUSAL,
+                contexts=["c"],
+                sources=[],
+                ttft_ms=1.0,
+                total_ms=2.0,
+            )
+            for r in records
+        ],
     )
     write_run(answers, eval_dir / "runs" / "answers-latest.json")
     return config_file
@@ -196,6 +234,7 @@ def score(config_file: Path, *args: str) -> int:
 @pytest.fixture
 def no_ragas(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stop where ragas would be imported, as on CI, whether or not this machine has it."""
+
     def missing(name: str) -> str:
         raise importlib.metadata.PackageNotFoundError(name)
 
@@ -250,17 +289,34 @@ def test_a_judge_without_a_context_setting_is_refused(
 @pytest.mark.parametrize(
     ("served", "parent", "problem"),
     [
-        pytest.param("num_ctx 8192\nnum_predict 1024\nseed 42\ntemperature 0", "gemma2:9b",
-                     "num_predict 1024 (the Modelfile says 2048)", id="another parameter"),
-        pytest.param("num_ctx 8192\nnum_predict 2048\nseed 42", "gemma2:9b",
-                     "temperature unset (the Modelfile says 0)", id="a parameter missing"),
-        pytest.param("num_ctx 8192\nnum_predict 2048\nseed 42\ntemperature 0", "llama3:8b",
-                     "built on llama3:8b (the Modelfile says FROM gemma2:9b)", id="another base"),
+        pytest.param(
+            "num_ctx 8192\nnum_predict 1024\nseed 42\ntemperature 0",
+            "gemma2:9b",
+            "num_predict 1024 (the Modelfile says 2048)",
+            id="another parameter",
+        ),
+        pytest.param(
+            "num_ctx 8192\nnum_predict 2048\nseed 42",
+            "gemma2:9b",
+            "temperature unset (the Modelfile says 0)",
+            id="a parameter missing",
+        ),
+        pytest.param(
+            "num_ctx 8192\nnum_predict 2048\nseed 42\ntemperature 0",
+            "llama3:8b",
+            "built on llama3:8b (the Modelfile says FROM gemma2:9b)",
+            id="another base",
+        ),
     ],
 )
 def test_a_judge_not_built_from_its_modelfile_is_refused(
-    scoring: Path, fake_ollama: FakeOllama, no_ragas: None, capsys: pytest.CaptureFixture[str],
-    served: str, parent: str, problem: str,
+    scoring: Path,
+    fake_ollama: FakeOllama,
+    no_ragas: None,
+    capsys: pytest.CaptureFixture[str],
+    served: str,
+    parent: str,
+    problem: str,
 ) -> None:
     # An edited Modelfile, never re-created: the run would hash a judge that did not run.
     fake_ollama.parameters["rag-judge:latest"] = served
@@ -291,20 +347,35 @@ def system_never_created(ollama: FakeOllama, modelfile: Path) -> None:
 @pytest.mark.parametrize(
     ("break_", "problem"),
     [
-        pytest.param(stale_system, "a SYSTEM that is not the one its Modelfile gives it",
-                     id="a SYSTEM the Modelfile no longer has"),
-        pytest.param(system_never_created, "a SYSTEM that is not the one its Modelfile gives it",
-                     id="a SYSTEM the served judge never got"),
-        pytest.param(leftover_parameter, "top_k 40 (neither the Modelfile nor gemma2:9b sets it)",
-                     id="a PARAMETER the Modelfile no longer has"),
-        pytest.param(changed_inheritance,
-                     "stop <eot> (gemma2:9b has <end>, and the Modelfile does not set it)",
-                     id="an inherited parameter changed"),
+        pytest.param(
+            stale_system,
+            "a SYSTEM that is not the one its Modelfile gives it",
+            id="a SYSTEM the Modelfile no longer has",
+        ),
+        pytest.param(
+            system_never_created,
+            "a SYSTEM that is not the one its Modelfile gives it",
+            id="a SYSTEM the served judge never got",
+        ),
+        pytest.param(
+            leftover_parameter,
+            "top_k 40 (neither the Modelfile nor gemma2:9b sets it)",
+            id="a PARAMETER the Modelfile no longer has",
+        ),
+        pytest.param(
+            changed_inheritance,
+            "stop <eot> (gemma2:9b has <end>, and the Modelfile does not set it)",
+            id="an inherited parameter changed",
+        ),
     ],
 )
 def test_a_judge_with_what_its_modelfile_does_not_give_is_refused(
-    scoring: Path, fake_ollama: FakeOllama, no_ragas: None, capsys: pytest.CaptureFixture[str],
-    break_: Callable[[FakeOllama, Path], None], problem: str,
+    scoring: Path,
+    fake_ollama: FakeOllama,
+    no_ragas: None,
+    capsys: pytest.CaptureFixture[str],
+    break_: Callable[[FakeOllama, Path], None],
+    problem: str,
 ) -> None:
     # Each is hashed into `judge` as the Modelfile has it, while the served judge differs:
     # an edited Modelfile, never re-created (S2-5's second reviewer).
@@ -419,8 +490,13 @@ def test_the_judge_digests_come_from_ollama(fake_ollama: FakeOllama) -> None:
 #: Two answerable questions, so a run can stop after one; then one to decline.
 GOLDEN_3 = [
     GOLDEN[0],
-    {"id": "report", "question": "What is the report about?", "ground_truth": "A report.",
-     "answerable": True, "expected_sources": [{"source": "sub/report.docx"}]},
+    {
+        "id": "report",
+        "question": "What is the report about?",
+        "ground_truth": "A report.",
+        "answerable": True,
+        "expected_sources": [{"source": "sub/report.docx"}],
+    },
     GOLDEN[1],
 ]
 
@@ -458,8 +534,9 @@ class FakeJudge:
                 notes = "notes" in inputs["user_input"]
                 if notes and self.name == "faithfulness":
                     judge.hooks["parse:error"](ValueError("not json"), is_last_attempt=False)
-                usage = types.SimpleNamespace(prompt_tokens=3000 if notes else 200,
-                                              completion_tokens=10)
+                usage = types.SimpleNamespace(
+                    prompt_tokens=3000 if notes else 200, completion_tokens=10
+                )
                 judge.hooks["completion:response"](types.SimpleNamespace(usage=usage))
                 return types.SimpleNamespace(value=0.5)
 
@@ -542,11 +619,20 @@ def test_a_reference_edited_between_sessions_does_not_resume(
 
 def test_resume_state_rebuilds_from_the_last_record() -> None:
     def record(item_id: str, calls: int, served: int | None) -> rs.ScoreRecord:
-        item = gate.ScoreItem(id=item_id, answerable=True, scores={"faithfulness": None},
-                              failures={"faithfulness": "parse"})
-        return rs.ScoreRecord(item=item, calls=calls, max_prompt=calls * 10,
-                              max_completion=calls, retried={"faithfulness": calls},
-                              served_context=served)
+        item = gate.ScoreItem(
+            id=item_id,
+            answerable=True,
+            scores={"faithfulness": None},
+            failures={"faithfulness": "parse"},
+        )
+        return rs.ScoreRecord(
+            item=item,
+            calls=calls,
+            max_prompt=calls * 10,
+            max_completion=calls,
+            retried={"faithfulness": calls},
+            served_context=served,
+        )
 
     state = rs.resume_state([record("a", 4, 8192), record("b", 8, None)])
     assert list(state.items) == ["a", "b"]
@@ -571,8 +657,12 @@ def test_failures_are_classified_by_cause(monkeypatch: pytest.MonkeyPatch) -> No
 
     def wrapped(cause: BaseException, attempts: int) -> BaseException:
         # As instructor raises it: the final error as the cause.
-        error = InstructorRetryException(str(cause), n_attempts=attempts, total_usage=0,
-                                         failed_attempts=[object()] * (attempts - 1))
+        error = InstructorRetryException(
+            str(cause),
+            n_attempts=attempts,
+            total_usage=0,
+            failed_attempts=[object()] * (attempts - 1),
+        )
         error.__cause__ = cause
         return error
 

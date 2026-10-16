@@ -144,10 +144,18 @@ def test_source_refs_carry_citation_page_and_rerank_score() -> None:
     ]
     first, second = source_refs(docs, CORPUS)
     assert (first.n, first.citation, first.source, first.page, first.score) == (
-        1, "old.pdf, p. 5", "old.pdf", "5", None
+        1,
+        "old.pdf, p. 5",
+        "old.pdf",
+        "5",
+        None,
     )
     assert (second.n, second.citation, second.source, second.page, second.score) == (
-        2, "x.txt", "x.txt", None, 0.75
+        2,
+        "x.txt",
+        "x.txt",
+        None,
+        0.75,
     )
 
 
@@ -174,10 +182,9 @@ def assign_shape(pipeline: QueryPipeline) -> Runnable[dict[str, str], dict[str, 
     to_prompt_inputs: Runnable[dict[str, Any], dict[str, str]] = RunnableLambda(
         lambda x: {"context": format_docs(x["context"]), "question": x["question"]}
     )
-    return (
-        RunnablePassthrough.assign(context=itemgetter("question") | pipeline.retrieve)
-        | RunnablePassthrough.assign(answer=to_prompt_inputs | sequence(pipeline))
-    )
+    return RunnablePassthrough.assign(
+        context=itemgetter("question") | pipeline.retrieve
+    ) | RunnablePassthrough.assign(answer=to_prompt_inputs | sequence(pipeline))
 
 
 def sequence_shape(pipeline: QueryPipeline, question: str) -> AsyncIterator[str]:

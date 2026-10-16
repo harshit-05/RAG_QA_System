@@ -92,16 +92,16 @@ class Checkpoint:
             ) from None
         if not isinstance(header, dict) or header.get("kind") != self.kind:
             got = header.get("kind") if isinstance(header, dict) else None
-            raise CheckpointError(self._unusable(
-                f"it is from rag-eval {COMMANDS.get(str(got), got)}, not "
-                f"{COMMANDS.get(self.kind, self.kind)}"
-            ))
+            raise CheckpointError(
+                self._unusable(
+                    f"it is from rag-eval {COMMANDS.get(str(got), got)}, not "
+                    f"{COMMANDS.get(self.kind, self.kind)}"
+                )
+            )
         recorded = header.get("identity")
         recorded = recorded if isinstance(recorded, dict) else {}
         wanted = json.loads(json.dumps(self.identity))  # as it reads back: tuples are lists
-        differ = sorted(
-            key for key in {*wanted, *recorded} if wanted.get(key) != recorded.get(key)
-        )
+        differ = sorted(key for key in {*wanted, *recorded} if wanted.get(key) != recorded.get(key))
         if differ:
             raise CheckpointError(
                 self._unusable(f"it is of a run with another {', '.join(differ)}")
@@ -150,8 +150,9 @@ class Checkpoint:
             first = e.errors()[0]
             where = ".".join(str(part) for part in first["loc"])
             raise CheckpointError(
-                self._unusable(f"a recorded item is not one this version writes ({where}: "
-                               f"{first['msg']})")
+                self._unusable(
+                    f"a recorded item is not one this version writes ({where}: {first['msg']})"
+                )
             ) from None
 
     @staticmethod
@@ -164,6 +165,5 @@ class Checkpoint:
 
     def _unusable(self, why: str) -> str:
         return (
-            f"the checkpoint {self.path} cannot be resumed: {why}. Delete it to start this "
-            f"run over"
+            f"the checkpoint {self.path} cannot be resumed: {why}. Delete it to start this run over"
         )

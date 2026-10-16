@@ -35,7 +35,9 @@ MANIFEST_VERSION: Final = 1
 CHUNKING_VERSION: Final = 1
 
 #: The namespace of every chunk ID. Changing it would change every ID, so it never changes.
-CHUNK_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "https://github.com/harshit-05/RAG_QA_System/chunk")
+CHUNK_NAMESPACE = uuid.uuid5(
+    uuid.NAMESPACE_URL, "https://github.com/harshit-05/RAG_QA_System/chunk"
+)
 
 #: Embedder spec keys that choose where or how visibly the model runs, never which vectors
 #: it makes: left out of the identity, so ``minilm_cuda`` on Colab and ``minilm_cpu`` here

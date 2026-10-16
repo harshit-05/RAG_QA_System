@@ -47,11 +47,11 @@ def test_unimportable_path_names_the_cause(path: str, cause: str) -> None:
         "subprocess.Popen",
         "builtins.eval",
         "importlib.import_module",
-        "rag_qa_evil.Payload",           # prefix boundary: not the rag_qa package
+        "rag_qa_evil.Payload",  # prefix boundary: not the rag_qa package
         "langchain_core_evil.Payload",
-        "rag_qa",                        # no attribute part
+        "rag_qa",  # no attribute part
         "",
-        *DROPPED,                        # allowed until S2-4
+        *DROPPED,  # allowed until S2-4
     ],
 )
 def test_path_outside_the_allowlist_is_refused_before_import(path: str) -> None:
@@ -163,9 +163,7 @@ def test_builds_nested_targets_lists_and_plain_dicts() -> None:
 
 def test_build_object_refuses_a_blocked_nested_target() -> None:
     with pytest.raises(ImportError, match="outside the import allowlist"):
-        build_object(
-            {"_target_": DOC, "page_content": "x", "metadata": {"_target_": "os.system"}}
-        )
+        build_object({"_target_": DOC, "page_content": "x", "metadata": {"_target_": "os.system"}})
 
 
 # --- the allowlist at config load: a string check, no imports --------------------------

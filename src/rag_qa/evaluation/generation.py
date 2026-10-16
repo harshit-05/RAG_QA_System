@@ -192,9 +192,15 @@ async def generate(
                 f"digest, which the run recorded. Check that Ollama is up, then run the same "
                 f"command again"
             )
-        store = Checkpoint(checkpoint, "answers", {
-            "fingerprint": parts, "generator": generator.model_dump(), "limit": limit,
-        })
+        store = Checkpoint(
+            checkpoint,
+            "answers",
+            {
+                "fingerprint": parts,
+                "generator": generator.model_dump(),
+                "limit": limit,
+            },
+        )
         resumed = store.load()
         if resumed is not None:
             generated_at = resumed.started_at
