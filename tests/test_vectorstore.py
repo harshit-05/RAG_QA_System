@@ -515,6 +515,29 @@ def test_the_search_widens_its_request_while_the_last_point_ties_the_cut(
     assert limits == [13]
 
 
+def test_every_search_asks_the_server_for_an_exact_scan(
+    qdrant: QdrantClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # DEC-19 and the manifest's store.exact promise exact search, but local mode ignores
+    # the flag and a small collection is scanned in full whatever it says. Only the request
+    # shows it: past the server's indexing threshold, exact=False would be approximate
+    # search, and nothing else would notice (S3-2 review).
+    store = make_store(qdrant)
+    tied_collection(qdrant, "ties", list(range(30)))
+    asked: list[Any] = []
+    real = qdrant.query_points
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        asked.append(kwargs.get("search_params"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(qdrant, "query_points", spy)
+    search(store, "ties", [1.0, 0.0], 8)  # widens: two requests
+    search(store, "ties", [1.0, 0.0], 3)
+    assert len(asked) == 3
+    assert all(params is not None and params.exact is True for params in asked)
+
+
 class FixedEmbeddings(Embeddings):
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [self.embed_query(text) for text in texts]
