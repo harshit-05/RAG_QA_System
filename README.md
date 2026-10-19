@@ -124,6 +124,9 @@ before. What needs something from you:
 ### Upgrading from v0.2
 
 Five changes since v0.2 need something from you. The first two apply to every v0.2 user.
+These are v0.3's: on `main`, the index also moved to Qdrant, so a v0.2 user does
+[Upgrading from v0.3](#upgrading-from-v03) as well, and step 1's `vectorstore/db_faiss.v02-*`
+folder is no longer made: re-ingest into Qdrant, and delete the old `vectorstore/`.
 
 1. **Re-ingest once.** An index now carries a manifest recording what is in it and which
    embedder made it. v0.2 indexes have none, so `rag-query` and `rag-eval` refuse them,
