@@ -5,10 +5,28 @@
 
 ## Now
 
-**Next action: review S3-2's working tree, commit it on `feat/s3-2-qdrant-store`, push, open
-the PR, and check CI (Verification 7); then S3-2's second review and close-out.** The parity
-tool is `390b228` and its review record `84600e9`. Phases B to H are written and verified
-(1–6), uncommitted; the story's "Verification record" has every result.
+**Next action: commit S3-2's second-review follow-up on PR #20, check CI on its head, then
+merge with a merge commit.** Every verification has run, CI included: `24c5780` is green
+(run 39283008142, both jobs). The second review is below and in the story. The commits: `390b228` the parity tool, `84600e9` its review record, `c49aeea` the
+dependency and compose file, `3cc393a` the store (breaking), `09475d4` CI, `25c32ff` the
+README, `24c5780` the story record. The story's "Verification record" has every result.
+
+**Second review of S3-2 as a whole (2026-10-19): no blockers; 1 test gap and 3 doc
+findings, fixed in the follow-up commit.** It reproduced parity on the live index, ran the
+hermetic suite against a dead Qdrant URL, and attacked the store on a throwaway server.
+Detail in the story.
+
+- **No test said search is exact:** `exact=False` passed everything, since local mode
+  ignores it and a small collection is scanned in full. A new test spies on the request.
+- **The cut rule is necessary:** with 40 exact ties and a restart, the server's own cut
+  gave 6 answers; ours gave one.
+- **Held under attack:** update equals rebuild, a reader on a deleted generation, a lost
+  alias (and the README's recovery recipe), Qdrant stopped mid-run, and the API going 503
+  and back.
+- **The embedder varies by about 1e-7 with batch composition** (not the store): a story
+  claim of "no drift from a fresh ingest" is reworded.
+- **A backlog line:** the Qdrant URL reaches API clients inside an ingest job's error
+  text; S3-8 decides on redacting it.
 
 **S3-2 phases B to H (2026-10-19): the index is in Qdrant, and retrieval is unchanged.**
 
@@ -1113,7 +1131,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
 | [S3-1](phase-3/S3-1-open-phase-3.md) | Open Phase 3: 1.0.0.dev0, format the code once and gate it | DEC-28, backlog: `ruff format` | — | Done 2026-10-16 (PR #19) |
-| [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | In progress (verified 1–6; PR next) |
+| [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19, pending the merge (PR #20) |
 | [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Todo |
 | [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Todo |
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Todo |
@@ -1225,11 +1243,21 @@ diffed this backlog against `main`'s: no line was dropped.
 
 ### Opened in Phase 3 stories
 
+- **S3-9 — `ubuntu-latest` becomes Ubuntu 26 from 2026-10-19** (found in S3-2's CI run
+  39283008142, as an annotation). Both CI jobs run on it, and the Qdrant service container
+  and the system tools come from the image. S3-9, which pins the CI images, pins the
+  runner too, or records why not.
+
 - **If a tool formats files by name (an editor's format-on-save, a pre-commit hook) —
   `force-exclude = true` under `[tool.ruff]`** (found in S3-1). `[tool.ruff.format]`'s
   `exclude = ["*.md"]` applies only while ruff walks a folder, so `ruff format docs/ADR.md`
   would still rewrite its Python examples. CI's bare `ruff format --check` is unaffected,
   and CLAUDE.md has sessions run it bare for this reason (S3-1's second review, round 2).
+
+- **S3-8 — the Qdrant URL in an ingest job's error text** (found in S3-2's second review).
+  `describe_error` passes `cannot use Qdrant at http://host:6333 (…)` through to
+  `GET /v1/ingest/<job>` clients. Not a path, so DEC-18 holds; once S3-9 puts Qdrant on an
+  internal network, decide whether to redact it.
 
 ### Closed in Phase 3
 

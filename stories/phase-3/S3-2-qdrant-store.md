@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In progress (2026-10-17) |
+| **Status** | Done (2026-10-19), pending the merge: PR #20, with a follow-up commit for the second review. CI was green on `24c5780` (run 39283008142, both jobs); check the PR's head before the merge. Verification 1–7 are run and shown below. Merge it with a merge commit. |
 | **Closes** | DEC-3, DEC-19; NFR-4 (upsert in the store); SRS §11 (an interrupted ingestion never leaves the store half-written) |
 | **Depends on** | S3-1 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -292,8 +292,12 @@ was written:
     in `pyproject.toml`.
 - **Copying is bit-exact on the server.** 2,000 float32 unit vectors of 384 dimensions,
   stored and then copied twice by scroll and upsert, came back with every bit and every
-  top-20 order unchanged: cosine stores an already unit-length vector as it is. So an
-  update's copy can never drift from a fresh ingest.
+  top-20 order unchanged: cosine stores an already unit-length vector as it is. So the
+  store adds no drift to a copy. The embedder does vary, by about 1e-7 with the batch a
+  text is embedded in (second review: 1 of 555 vectors differed by 5e-8 between an update
+  and a rebuild of the same corpus), so a copy is not bit-equal to a fresh ingest of the
+  same text. A difference that size could reorder only chunks whose scores tie to 1e-7;
+  that probe compared vectors, not ranks.
 - **The same on both:** metadata merges top-level keys and replaces a nested object whole;
   the first publish's delete-plus-create is accepted with no alias; `get_collections()`
   omits aliases while `collection_exists` resolves them; deleting the target deletes the
@@ -327,6 +331,10 @@ was written:
   reached the real server on localhost:6333. It passed only while Qdrant ran, and failed
   with it stopped. The child now patches `connect` to an in-memory client, as the
   deprecation gate's child does.
+- **Out of scope, from CI's annotations (run 39283008142):** "The ubuntu-latest label will
+  migrate to Ubuntu 26 beginning October 19, 2026". Both jobs run on `ubuntu-latest`; the
+  Python is uv's own, but Docker, the service container and the system tools come from the
+  image. A backlog line, for S3-9, which pins the CI images.
 
 ## Verification record (2026-10-19)
 
@@ -368,14 +376,31 @@ All on this host, Qdrant v1.19.2 from `compose.yaml`; the output is in the sessi
    `/v1/health` then named it with no restart, and the server logged "Serving index
    rag_qa--gen-20261019T153834837765Z-7f20891e (3 documents)". `/v1/documents` gave 149,
    1,507 and 52 chunks. Ctrl-C: "Application shutdown complete", no traceback.
-7. `gh pr checks`: after the push.
+7. `gh pr checks` on PR #20, head `24c5780` (run 39283008142): **check pass** (3m2s:
+   983 passed, 12 skipped, which are S3-1's 4 plus the 8 `qdrant_server` tests, 5 xfailed,
+   coverage 98.36%, `rag-eval check` matches) and **eval-retrieval pass** (2m11s: Qdrant
+   ready, `ci--gen-20261019T161223486877Z-6d96bfc0` published with 3 documents and 1,708
+   chunks, tier 1 0.950 / 0.796 / 0.858, the server tests 8 passed).
 
 Gates on the working tree: `ruff format --check`, `ruff check` and `mypy` clean;
 `uv lock --check` clean.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **Model:** ran on Opus 5.5 at max effort, where the story says fable, which is unavailable
+  (CLAUDE.md, "Model routing"). The second review (also Opus 5.5) is the two-review habit's
+  substitute for a stronger model.
+- **A generation is created after the embedding,** not before, as §3.4's
+  `write_generation(…, add: Embedded)` implies. So verification 4's crash drill, as
+  written ("kill -9 while it embeds, then the next run prints Removed …"), finds nothing to
+  remove: a kill while embedding leaves no collection. Drill (b) times a kill into the
+  window after the collection exists, which is the case the recovery line is for.
+- **A retriever takes `k` only,** and the schema refuses FAISS's other options at load. The
+  plan did not say; the alternative was to ignore them silently. Part of the breaking
+  change, and in the README's upgrade guide.
+- **No split,** as the plan decided (2026-10-17): the parity tool is the branch's first
+  commit.
+- **Added by the second review:** a test that every search asks for an exact scan.
 
 ## Review (2026-10-19)
 
@@ -416,3 +441,64 @@ the real answer path, not against its own code.
 - **After the fixes:** **899 passed, 5 xfailed**, coverage 98.38%; ruff, format and mypy
   clean; `rag-eval check` exit 0.
 - **Recorded for phase B:** `ingested_at` (Discovered), and step 6's wording.
+
+## Second review of the whole story (2026-10-19, Opus 5.5)
+
+**No blockers; 1 test gap, 3 doc findings and 2 notes. The gap and the findings are fixed
+in the follow-up commit.** Scratch work ran on a throwaway Qdrant v1.19.2 container
+(removed afterwards); the real `rag_qa` alias and collections were only read, and are as
+they were.
+
+- **Reproduced:**
+  - **Parity:** two runs on the live index wrote `contexts-faiss.json`'s sha256
+    (`5a36e2f9…`) both times; tier 1 equals `tier1-faiss.json` (`e5dc2aff…`).
+  - **The hermetic suite** with `RAG_QDRANT_URL` at a dead port and an empty HF cache:
+    987 passed, 8 skipped, 5 xfailed. The 8 server tests passed and left no collection.
+  - **Update equals rebuild** on a scratch corpus (first ingest, change + add + remove,
+    no-op, rebuild): points equal the manifest's counts and derived IDs at every step; a
+    512-chunk copy across two upsert batches is exact; the previous generation is kept;
+    ids, texts and metadata (minus `ingested_at`) match a rebuild, vectors to 1e-6.
+  - **Attacks that held:** a reader bound to a generation three rebuilds had deleted
+    re-resolved the alias and answered, searching the lost generation once; a real
+    collection named like the alias stopped `rag-ingest` and `rag-query` (exit 2) and was
+    left alone; after the live collection was deleted, `rag-query` named the newest
+    complete generation and the README's `curl` restored service; a Qdrant stopped
+    mid-rebuild gave exit 2 and left nothing; with Qdrant unreachable, `rag-ingest`,
+    `rag-query`, `rag-eval retrieval|generate` and `rag-serve` exit 2 with the hint, and
+    `rag-eval check` exits 0; the API went 503 (not 500), logged once, recovered on the
+    first request after Qdrant returned, and followed a rebuild with no restart.
+  - **The cut rule:** 40 exactly tied 384-dimension copies straddling the cut, three
+    insertion orders and a server restart: the server's own cut at the same limit gave 6
+    distinct answers, ours one. Their scores were bit-identical.
+  - **Library and server claims,** against the installed client and Qdrant's own files:
+    `check_compatibility` starts a thread; `timeout` is rounded up; a key over `http://`
+    warns; collection metadata is v1.16.0's (release notes); the request limit is 32 MiB
+    (`config.yaml` at v1.19.2). The lock adds 8 packages and moves none.
+  - **Mutation battery,** 15 broken guards in a scratch copy: 13 killed by the committed
+    tests (the cut's widening and tie order, recovery with and without an alias, the count
+    check, the manifest-name check, the in-the-way check, the alias re-resolve and the
+    lost-generation retry, the architecture rule, the complete mark, the alias operations'
+    order). Two survived: see below.
+- **Findings, fixed:**
+  - **Nothing tested that search is exact:** with `exact=False` every hermetic and server
+    test passed, since local mode ignores the flag and a small collection is scanned in
+    full whatever it says. This index (about 2.6 MB of vectors) is far below the server's
+    indexing threshold; past it the search would turn approximate, and break DEC-19, the
+    cut rule and the manifest's `store.exact`. `test_every_search_asks_the_server_for_an_exact_scan`
+    spies on the request, and fails with `exact=False`.
+  - **"A copy can never drift from a fresh ingest"** overstated: the store adds no drift,
+    but the embedder varies by about 1e-7 with batch composition (1 of 555 vectors, 5e-8).
+    Discovered says so.
+  - **README "Upgrading from v0.2"** promised a `db_faiss.v02-*` folder that is no longer
+    made; it now points to "Upgrading from v0.3".
+  - **Deviation** was empty, and Status said "In progress"; both are filled.
+- **Notes, no change:**
+  - **The other survivor is an equivalent mutant:** on v1.19.2 a bare `create_alias` on an
+    existing name repoints it atomically, so the switch's delete is redundant today. It is
+    harmless, and the order matters (create then delete loses the alias): that mutation is
+    killed.
+  - **The Qdrant URL reaches API clients** inside an ingest job's error text
+    (`describe_error` passes it through). It is not a path, so DEC-18's rule holds. S3-8's
+    hardening, once S3-9 puts Qdrant on an internal network, should decide whether to
+    redact it (a backlog line).
+- **After the fixes:** ruff, format and mypy clean.
