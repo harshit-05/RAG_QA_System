@@ -12,12 +12,13 @@ host, and no GPU is required.
 answers work end to end. Ingestion embeds only what changed, retrieved chunks are
 reranked by a cross-encoder, and two evaluation gates in CI hold retrieval and answer
 quality to measured floors. A production vector store, hybrid search, tracing and
-containers come next; see the [roadmap](#roadmap).
+containers come next; see the [roadmap](#roadmap). On `main` since v0.3, the index lives
+in a Qdrant server: see [Upgrading from v0.3](#upgrading-from-v03).
 
 ## How it works
 
 ```text
-corpus/   --rag-ingest-->  chunks --MiniLM embeddings-->  FAISS index (vectorstore/)
+corpus/   --rag-ingest-->  chunks --MiniLM embeddings-->  Qdrant collection (a local container)
 question  --rag-query--->  20 nearest chunks --reranker--> best 5 --> local LLM via Ollama --> streamed answer + sources
 ```
 
@@ -29,7 +30,7 @@ against a hand-checked set of questions.
 | Loaders | PDF, DOCX, TXT, Markdown, chosen by file extension | add an extension in `pipeline.ingestion.loaders` |
 | Chunking | 1,000 characters, 150 overlap | — |
 | Embeddings | `all-MiniLM-L6-v2` on CPU | multilingual model; GPU variants |
-| Vector store | FAISS on local disk | Qdrant or pgvector planned (Phase 3) |
+| Vector store | Qdrant server, exact search; each index version a collection behind an alias | another server or collection: `RAG_QDRANT_URL`, `RAG_QDRANT_COLLECTION` |
 | Reranker | `ms-marco-MiniLM-L-6-v2` cross-encoder on CPU: rescores 20 candidates, keeps 5 | off (the 5 nearest chunks); GPU variant |
 | LLM | `mistral` via Ollama | `phi3` (low memory), `qwen2:7b` |
 
@@ -38,6 +39,10 @@ against a hand-checked set of questions.
 - Linux (developed and tested on Arch Linux)
 - [uv](https://docs.astral.sh/uv/), which also installs the pinned Python 3.12
 - [Ollama](https://ollama.com), running locally, with a model pulled
+- [Docker](https://docs.docker.com/engine/install/) with Compose, to run Qdrant, the vector
+  store. Without Docker, Qdrant's static binary from its
+  [releases](https://github.com/qdrant/qdrant/releases) works too: run it on
+  `127.0.0.1:6333`
 - About 6 GB of free RAM for `mistral`, or about 3 GB for the `phi3` fallback
 - Network access on the first run, to download the embedding model and the reranker
   (about 90 MB each)
@@ -49,18 +54,25 @@ git clone https://github.com/harshit-05/RAG_QA_System.git
 cd RAG_QA_System
 uv sync                      # builds .venv from the lockfile, with CPU-only PyTorch
 ollama pull mistral          # or: ollama pull phi3  (see Configuration)
+docker compose up -d qdrant  # the vector store, on 127.0.0.1:6333; it restarts with Docker
+curl -s 127.0.0.1:6333/readyz   # "all shards are ready"
 
 # put your PDF / DOCX / TXT / MD files in corpus/ (subfolders too), then:
-uv run rag-ingest            # builds the index in vectorstore/
+uv run rag-ingest            # builds the index in Qdrant
 uv run rag-query             # ask questions; Ctrl-C stops an answer, 'exit' quits
 ```
+
+The index lives in Qdrant's Docker volume, `qdrant-storage`: `docker compose down` keeps
+it, and `docker compose down -v` deletes it, after which `rag-ingest` builds it again.
+Every command checks Qdrant first. If it cannot be reached, the command stops at once with
+exit 2 and `Is Qdrant running? docker compose up -d qdrant`.
 
 Every command (`rag-ingest`, `rag-query`, `rag-serve` and `rag-eval`'s subcommands) takes
 `--config PATH` to use another config file, and `--help`, which also lists its exit codes.
 `rag-ingest` exits 0 when the index matches the corpus, 1 when something could not be
 read (it names what failed, and a document indexed before keeps its previous version),
 and 2 when it cannot start: for example, an invalid config, a corpus folder that is
-missing or cannot be read, or another `rag-ingest` already running.
+missing or cannot be read, another `rag-ingest` already running, or Qdrant unreachable.
 
 A session looks like this. The answer streams in as it is generated:
 
@@ -81,6 +93,33 @@ Expect slow answers on CPU. In the v0.3 end-to-end run on a laptop CPU, `mistral
 words came after about 155 seconds, most of it the model reading the prompt, and the
 answer was complete at about 175 seconds. The answer streams in as it is generated.
 `phi3` is much faster, answering in well under a minute, at some cost in answer quality.
+
+### Upgrading from v0.3
+
+The index has moved from a FAISS folder to a Qdrant server. Answers do not change: for
+all 25 questions of the golden set, retrieval gives the same chunks in the same order as
+before. What needs something from you:
+
+1. **Start Qdrant, then re-ingest once.** `docker compose up -d qdrant`, then
+   `uv run rag-ingest`: it builds the index in Qdrant, which takes about two minutes for the
+   sample corpus. Once `rag-query` answers, delete the old folder, `vectorstore/`. Nothing
+   reads it any more, and while it is there, `rag-query` mentions it when it finds no index.
+2. **Edit your `config.yaml`, if you keep your own.** In `paths`, replace `vector_store:`
+   with `state: var` (the folder for the writer lock). Then copy the
+   `components.vector_stores` block and the `pipeline.vector_store` line from this
+   release's `config.yaml`. A config that still has `paths.vector_store` stops loading, and
+   says how to fix it.
+3. **Scratch indexes are collection names now.** Where you set `RAG_VECTOR_STORE_PATH` for a
+   scratch index, set `RAG_QDRANT_COLLECTION` to a name of your own instead, for example
+   `RAG_QDRANT_COLLECTION=scratch_1` (lowercase letters, digits and `_`). Every command
+   refuses to start while `RAG_VECTOR_STORE_PATH` is set, so an old script cannot write to
+   the real index by mistake.
+4. **A retriever takes `k` only.** `components.retrievers` entries may set
+   `search_kwargs.k`, and `search_type` only as `similarity`. Other options were FAISS's
+   and are refused at load.
+5. **Exit 2 also means Qdrant could not be used**, for every command that reads or writes
+   the index: `rag-ingest`, `rag-query`, `rag-serve`, `rag-eval retrieval` and
+   `rag-eval generate`. `rag-eval check` and `score` never touch it.
 
 ### Upgrading from v0.2
 
@@ -164,8 +203,10 @@ Events, and ingestion runs as a background job.
 uv run rag-serve                       # http://127.0.0.1:8000; --host, --port, --config
 ```
 
-It loads the models first, which takes a few seconds, and checks that Ollama answers. It
-starts without an index too: it then reports not-ready until an ingest builds one.
+It checks that Qdrant and Ollama answer, then loads the models, which takes a few seconds.
+It starts without an index too: it then reports not-ready until an ingest builds one. If
+Qdrant goes away while it runs, it reports not-ready (503) rather than failing, and serves
+again on the first request after Qdrant is back.
 
 | Method and path | Does |
 | --- | --- |
@@ -266,7 +307,7 @@ abandons) is skipped, and uvicorn logs the cancelled tasks as errors. It still e
 A SIGTERM stops it the same way as one Ctrl-C, and the process then ends by that signal
 (status 143), as service managers expect. It exits 2, with the reason, when it cannot
 start: invalid settings, a non-loopback host without a token, a configuration error,
-Ollama not answering, or the port in use.
+Qdrant or Ollama not answering, or the port in use.
 
 ## Configuration
 
@@ -293,13 +334,19 @@ makes a full rebuild. Switching only between a `_cpu` entry and its `_cuda` twin
 the index.
 
 Paths inside `config.yaml` are relative to the file itself, so the project runs from any
-directory. Environment variables override them:
+directory. Environment variables override them, and the store's settings:
 
 | Variable | Overrides |
 | --- | --- |
 | `RAG_CONFIG` | which config file to load |
 | `RAG_DATA_PATH` | the documents folder, default `corpus/` |
-| `RAG_VECTOR_STORE_PATH` | the index folder, default `vectorstore/db_faiss` |
+| `RAG_STATE_PATH` | `paths.state`, default `var/`: the writer lock, never the index |
+| `RAG_QDRANT_URL` | the Qdrant server, default `http://localhost:6333` |
+| `RAG_QDRANT_COLLECTION` | the index's name, default `rag_qa`; another name is a separate index (a scratch one, say) |
+| `RAG_QDRANT_API_KEY` | Qdrant's API key, when it has one; read from the environment only, never from a file |
+
+`RAG_VECTOR_STORE_PATH`, v0.3's index folder, is refused while it is set
+([Upgrading from v0.3](#upgrading-from-v03)).
 
 ## Adding documents
 
@@ -312,12 +359,29 @@ run where little changed takes seconds. Embedding the whole sample corpus (three
   next run tries it again.
 - `rag-ingest --rebuild` re-embeds everything into a fresh index. A changed embedder or
   splitter does that by itself.
-- Each run that changes something publishes a new version of the index in one atomic
-  step, so a crash or an error never leaves a half-written index.
-  `vectorstore/db_faiss` is a link to the newer of the two versions kept beside it
-  (`db_faiss.gen-*`).
-- One `rag-ingest` runs at a time. A second one exits 2 at once, saying another is
-  running; the lock is `vectorstore/db_faiss.lock`.
+- Each run that changes something builds a new version of the index, a *generation*, as a
+  Qdrant collection of its own: `rag_qa--gen-<time>-<id>`. Then it points the alias
+  `rag_qa` at it, in one atomic step. So a crash or an error never leaves a half-written
+  index, and a question is answered from the old version or the new one, never a mix.
+  The previous generation is kept for questions still using it; older ones are deleted.
+- One `rag-ingest` runs at a time on a machine. A second one exits 2 at once, saying
+  another is running; the lock is `var/ingest.lock`.
+
+### Pointing the alias at a generation
+
+Deleting the collection the alias points at, by hand or by accident, deletes the alias
+with it. `rag-query` then finds no index, and names the newest generation that is still
+complete. To serve it again without re-ingesting, point the alias at it (here at
+`rag_qa--gen-20261017T120000123456Z-1a2b3c4d`):
+
+```bash
+curl -s -X POST 127.0.0.1:6333/collections/aliases -H 'content-type: application/json' \
+     -d '{"actions": [{"create_alias": {"collection_name": "rag_qa--gen-20261017T120000123456Z-1a2b3c4d", "alias_name": "rag_qa"}}]}'
+```
+
+Or run `rag-ingest`, which publishes a new generation, and keeps the complete ones it finds
+when there is no alias. `curl -s 127.0.0.1:6333/aliases` shows where the alias points, and
+`curl -s 127.0.0.1:6333/collections` lists the generations.
 
 ## Evaluation
 
@@ -401,8 +465,6 @@ as a regression alarm rather than a measure of absolute quality.
   run.
 - **Latency.** On CPU, answers take minutes, not seconds. The long-term target of under
   2 seconds to the first word needs GPU serving.
-- **The index is a pickle.** FAISS saves the index with Python's pickle format, which can
-  run code when loaded. Only load indexes you built yourself with `rag-ingest`.
 - **The config is trusted like code.** The `_target_` allowlist limits which classes a
   config can build, not the arguments it passes them. A config that sets
   `trust_remote_code` anywhere is refused at load, since that runs Python from someone
@@ -413,7 +475,9 @@ as a regression alarm rather than a measure of absolute quality.
 
 ```text
 config.yaml        component library + pipeline assembly
+compose.yaml       Qdrant, the vector store (`docker compose up -d qdrant`)
 corpus/            your documents; everything in here gets ingested
+var/               paths.state: the writer lock (not tracked)
 src/rag_qa/
   config.py        loads config.yaml and resolves its paths
   schema.py        what a valid config is; checked at load
@@ -422,9 +486,9 @@ src/rag_qa/
   components.py    builds the pipeline's loaders, splitter, embedder and LLM
   loaders.py       PDF, DOCX and text loaders
   rerankers.py     the cross-encoder that rescores retrieved chunks
-  manifest.py      what each index version holds: file hashes, the embedder, chunk IDs
-  vectorstore.py   the only FAISS code: index versions and their atomic switch; the
-                   swap point for Phase 3
+  manifest.py      what each index version holds: file hashes, the embedder, chunk counts
+  vectorstore.py   the only module that talks to Qdrant: index versions, the alias
+                   switch, recovery, and exact search
   ingest.py        the rag-ingest command: updates the index with what changed
   chain.py         the retrieval and answer chain (LangChain LCEL)
   cli.py           the rag-query command
@@ -443,7 +507,15 @@ stories/           the delivery board and a record of each change
 
 ## Development
 
-The test suite is hermetic: no Ollama, no model download, no network. CI
+The test suite is hermetic: no Ollama, no model download, no network, and no Qdrant
+server: each test gets its own in-memory Qdrant. The few tests that only a real server can
+settle are marked `qdrant_server` and skipped unless `RAG_TEST_QDRANT_URL` names one:
+
+```bash
+RAG_TEST_QDRANT_URL=http://127.0.0.1:6333 uv run pytest -m qdrant_server
+```
+
+Each works under a random collection name of its own, and removes it afterwards. CI
 (`.github/workflows/ci.yml`) runs on every pull request, every push to `main` and every
 release tag. Its `check` job runs these gates, and each one blocks:
 
@@ -482,10 +554,11 @@ that `git blame` can skip it. GitHub's blame view reads that file. For a local
 git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
 
-CI's second job, `eval-retrieval`, ingests the corpus and runs tier 1 against its floors.
-It is CI's only job that downloads models: it fetches the two from Hugging Face and
-caches them, and on a cache hit it runs offline. When it is red and `check` is green,
-retrieval quality moved, not the code.
+CI's second job, `eval-retrieval`, starts Qdrant as a service, ingests the corpus into
+it, runs tier 1 against its floors, and runs the `qdrant_server` tests. It is CI's only
+job that downloads models: it fetches the two from Hugging Face and caches them, and on a
+cache hit it runs offline. When it is red and `check` is green, retrieval quality moved,
+not the code.
 
 ## Roadmap
 
