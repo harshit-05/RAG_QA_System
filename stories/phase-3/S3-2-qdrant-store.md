@@ -254,6 +254,125 @@ gh pr checks
   same five chunks, so the FAISS file has 24 distinct digests for 25 questions. Expected:
   the unanswerable one is a near-miss of the answerable one.
 
+**Phases B to H (2026-10-19).** Checked against the installed source of `qdrant-client`
+1.19.1 and a probe run in local mode and on the compose server, v1.19.2, before the store
+was written:
+
+- **The resolve:** `uv add "qdrant-client>=1.19.1"` added qdrant-client 1.19.1, grpcio
+  1.84.0, protobuf 7.36.2, portalocker 3.2.0, h2 4.4.1, hpack 4.2.0 and hyperframe 6.1.0,
+  plus pywin32 312 behind portalocker's Windows-only marker (in the lock, not installed).
+  **No locked version moved:** 8 packages added, none removed or changed.
+- **The image:** `qdrant/qdrant:v1.19.2-unprivileged` by DEC-24's digest runs as uid 1000,
+  and stores in `/qdrant/storage`, which that user owns, so a new named volume does too. It
+  has no curl or wget: readiness is asked from outside (compose has no healthcheck; CI's
+  wait step curls `/readyz` from the runner).
+- **The client:**
+  - `QdrantClient(url=…)` with the default `check_compatibility=True` starts a thread that
+    asks the server's version, and warns when it is down, before any command could say so
+    properly. The store turns it off; `QdrantStore.check()` asks `info()` itself, and
+    refuses a server older than 1.16, which has no collection metadata.
+  - An API key with an `http://` URL keeps HTTP and warns "insecure connection"; with no
+    scheme a key would switch to HTTPS. For S3-9, which adds the key on the compose network.
+  - `timeout` is whole seconds, rounded up.
+  - **Errors:** no answer at all is `ResponseHandlingException` (its `.source` is httpx's
+    error); an HTTP answer is `UnexpectedResponse` with `.status_code`; local mode raises
+    `ValueError("Collection … not found")`. `vectorstore` translates all three, since no
+    other module may import `qdrant_client` to catch them.
+- **Local mode is not the server,** in four ways that matter to tests:
+  - **A failing alias batch is applied halfway:** local mode deleted the alias, then
+    failed the create, and left no alias. The server kept the alias as it was. So the
+    hermetic switch-failure test injects the failure before the call, and the atomicity is
+    a `qdrant_server` test.
+  - A metadata key set to `null` stays as `None` in local mode; the server deletes it.
+  - `delete_collection` of a missing collection returns `True` in local mode, `False` on
+    the server; both count as deleted.
+  - Vectors come back at float64 from a first upsert and float32 after a copy, so the
+    hermetic copy test compares to float32 precision; the bit-exact copy is a server test.
+  - It warns that payload indexes and `search_params` have no effect: filtered by message
+    in `pyproject.toml`.
+- **Copying is bit-exact on the server.** 2,000 float32 unit vectors of 384 dimensions,
+  stored and then copied twice by scroll and upsert, came back with every bit and every
+  top-20 order unchanged: cosine stores an already unit-length vector as it is. So an
+  update's copy can never drift from a fresh ingest.
+- **The same on both:** metadata merges top-level keys and replaces a nested object whole;
+  the first publish's delete-plus-create is accepted with no alias; `get_collections()`
+  omits aliases while `collection_exists` resolves them; deleting the target deletes the
+  alias; scroll returns string IDs in sorted order; a payload keeps `page` an int.
+- **Design choices made in implementation** (none re-opens §3.1; each is in the code's
+  docstrings):
+  - **A generation is created after the embedding,** as §3.4's `write_generation(…, add:
+    Embedded)` implies. A kill while embedding therefore leaves nothing behind (Deviation).
+  - **A retriever takes `k` only.** FAISS's other `as_retriever` options (`search_type`
+    other than similarity, `fetch_k`, `score_threshold`…) would be silently ignored by the
+    store, so the schema refuses them at load. The real config's retriever dump, which tier
+    2 hashes, is unchanged. Part of the breaking change.
+  - **`rag-eval generate` holds a generation it moves to against its corpus scan:** the
+    alias is resolved per question (step 8), and an ingest of a changed corpus mid-run
+    would otherwise mix answers from two corpora under one fingerprint (the maintainer's
+    2026-10-06 rule). It stops with `StaleIndexError`, resumable.
+  - **The API goes not-ready when the alias cannot be read** (`NOT_SEEN`), answers 503
+    rather than 500, and serves again on the first request after Qdrant returns. S3-6 adds
+    the breaker and `Retry-After`.
+  - **`rag-eval check` and `score` never touch Qdrant:** CI's hermetic `check` job has no
+    server, and neither command reads the index.
+  - **The writer lock is per host, whatever the collection:** a scratch ingest blocks the
+    real one, as DEC-19's "one writer per host" says.
+  - **The CHUNKING_VERSION tripwire** now rebuilds walk order from the manifest, since
+    Qdrant keeps points by ID: it gave the same pinned digest, `556f8396…`, so the chunks
+    are what FAISS held.
+  - **The deprecation gate now requires the sunset notice to be absent:** no module imports
+    `langchain_community` since the store moved. A stronger guard for S3-3.
+- **Verification 3 found a test that was not hermetic:** `test_api_server.py`'s Ctrl-C test
+  runs `rag-serve` in a child process, which cannot see the fixture, so its Qdrant check
+  reached the real server on localhost:6333. It passed only while Qdrant ran, and failed
+  with it stopped. The child now patches `connect` to an in-memory client, as the
+  deprecation gate's child does.
+
+## Verification record (2026-10-19)
+
+All on this host, Qdrant v1.19.2 from `compose.yaml`; the output is in the session.
+
+1. **Parity.** `docker compose up -d qdrant`, `readyz` "all shards are ready". The first
+   `rag-ingest` published `rag_qa--gen-20261019T124332028607Z-5aadb820`: 3 documents, 1,708
+   chunks (149, 1,507 and 52, as FAISS's manifest), in 2 min 3 s, exit 0.
+   - `contexts-qdrant.json` against `contexts-faiss.json`: **IDENTICAL**, both sha256
+     `5a36e2f9d00bbdaf49edaf07b8ba6af6f0e2ed52a5cf4c2e16c39aa66a074cbc`.
+   - A second run, `contexts-qdrant-2.json`: **STABLE**.
+   - Tier 1: hit rate 0.950, MRR 0.7958, recall 0.8583; `tier1-qdrant.json` (from the
+     second run, `--json` added) equals `tier1-faiss.json` whole: 20 of 20 questions, the
+     same chunks in the same order.
+2. `rag-eval check`: **exit 0**, all six fingerprint parts `ok`.
+3. Qdrant stopped: `HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q`:
+   **987 passed, 8 skipped, 5 xfailed**, coverage 98.36%, the HF folder empty. (The first
+   such run failed one test: Discovered, last item.) Qdrant started:
+   `pytest -m qdrant_server`: **8 passed**, and the server left with no test collection.
+4. **The crash drill, twice**, each `kill -9` sent to the Python process's own PID
+   (`.venv/bin/rag-ingest`: killing `uv run` kills only its wrapper):
+   - **(a) as written, while it embeds** (batch 9 of 54): exit 137; the alias and the
+     collections unchanged, nothing left behind. The next `rag-ingest`: "Nothing changed:
+     the index is up to date", exit 0, and no "Removed …" line, since no collection had
+     been created (Deviation).
+   - **(b) timed** by polling `/collections` every 10 ms until the new generation appeared:
+     killed with `rag_qa--gen-20261019T132644350728Z-578e4951` created, 0 points,
+     `complete: false`; the alias unchanged. The next `rag-ingest`: **"Removed what an
+     earlier run left behind: rag_qa--gen-20261019T132644350728Z-578e4951"**, then "Nothing
+     changed", exit 0, and only the live generation left.
+   - `rag-query <<< "What is GLIDER?"` (maintainer's terminal, mistral): answered from the
+     live generation, sources 2412.14140v2.pdf pp. 9, 8, 6, 1, 1.
+5. **Refusals.** Qdrant stopped: `rag-query` exit **2**, `Error: cannot use Qdrant at
+   http://localhost:6333 (ConnectError: [Errno 111] Connection refused). Is Qdrant running?
+   docker compose up -d qdrant`. `RAG_VECTOR_STORE_PATH=/tmp/x rag-ingest`: exit **2**, the
+   migration message, and `/tmp/x` never created.
+6. **The API follows a CLI ingest.** `rag-serve` (maintainer's terminal, `tee -i`) served
+   `…5aadb820`; `rag-ingest --rebuild` published `rag_qa--gen-20261019T153834837765Z-7f20891e`;
+   `/v1/health` then named it with no restart, and the server logged "Serving index
+   rag_qa--gen-20261019T153834837765Z-7f20891e (3 documents)". `/v1/documents` gave 149,
+   1,507 and 52 chunks. Ctrl-C: "Application shutdown complete", no traceback.
+7. `gh pr checks`: after the push.
+
+Gates on the working tree: `ruff format --check`, `ruff check` and `mypy` clean;
+`uv lock --check` clean.
+
 ## Deviation from plan
 
 (Filled at close-out.)

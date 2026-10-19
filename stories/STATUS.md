@@ -5,10 +5,25 @@
 
 ## Now
 
-**Next action: S3-2's first commit, the parity tool, on `feat/s3-2-qdrant-store`; then
-phase B, the store.** PR #19 (S3-1) is merged with a merge commit (`bafa980`). The tool ran
-on FAISS and passed its second review; the FAISS files are in `~/dev/rag-s3-2/`, with their
-sha256s in the story.
+**Next action: review S3-2's working tree, commit it on `feat/s3-2-qdrant-store`, push, open
+the PR, and check CI (Verification 7); then S3-2's second review and close-out.** The parity
+tool is `390b228` and its review record `84600e9`. Phases B to H are written and verified
+(1–6), uncommitted; the story's "Verification record" has every result.
+
+**S3-2 phases B to H (2026-10-19): the index is in Qdrant, and retrieval is unchanged.**
+
+- **Parity holds:** `contexts-qdrant.json` is IDENTICAL to FAISS's (sha256 `5a36e2f9…`), a
+  second run is STABLE, and tier 1 equals FAISS's question by question (0.950, 0.7958,
+  0.8583). `rag-eval check` exits 0: no tier-2 re-run.
+- **The hermetic suite:** 987 passed, 8 skipped (the `qdrant_server` tests), 5 xfailed,
+  coverage 98.36%, with Qdrant stopped and an empty HF cache. The server tests: 8 passed.
+  Verification 3 caught one test whose child process reached the real Qdrant; fixed.
+- **The crash drill ran twice:** a kill while embedding leaves nothing (a generation is
+  created after embedding), and a kill timed into the window before the switch leaves an
+  orphan the next run removes. The alias held both times.
+- **The API** picked up a CLI `--rebuild` with no restart.
+- **Before working on the store:** start Qdrant, `docker compose up -d qdrant` (CLAUDE.md).
+  v0.3's `vectorstore/` folder is still on disk here, unread: delete it after the merge.
 
 **Second review of S3-2 phase A, the parity tool (2026-10-19): no blockers; 2 findings, 1
 wording fix and 2 nits, fixed before the first commit.** All 25 golden questions, run
@@ -1098,7 +1113,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
 | [S3-1](phase-3/S3-1-open-phase-3.md) | Open Phase 3: 1.0.0.dev0, format the code once and gate it | DEC-28, backlog: `ruff format` | — | Done 2026-10-16 (PR #19) |
-| [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Todo |
+| [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | In progress (verified 1–6; PR next) |
 | [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Todo |
 | [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Todo |
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Todo |
