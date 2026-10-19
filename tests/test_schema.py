@@ -19,6 +19,7 @@ MINIMAL: dict[str, Any] = {
         },
         "llms": {"llm": {"_target_": "rag_qa.stub.LLM"}},
         "retrievers": {"search": {"search_kwargs": {"k": 5}}},
+        "vector_stores": {"store": {"_target_": "rag_qa.stub.Store", "collection": "rag_qa"}},
     },
     "pipeline": {
         "ingestion": {
@@ -31,6 +32,7 @@ MINIMAL: dict[str, Any] = {
             "retriever": "components.retrievers.search",
             "prompt": {"system": "Be precise.", "human": "{context}\n{question}"},
         },
+        "vector_store": "components.vector_stores.store",
     },
 }
 
@@ -175,7 +177,7 @@ def test_a_broken_reranker_reference_is_reported_as_one() -> None:
 def test_without_a_path_context_paths_are_taken_as_given(config: RagConfig) -> None:
     # Programmatic construction: no config file, so nothing to anchor to.
     assert str(config.paths.data) == "corpus"
-    assert str(config.paths.vector_store) == "vectorstore/db_faiss"
+    assert str(config.paths.state) == "var"
 
 
 # --- the prompt's placeholders (S2-5; the FR-8 follow-up found in S1-1) ------------------
@@ -344,10 +346,10 @@ def with_entry(kind: str, name: str, entry: dict[str, Any]) -> dict[str, Any]:
             id="the string false is truthy",
         ),
         pytest.param(
-            "retrievers",
-            {"search_kwargs": {"k": 5, "trust_remote_code": True}},
-            "retrievers.evil.search_kwargs.trust_remote_code",
-            id="a retriever's kwargs",
+            "vector_stores",
+            {"_target_": "rag_qa.stub.Store", "trust_remote_code": True},
+            "vector_stores.evil.trust_remote_code",
+            id="a store, the kind S3-2 added",
         ),
     ],
 )
@@ -357,6 +359,14 @@ def test_a_truthy_trust_remote_code_anywhere_is_refused_and_located(
     # It runs Python from the model's repository; the allowlist cannot see kwargs (S1-2).
     with pytest.raises(ValidationError, match=rf"{where.replace('[', r'\[')}: trust_remote_code"):
         RagConfig.model_validate(with_entry(kind, "evil", entry))
+
+
+def test_a_retriever_takes_no_kwarg_but_k_so_none_can_smuggle_trust_remote_code() -> None:
+    # Before S3-2 a retriever's kwargs went to FAISS's as_retriever, and the walk above
+    # covered them. Now any search option but k is refused on its own (DEC-19).
+    entry = {"search_kwargs": {"k": 5, "trust_remote_code": True}}
+    with pytest.raises(ValidationError, match="'trust_remote_code' not supported"):
+        RagConfig.model_validate(with_entry("retrievers", "evil", entry))
 
 
 @pytest.mark.parametrize("value", [False, 0, None, ""])

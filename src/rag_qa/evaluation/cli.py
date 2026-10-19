@@ -22,7 +22,8 @@ directory, as usual.
 
 Exit codes, for every command: **0** it ran and passed; **1** it ran and failed: a floor
 is missed, or (``check``) the committed run is stale; **2** it could not run: a bad
-config, dataset, thresholds or run file, no usable index, Ollama or the judge unusable,
+config, dataset, thresholds or run file, Qdrant unusable (``retrieval`` and ``generate``,
+which check it first), no usable index, Ollama or the judge unusable,
 a file it cannot write, a command-line usage error (as ``argparse`` uses), or any other
 error while running (printed with its traceback). So exit 1 only ever means a measured
 verdict, which is how CI reads it (S2-3's second review). ``generate`` and ``score``
@@ -45,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from rag_qa.chain import NoIndexError
+from rag_qa.components import build_store
 from rag_qa.config import ConfigError, load_config, resolve_config_path
 from rag_qa.evaluation.checkpoint import CheckpointError, checkpoint_path, discard
 from rag_qa.evaluation.dataset import ExpectedSource, GoldenItem, GoldenSetError, load_golden
@@ -82,6 +84,7 @@ from rag_qa.evaluation.retrieval import (
 )
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_CONFIG
+from rag_qa.vectorstore import StoreUnavailableError
 
 EXIT_OK = 0
 EXIT_FLOOR_MISSED = 1
@@ -122,6 +125,19 @@ def _crashed(what: str, error: Exception) -> int:
     sys.stdout.flush()
     traceback.print_exc()
     return _cannot_run(f"{what} could not run: {type(error).__name__}: {error}")
+
+
+def _store_problem(config: RagConfig) -> str | None:
+    """Why the vector store cannot be used, or ``None``: the first check of the commands
+    that read the index, ``retrieval`` and ``generate`` (DEC-19). ``check`` and ``score``
+    never touch it, and CI's model-free job has no Qdrant to ask."""
+    try:
+        store = build_store(config)
+        store.check()
+    except (ConfigError, StoreUnavailableError) as e:
+        return str(e)
+    store.close()
+    return None
 
 
 def _shown(path: Path) -> Path:
@@ -250,6 +266,8 @@ def run_retrieval(args: argparse.Namespace) -> int:
         config = load_config(config_file)
     except ConfigError as e:
         return _cannot_run(e)
+    if (problem := _store_problem(config)) is not None:
+        return _cannot_run(problem)
     dataset = Path(args.dataset) if args.dataset else eval_dir(config_file) / DATASET_FILE
     thresholds_file = (
         Path(args.thresholds) if args.thresholds else eval_dir(config_file) / THRESHOLDS_FILE
@@ -287,7 +305,7 @@ def run_retrieval(args: argparse.Namespace) -> int:
     )
     try:
         scores = evaluate_retrieval(config, items, record=record)
-    except NoIndexError as e:
+    except (NoIndexError, StoreUnavailableError) as e:
         return _cannot_run(e)
     # Deliberately broad: whatever stops retrieval from running is "could not run",
     # never a floor verdict. Uncaught, it would exit 1, and CI reads exit 1 as "retrieval
@@ -426,6 +444,8 @@ def run_generate(args: argparse.Namespace) -> int:
         setup = _setup(args)
     except _CannotRun as e:
         return _cannot_run(e)
+    if (problem := _store_problem(setup.config)) is not None:
+        return _cannot_run(problem)
     out = Path(args.out) if args.out else setup.eval_dir / RUNS_DIR / ANSWERS_FILE
     total = len(setup.golden) if args.limit is None else min(args.limit, len(setup.golden))
     print(
@@ -453,7 +473,7 @@ def run_generate(args: argparse.Namespace) -> int:
         ),
         kept,
         "generation",
-        (FingerprintError, NoIndexError, StaleIndexError),
+        (FingerprintError, NoIndexError, StaleIndexError, StoreUnavailableError),
     )
     if isinstance(run, int):
         return run

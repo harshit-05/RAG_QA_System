@@ -25,11 +25,13 @@ from rag_qa.components import (
     build_loader,
     build_reranker,
     build_splitter,
+    build_store,
     llm_reachable,
 )
-from rag_qa.config import load_config
+from rag_qa.config import ConfigError, load_config
 from rag_qa.loaders import DocxLoader, PdfLoader, TextLoader
 from rag_qa.rerankers import CrossEncoderReranker
+from rag_qa.vectorstore import QdrantStore
 
 
 @pytest.mark.parametrize(
@@ -161,3 +163,37 @@ def test_llm_reachable_is_false_when_the_server_does_not_answer_in_time() -> Non
 
 def test_llm_reachable_is_none_for_a_model_with_no_server() -> None:
     assert asyncio.run(llm_reachable(FakeListChatModel(responses=["x"]))) is None
+
+
+# --- the vector store (S3-2, DEC-19) ----------------------------------------------------------
+
+
+def test_the_store_is_built_from_pipeline_vector_store(make_config: MakeConfig) -> None:
+    store = build_store(load_config(make_config()))
+    assert isinstance(store, QdrantStore)
+    assert (store.url, store.collection, store.timeout_s) == ("http://localhost:6333", "rag_qa", 10)
+
+
+def test_an_api_key_in_the_config_is_refused_as_a_build_error(make_config: MakeConfig) -> None:
+    # The key comes from RAG_QDRANT_API_KEY only (§9): the store takes no such kwarg.
+    path = make_config(lambda c: c["components"]["vector_stores"]["qdrant"].update(api_key="k"))
+    with pytest.raises(ConfigError, match="Cannot build the vector store .*'api_key'"):
+        build_store(load_config(path))
+
+
+def test_a_bad_collection_set_after_load_is_still_refused(
+    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A long-lived process reads the environment when it builds the store, not only at load.
+    config = load_config(make_config())
+    monkeypatch.setenv("RAG_QDRANT_COLLECTION", "Not-Allowed")
+    with pytest.raises(ConfigError, match="RAG_QDRANT_COLLECTION: collection 'Not-Allowed'"):
+        build_store(config)
+
+
+def test_a_target_that_is_not_a_store_is_refused(
+    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("rag_qa.components.build_object", lambda spec: object())
+    with pytest.raises(ConfigError, match="builds a object, not a store"):
+        build_store(load_config(make_config()))

@@ -10,18 +10,20 @@ which made ingestion drag the whole query stack in with it.
 **Incremental (DEC-17, S2-6).** A run compares the corpus walk with the live generation's
 manifest, and sorts each document into added, changed (its bytes or its loader's identity
 differ), removed or unchanged. Only added and changed documents are loaded, split and
-embedded: the *prepare* phase. The *apply* phase then loads the live generation into
-memory, deletes the chunks of removed and changed documents, adds the new ones, and
-publishes the result as a new generation with one atomic flip (:mod:`rag_qa.vectorstore`).
-The live generation is never written to, so a crash or an exception publishes nothing.
+embedded: the *prepare* phase. The *apply* phase then builds a new generation in Qdrant
+from the live one's points, without the chunks of removed and changed documents, plus the
+new ones, and publishes it with one atomic alias switch (:mod:`rag_qa.vectorstore`,
+DEC-19). The live generation is never written to, so a crash or an exception publishes
+nothing.
 
 A run rebuilds the index in full, and logs why, when there is no index or no usable
-manifest (every v0.2 index), when the embedder's identity or the splitter changed, when
-this code makes chunks differently (:data:`rag_qa.manifest.CHUNKING_VERSION`), when the
-manifest disagrees with its index, or with ``--rebuild``.
+manifest, when the embedder's identity or the splitter changed, when this code makes
+chunks differently (:data:`rag_qa.manifest.CHUNKING_VERSION`), when the manifest disagrees
+with its generation, or with ``--rebuild``.
 
-**One writer.** A run holds an advisory ``flock(2)`` on ``<store>.lock`` from start to
-finish. A second run, from the CLI or the API, exits 2: "another ingestion is running".
+**One writer.** A run holds an advisory ``flock(2)`` on ``ingest.lock`` in ``paths.state``
+from start to finish. A second run on this host, from the CLI or the API, exits 2:
+"another ingestion is running".
 
 **Error policy (S1-4, ISS-05, NFR-7).** Two kinds of failure, handled differently:
 
@@ -40,8 +42,9 @@ Failures and log lines carry no absolute path: S2-7 returns both over HTTP (DEC-
 a document or folder could not be read, or there was nothing to index — and also an
 unexpected error, which exits 1 with a traceback (Python's own status for an unhandled
 exception), so 1 alone does not say whether an index was published; **2** the run could
-not start (configuration problem, another ingestion running, or a command-line usage
-error, as ``argparse`` uses).
+not start (configuration problem, another ingestion running, something in the alias's
+way, or a command-line usage error, as ``argparse`` uses), or Qdrant could not be used,
+before the run or during it, which publishes nothing.
 """
 
 import argparse
@@ -60,10 +63,11 @@ from typing import Any
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
-from rag_qa.components import build_embedder, build_loader, build_splitter
+from rag_qa.components import build_embedder, build_loader, build_splitter, build_store
 from rag_qa.config import ConfigError, load_config
 from rag_qa.manifest import (
     CHUNKING_VERSION,
+    STORE,
     DocumentRecord,
     EmbedderRecord,
     FileState,
@@ -80,12 +84,18 @@ from rag_qa.settings import ENV_CONFIG
 from rag_qa.vectorstore import (
     Embedded,
     OpenGeneration,
+    QdrantStore,
+    StoreError,
+    StoreUnavailableError,
     in_the_way,
     live_index,
     open_generation,
     recover,
     write_generation,
 )
+
+#: The writer lock's file, in ``paths.state``.
+LOCK_FILE = "ingest.lock"
 
 EXIT_OK = 0
 EXIT_RUN_FAILED = 1
@@ -288,13 +298,13 @@ _ABSOLUTE_PATH = re.compile(r"(?<![^\s'\"(<=\[])/[^\s'\"<>()\[\],:]+")
 def describe_error(error: BaseException, config: RagConfig) -> str:
     """``Type: message`` for the report and the log, with no absolute path in it.
 
-    An ``OSError``'s text names the path it failed on, a FAISS error the file it could not
-    open, and an unpickling error the module file it read. Paths under the corpus, or
-    under the folder that holds the index, become relative to it. Any other absolute
-    path is cut to its last part. S2-7 returns failures over HTTP (DEC-18).
+    An ``OSError``'s text names the path it failed on, and a loader's error the file it
+    could not read. Paths under the corpus, or under ``paths.state``, become relative to
+    it. Any other absolute path is cut to its last part. S2-7 returns failures over HTTP
+    (DEC-18).
     """
     text = f"{type(error).__name__}: {error}"
-    roots = {config.paths.data, config.paths.vector_store.parent}
+    roots = {config.paths.data, config.paths.state}
     # Longest first, in case one root holds the other. A filesystem root is never stripped.
     for root in sorted(roots, key=lambda path: len(str(path)), reverse=True):
         if root != Path(root.anchor):
@@ -303,28 +313,35 @@ def describe_error(error: BaseException, config: RagConfig) -> str:
 
 
 class IngestionRunningError(Exception):
-    """Another ingestion holds the writer lock on this index (DEC-17)."""
+    """Another ingestion on this host holds the writer lock (DEC-17, DEC-19)."""
+
+
+class IndexInTheWayError(Exception):
+    """Something in Qdrant takes the alias's name: a real collection named like it, or an
+    alias of something else. ``rag-ingest`` never switches away from it or deletes it
+    (:func:`rag_qa.vectorstore.in_the_way`)."""
 
 
 @contextmanager
-def _writer_lock(store: Path) -> Iterator[None]:
-    """Hold the one-writer lock on ``store`` for the ``with`` body, or raise at once.
+def _writer_lock(state: Path) -> Iterator[None]:
+    """Hold the one-writer lock for the ``with`` body, or raise at once.
 
-    An advisory ``flock(2)`` on ``<store>.lock``, beside the store and outside every
-    generation, so no flip or recovery ever deletes it. It is ``flock``, never
+    An advisory ``flock(2)`` on ``ingest.lock`` in ``paths.state``: one writer per host,
+    whichever collection it writes (DEC-19). Compose bind-mounts the same folder, so the
+    host's CLI and a container's API share it (S3-9). It is ``flock``, never
     ``fcntl.lockf``: a ``flock`` lock belongs to the open file, so a second open in the
     same process (the API's ingest thread) is refused too, and closing some other
     descriptor of the file never drops it. POSIX ``lockf`` locks belong to the process,
     so they fail on both counts (verified in S2-6). Closing the file releases the lock, and
     so does the process ending, however it ends.
     """
-    path = store.with_name(f"{store.name}.lock")
+    path = state / LOCK_FILE
     with open(path, "a") as lock:  # "a": created if missing, never truncated
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise IngestionRunningError(
-                f"another ingestion is running on this index ({path.name} is locked). "
+                f"another ingestion is running on this host ({path.name} is locked). "
                 f"Wait for it to finish, then run rag-ingest again."
             ) from None
         yield
@@ -464,21 +481,28 @@ class _Plan:
         return self.rebuild is None and not (self.load or self.remove or self.relabel)
 
 
-def _plan(config: RagConfig, scan: CorpusScan, report: IngestReport, *, rebuild: bool) -> _Plan:
+def _plan(
+    config: RagConfig,
+    store: QdrantStore,
+    scan: CorpusScan,
+    report: IngestReport,
+    *,
+    rebuild: bool,
+) -> _Plan:
     """Decide between an update, a full rebuild and nothing to do (:attr:`_Plan.idle`)."""
-    found = live_index(config.paths.vector_store)
     if rebuild:
         return _Plan(load=scan.files, rebuild="--rebuild was given")
+    found = live_index(store)
     if isinstance(found, str):
         return _Plan(load=scan.files, rebuild=found)
     generation, live = found
     changed = _Identities.of(config).changed_since(live)
     if changed is not None:
         return _Plan(load=scan.files, rebuild=changed)
-    # Opened on every update, a run that changes nothing included: an index that will not
-    # open (a corrupt pickle) must be rebuilt, never reported up to date (second review).
-    # It costs no model, only reading the index.
-    base = _open_live(generation, live, config)
+    # Checked on every update, a run that changes nothing included: a generation that does
+    # not hold what its manifest says must be rebuilt, never reported up to date (S2-6's
+    # second review). It costs no model, only reading the point IDs.
+    base = _open_live(store, generation, live, config)
     if isinstance(base, str):
         return _Plan(load=scan.files, rebuild=base)
 
@@ -499,8 +523,8 @@ def _plan(config: RagConfig, scan: CorpusScan, report: IngestReport, *, rebuild:
     embeddings = None
     if pending:
         # The identity cannot see the weights: a model replaced under the same spec can
-        # make vectors of another size, which FAISS would refuse with a bare assert on
-        # every run. Probed before anything is prepared, so a rebuild embeds once.
+        # make vectors of another size, which Qdrant would refuse on every run, once the
+        # run had embedded. Probed before anything is prepared, so a rebuild embeds once.
         embeddings = build_embedder(config)
         size = len(embeddings.embed_documents([DIMENSION_PROBE])[0])
         if size != live.embedder.dimension:
@@ -529,31 +553,33 @@ def _plan(config: RagConfig, scan: CorpusScan, report: IngestReport, *, rebuild:
     )
 
 
-def _open_live(generation: Path, manifest: Manifest, config: RagConfig) -> OpenGeneration | str:
-    """The live generation, loaded for an update, or why it cannot be updated in place.
+def _open_live(
+    store: QdrantStore, generation: str, manifest: Manifest, config: RagConfig
+) -> OpenGeneration | str:
+    """The live generation's point IDs, for an update, or why it cannot be updated.
 
-    It must open, and hold exactly the chunks its manifest lists. Otherwise a ``delete``
-    would report missing IDs, or chunks the manifest does not list would stay in the
-    index for good. Checked before anything is embedded, so a rebuild never embeds twice,
-    and the generation loaded here is the one the apply phase updates.
+    It must hold exactly the chunks its manifest's documents derive to (DEC-19). Otherwise
+    chunks the manifest does not count would be copied into every generation for good, or
+    a document the manifest counts would answer with chunks it no longer has. Checked
+    before anything is embedded, so a rebuild never embeds twice.
+
+    Qdrant that cannot be used stops the run (:class:`StoreUnavailableError`): it says
+    nothing about the index, so it must not cost a rebuild.
     """
     try:
-        opened = open_generation(generation)
-    # Deliberately broad: whatever stops the generation opening (a corrupt pickle, FAISS's
-    # own errors, a count mismatch) means the same thing, a rebuild from the corpus.
+        opened = open_generation(store, generation)
+    except StoreUnavailableError:
+        raise
+    # Deliberately broad: whatever else stops the generation being read (it was deleted
+    # since, the server's own errors) means the same thing, a rebuild from the corpus.
     except Exception as e:  # noqa: BLE001
-        return f"the index cannot be opened ({describe_error(e, config)})"
+        return f"the index cannot be read ({describe_error(e, config)})"
     listed = manifest.chunk_ids()
     if opened.ids != listed:
         return (
-            f"the manifest and its index disagree: {len(listed - opened.ids)} chunk(s) "
-            f"listed but missing, {len(opened.ids - listed)} held but not listed"
+            f"the manifest and its generation disagree: {len(listed - opened.ids)} "
+            f"chunk(s) counted but missing, {len(opened.ids - listed)} held but not counted"
         )
-    entries = sum(len(record.chunk_ids) for record in manifest.documents.values())
-    if entries != len(listed):
-        # The same ID under two documents, or twice under one: deleting both would pop it
-        # from the docstore twice and fail mid-apply (second review).
-        return f"the manifest lists {entries - len(listed)} chunk ID(s) more than once"
     return opened
 
 
@@ -624,6 +650,9 @@ def _prepare(config: RagConfig, plan: _Plan, report: IngestReport) -> _Prepared:
     one call, as v0.2 embedded them (:func:`_update`)."""
     ingested_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     splitter = build_splitter(config)
+    # Every document is chunked by the default splitter, until S3-4 gives each extension
+    # its own; the record names it per document now, so the manifest's shape is final.
+    splitter_identity = _Identities.of(config).splitter.identity
     prepared = _Prepared()
     for file in plan.load:
         docs = _load(config, file, report, ingested_at)
@@ -640,15 +669,15 @@ def _prepare(config: RagConfig, plan: _Plan, report: IngestReport) -> _Prepared:
             sha256=file.state.sha256,
             loader=file.state.loader,
             loader_identity=file.state.loader_identity,
-            chunk_ids=ids,
+            splitter=splitter_identity,
+            chunks=len(ids),
             ingested_at=ingested_at,
         )
     return prepared
 
 
-def _update(config: RagConfig, plan: _Plan, report: IngestReport) -> None:
+def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestReport) -> None:
     """Prepare, embed, apply and publish what ``plan`` says; fill in ``report``."""
-    store = config.paths.vector_store
     wanted = _Identities.of(config)
     live = plan.live
     prepared = _prepare(config, plan, report)
@@ -678,9 +707,7 @@ def _update(config: RagConfig, plan: _Plan, report: IngestReport) -> None:
             for name, record in live.documents.items()
             if name not in plan.remove and name not in prepared.records
         } | prepared.records
-        delete = [
-            cid for name in (*plan.remove, *replaced) for cid in live.documents[name].chunk_ids
-        ]
+        delete = [cid for name in (*plan.remove, *replaced) for cid in live.chunk_ids_of(name)]
 
     vectors: list[list[float]] = []
     if prepared.texts:  # a run that only deletes never loads the embedding model
@@ -692,12 +719,14 @@ def _update(config: RagConfig, plan: _Plan, report: IngestReport) -> None:
         vectors = _embed_with_progress(embeddings, prepared.texts)
     dimension = len(vectors[0]) if live is None else live.embedder.dimension
     manifest = Manifest(
-        generation="",  # write_generation names it after the folder it writes
+        generation="",  # write_generation names it after the collection it creates
         chunking=CHUNKING_VERSION,
         embedder=EmbedderRecord(
             ref=wanted.embedder_ref, identity=wanted.embedder, dimension=dimension
         ),
         splitter=wanted.splitter,
+        sparse=None,
+        store=STORE,
         documents=dict(sorted(documents.items())),
     )
     published = write_generation(
@@ -717,48 +746,55 @@ def _update(config: RagConfig, plan: _Plan, report: IngestReport) -> None:
         "Published %s: %d documents, %d chunks.",
         published.generation,
         len(manifest.documents),
-        len(manifest.chunk_ids()),
+        sum(record.chunks for record in manifest.documents.values()),
     )
-    if published.legacy is not None:
-        logger.info(
-            "Kept the v0.2 index beside it as %s; delete it once the new one works.",
-            published.legacy,
-        )
     try:
         recover(store)  # prune: the previous generation stays, older ones go
-    except OSError as e:
+    except StoreError as e:
         # Best effort: the new generation is live already, and the next run retries.
-        logger.warning("Could not remove an old generation: %s", describe_error(e, config))
+        logger.warning("Could not remove an old generation: %s", e)
 
 
-def ingest(config: RagConfig, *, rebuild: bool = False) -> IngestReport:
+def ingest(
+    config: RagConfig, *, rebuild: bool = False, store: QdrantStore | None = None
+) -> IngestReport:
     """Bring the index up to date with the corpus; see the module docstring.
 
+    ``store`` is :func:`rag_qa.components.build_store`'s, built here when not given.
     Raises ``FileNotFoundError`` (no corpus folder), :class:`CorpusUnreadableError`,
-    ``FileExistsError`` (something at the index's path that is not an index,
-    :func:`rag_qa.vectorstore.in_the_way`), :class:`IngestionRunningError` and
-    :class:`ConfigError` before anything is published.
-    Any other exception propagates, also with nothing published.
+    :class:`IndexInTheWayError`, :class:`IngestionRunningError`, :class:`ConfigError` and
+    :class:`~rag_qa.vectorstore.StoreUnavailableError` (Qdrant cannot be used, at any
+    point) with nothing published. Any other exception propagates, also with nothing
+    published.
     """
-    report = IngestReport()
-    store = config.paths.vector_store
     _check_corpus(config.paths.data)  # before the lock, so a mistyped path writes nothing
+    if store is not None:
+        return _ingest(config, store, rebuild=rebuild)
+    own = build_store(config)
+    try:
+        return _ingest(config, own, rebuild=rebuild)
+    finally:
+        own.close()
+
+
+def _ingest(config: RagConfig, store: QdrantStore, *, rebuild: bool) -> IngestReport:
+    report = IngestReport()
     blocked = in_the_way(store)
     if blocked is not None:
-        # The flip, or the v0.2 migration, would replace or rename it without a word: a
-        # mis-set path can name someone's folder, or the corpus itself. Refuse instead.
-        raise FileExistsError(
-            f"'{store}' {blocked}. Move it, or set RAG_VECTOR_STORE_PATH to another location."
+        # A switch would take its name, or recovery its data, without a word: refuse.
+        raise IndexInTheWayError(
+            f"{store.where} {blocked}. rag-ingest never switches away from it or deletes "
+            f"it: remove it in Qdrant yourself, or set RAG_QDRANT_COLLECTION to another name."
         )
-    store.parent.mkdir(parents=True, exist_ok=True)
-    with _writer_lock(store):
+    config.paths.state.mkdir(parents=True, exist_ok=True)
+    with _writer_lock(config.paths.state):
         leftovers = recover(store)
         if leftovers:
             logger.info("Removed what an earlier run left behind: %s", ", ".join(leftovers))
         scan = scan_corpus(config, report)
         if not scan.files and not scan.unhashed:
             return report  # nothing to index: the live index, if any, is left as it is
-        plan = _plan(config, scan, report, rebuild=rebuild)
+        plan = _plan(config, store, scan, report, rebuild=rebuild)
         if plan.rebuild is not None:
             logger.info("Full rebuild: %s.", plan.rebuild)
             report.rebuild = plan.rebuild
@@ -768,7 +804,7 @@ def ingest(config: RagConfig, *, rebuild: bool = False) -> IngestReport:
             else:
                 logger.info("Nothing changed: the index is up to date.")
             return report
-        _update(config, plan, report)
+        _update(config, store, plan, report)
     return report
 
 
@@ -780,7 +816,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Exit status: 0 the index matches the corpus; 1 a document or folder could "
         "not be read (an update keeps their previous chunks), nothing was indexed, or an "
         "unexpected error (shown with a traceback); 2 could not start (configuration or "
-        "usage error, or another ingestion is running).",
+        "usage error, another ingestion is running, or something in the alias's way), or "
+        "Qdrant could not be used, which publishes nothing.",
     )
     parser.add_argument(
         "--config",
@@ -855,16 +892,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _run(args: argparse.Namespace) -> int:
     try:
         config = load_config(args.config)
+        store = build_store(config)
+        store.check()  # Qdrant first: before the corpus is read or a model loads (DEC-19)
         # The CLI's own line, not the log: it names the configured folder in full, which
         # the log and the report (both returned over HTTP in S2-7) never do.
         print(f"Loading documents from '{config.paths.data}'...")
-        report = ingest(config, rebuild=args.rebuild)
+        report = ingest(config, rebuild=args.rebuild, store=store)
     except (
         ConfigError,
         FileNotFoundError,
         CorpusUnreadableError,
-        FileExistsError,
+        IndexInTheWayError,
         IngestionRunningError,
+        StoreUnavailableError,
     ) as e:
         print(f"Error: {e}", file=sys.stderr)
         return EXIT_CANNOT_START
@@ -873,15 +913,14 @@ def _run(args: argparse.Namespace) -> int:
     if summary:  # empty when there was nothing at all to count
         print()
         print(summary)
-    store = config.paths.vector_store
     status, error = outcome(report)
     if error is not None:
         print(f"Error: {error}", file=sys.stderr)
         return status
     if report.published is None:
-        print(f"--- Ingestion Complete. Nothing changed; the index at '{store}' is up to date ---")
+        print(f"--- Ingestion Complete. Nothing changed; {store.where} is up to date ---")
     else:
-        print(f"--- Ingestion Complete. Vector store saved at '{store}' ---")
+        print(f"--- Ingestion Complete. Published {report.published} as {store.where} ---")
     return EXIT_OK
 
 

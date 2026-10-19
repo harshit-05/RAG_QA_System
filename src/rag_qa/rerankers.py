@@ -64,8 +64,8 @@ class CrossEncoderReranker(BaseDocumentCompressor):
         """The best ``top_n`` of ``documents`` that score at least ``min_score``, best first.
 
         Returns copies with ``rerank_score`` in their metadata, and never modifies the
-        documents given: FAISS hands back the very objects its docstore holds, so writing
-        into them would change the loaded index.
+        documents given: a retriever may hand back objects it keeps (v0.3's FAISS docstore
+        did), and writing into them would change what it returns next.
         """
         if not documents:
             return []

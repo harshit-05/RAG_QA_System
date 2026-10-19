@@ -12,7 +12,7 @@ from rag_qa.registry import ALLOWED_PREFIXES, allowlist_hint, build_object, impo
 from rag_qa.schema import Components
 
 #: Targets under the two prefixes S2-4 removed: the old reranker entry's three classes,
-#: and FAISS, which vectorstore.py still imports from langchain_community in source.
+#: and FAISS, which vectorstore.py imported from langchain_community until S3-2.
 DROPPED = [
     "langchain_classic.retrievers.ContextualCompressionRetriever",
     "langchain_classic.retrievers.document_compressors.CrossEncoderReranker",
@@ -79,9 +79,10 @@ def test_reexported_name_under_an_allowed_prefix_is_refused(path: str) -> None:
 @pytest.mark.parametrize(
     ("path", "defined_in"),
     [
-        # vectorstore.py imports FAISS, so our own module re-exports a langchain_community
-        # class. The prefix check passes it; only the defining-module check stops it.
-        pytest.param("rag_qa.vectorstore.FAISS", "langchain_community", id="FAISS"),
+        # vectorstore.py imports the Qdrant client, so our own module re-exports a class
+        # from a package never on the list. The prefix check passes it; only the
+        # defining-module check stops it (FAISS was this case until S3-2).
+        pytest.param("rag_qa.vectorstore.QdrantClient", "qdrant_client", id="QdrantClient"),
         # rerankers.py imports the model class, from a package never on the list.
         pytest.param("rag_qa.rerankers.CrossEncoder", "sentence_transformers", id="CrossEncoder"),
     ],
@@ -334,7 +335,9 @@ def test_check_imports_reports_a_nested_missing_class_with_its_location(
         pytest.param("langchain_core.utils.utils.guard_import", "is not a class", id="function"),
         # Loads, since rag_qa. is allowed: a dropped package reached through our own module.
         pytest.param(
-            "rag_qa.vectorstore.FAISS", "re-exports does not count", id="re-export of FAISS"
+            "rag_qa.vectorstore.QdrantClient",
+            "re-exports does not count",
+            id="re-export of QdrantClient",
         ),
     ],
 )

@@ -17,13 +17,15 @@ from conftest import REPO_ROOT
 #: What ISS-09 had committed, by kind: bytecode, the FAISS index, a screen
 #: recording, an editor backup, and parquet data no loader reads. The corpus PDFs
 #: are tracked on purpose (a fresh clone must be able to ingest, S0-6).
-#: ``vectorstore/`` is anchored at the root, where ``paths.vector_store`` puts the
-#: index: a source *package* of that name (a plausible shape for Phase 3's store
-#: swap) must not count as an artifact. An index elsewhere is still caught by its
-#: ``.faiss`` / ``.pkl`` extension.
+#: ``vectorstore/`` is anchored at the root, where v0.3's ``paths.vector_store`` put the
+#: index: a source *package* of that name must not count as an artifact. An index
+#: elsewhere is still caught by its ``.faiss`` / ``.pkl`` extension. ``var/``, also at the
+#: root, is ``paths.state`` since S3-2: the writer lock, and from S3-8 the job records
+#: and the hashed keys file, none of which belongs in the repository.
 ARTIFACT = re.compile(
     r"(^|/)__pycache__/"
     r"|^vectorstore/"
+    r"|^var/"
     r"|\.(pyc|faiss|pkl|parquet|webm|mp4|mkv|save)$"
 )
 
@@ -57,6 +59,8 @@ def test_no_build_artifacts_index_or_media_are_tracked() -> None:
         ("src/rag_qa/vectorstore/qdrant.py", False),
         ("indexes/elsewhere/index.faiss", True),  # an index anywhere is still caught, by extension
         ("corpus/2412.14140v2.pdf", False),  # corpus PDFs are tracked on purpose
+        ("var/ingest.lock", True),  # paths.state (S3-2)
+        ("src/rag_qa/var/state.py", False),  # a package of that name is not the folder
         ("tests/test_registry.py", False),
     ],
 )

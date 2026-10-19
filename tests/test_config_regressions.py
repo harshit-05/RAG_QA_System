@@ -171,14 +171,17 @@ def test_iss04_target_outside_the_allowlist_fails_at_load(make_config: MakeConfi
 
 
 def test_iss11_dead_vector_stores_block_fails_at_load(make_config: MakeConfig) -> None:
-    # v2 lines 42-46: a `vector_stores:` library that nothing read.
+    # v2 lines 42-46: a `vector_stores:` library that nothing read. Since S3-2 the kind is
+    # real again (DEC-19), and v2's entries, with no _target_, still cannot load.
     def v2_block(c: dict[str, Any]) -> None:
         c["components"]["vector_stores"] = {
             "faiss": {"path": "vectorstore/db_faiss"},
             "chroma": {"path": "vectorstore/db_chroma"},
         }
 
-    assert "unknown key 'vector_stores'" in _fails_at_load(make_config, v2_block)
+    message = _fails_at_load(make_config, v2_block)
+    assert "components.vector_stores.faiss._target_: required key is missing" in message
+    assert "components.vector_stores.chroma._target_: required key is missing" in message
 
 
 def test_iss11_ingestion_vector_store_reference_fails_at_load(make_config: MakeConfig) -> None:

@@ -77,7 +77,7 @@ def test_min_score_drops_chunks_below_it(
 def test_returns_copies_and_never_modifies_the_chunks_given(
     stub_cross_encoder: type[StubCrossEncoder],
 ) -> None:
-    # FAISS returns the objects its docstore holds: a write here would change the index.
+    # A retriever may return objects it keeps (v0.3's FAISS docstore did): never write them.
     given = chunks("a", "b")
     before = [doc.model_dump() for doc in given]
     kept = reranker().compress_documents(given, "q")

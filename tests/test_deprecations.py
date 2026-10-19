@@ -4,7 +4,9 @@ Records warnings while importing every module **and** running the whole pipeline
 (ingest, build the chain, invoke, stream, and ``stream_answer``, the path every front
 end answers through since S2-1) with the fakes. It fails on any
 ``LangChainDeprecationWarning``, and on any ``DeprecationWarning`` except DEC-5's
-``langchain-community`` sunset notice.
+``langchain-community`` sunset notice, which since S3-2 must not appear at all: no module
+of ours imports ``langchain_community`` once the store is Qdrant (DEC-19), and S3-3 removes
+the package.
 
 Two design points, both from S0-5's Discovered section:
 
@@ -73,6 +75,11 @@ def test_no_deprecated_api_across_imports_and_the_whole_pipeline(fake_rag: Path)
     records = record_warnings(
         """
         import asyncio
+        from qdrant_client import QdrantClient
+        import rag_qa.vectorstore
+        client = QdrantClient(":memory:")  # one store for the whole child, as in conftest
+        client.close = lambda **kwargs: None
+        rag_qa.vectorstore.connect = lambda *args, **kwargs: client
         import rag_qa.answering, rag_qa.cli, rag_qa.evaluation.cli
         import rag_qa.evaluation.fingerprint, rag_qa.evaluation.gate
         import rag_qa.evaluation.generation, rag_qa.evaluation.ragas_scoring
@@ -96,13 +103,14 @@ def test_no_deprecated_api_across_imports_and_the_whole_pipeline(fake_rag: Path)
         env={
             "RAG_CONFIG": str(fake_rag),
             "RAG_DATA_PATH": os.environ["RAG_DATA_PATH"],
-            "RAG_VECTOR_STORE_PATH": os.environ["RAG_VECTOR_STORE_PATH"],
+            "RAG_STATE_PATH": os.environ["RAG_STATE_PATH"],
         },
     )
     assert violations(records) == [], violations(records)
-    # The one warning we expect is still the sunset notice. If it disappears,
-    # DEC-5's staged exit has moved (or the predicate went blind): look, don't ignore.
-    assert any(SUNSET_NOTICE in r["message"] for r in records)
+    # DEC-5's staged exit, step 3: the store no longer imports langchain_community, so its
+    # sunset notice is gone from the whole pipeline. If it comes back, a module imports the
+    # package again. The negative control below keeps the predicate itself honest.
+    assert not any(SUNSET_NOTICE in r["message"] for r in records)
 
 
 def test_negative_control_the_gate_flags_a_deprecated_langchain_api() -> None:

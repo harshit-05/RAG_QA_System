@@ -1,4 +1,4 @@
-"""The ingestion manifest (S2-6, DEC-17): pure functions, with no index and no model.
+"""The ingestion manifest (S2-6, DEC-17, DEC-19): pure functions, with no index and no model.
 
 The identity tests are the story's review note made executable: every key the embedder
 identity leaves out is checked to change nothing, and every key it keeps to change it.
@@ -21,6 +21,7 @@ from rag_qa.config import load_config
 from rag_qa.manifest import (
     CHUNK_NAMESPACE,
     EMBEDDER_DEFAULTS,
+    STORE,
     Changes,
     DocumentRecord,
     EmbedderRecord,
@@ -32,8 +33,8 @@ from rag_qa.manifest import (
     diff,
     embedder_identity,
     file_sha256,
-    load_manifest,
-    save_manifest,
+    manifest_payload,
+    parse_manifest,
     spec_identity,
 )
 
@@ -172,125 +173,137 @@ def test_chunk_ids_never_drift() -> None:
     assert chunk_id("2412.14140v2.pdf", "0" * 64, 0) == "40ec7f75-8c19-5032-8e4f-5f2db21e3782"
 
 
-# --- the manifest file -------------------------------------------------------------------
+# --- the manifest, version 2 (DEC-19) -----------------------------------------------------
 
 
-def record(sha256: str = "a" * 64, identity: str = "loader-1", *ids: str) -> DocumentRecord:
+def record(sha256: str = "a" * 64, identity: str = "loader-1", chunks: int = 1) -> DocumentRecord:
     return DocumentRecord(
         sha256=sha256,
         loader="components.loaders.txt",
         loader_identity=identity,
-        chunk_ids=list(ids) or [chunk_id("x", sha256, 0)],
+        splitter="s",
+        chunks=chunks,
         ingested_at="2026-10-05T12:00:00Z",
     )
 
 
 def manifest(**documents: DocumentRecord) -> Manifest:
     return Manifest(
-        generation="db_faiss.gen-20261005T120000.000000Z-0a1b2c3d",
+        generation="rag_qa--gen-20261005T120000000000Z-0a1b2c3d",
+        chunking=1,
         embedder=EmbedderRecord(ref="components.embedders.fake", identity="e", dimension=8),
         splitter=SplitterRecord(ref="components.splitters.english_recursive", identity="s"),
+        sparse=None,
+        store=STORE,
         documents=documents,
     )
 
 
-def test_a_manifest_round_trips_in_the_documented_shape(tmp_path: Path) -> None:
-    path = tmp_path / "manifest.json"
-    original = manifest(**{"guide.pdf": record()})
-    save_manifest(original, path)
-
-    data = json.loads(path.read_text())  # ARCHITECTURE.md §2.4, key for key
-    assert sorted(data) == [
+def test_a_manifest_round_trips_in_the_documented_shape() -> None:
+    original = manifest(**{"guide.pdf": record(chunks=3)})
+    data = json.loads(json.dumps(manifest_payload(original)))  # as the metadata holds it
+    assert sorted(data) == [  # ARCHITECTURE.md §3.4, key for key
         "chunking",
         "documents",
         "embedder",
         "generation",
+        "sparse",
         "splitter",
+        "store",
         "version",
     ]
-    assert data["version"] == 1
-    assert data["chunking"] == 1
+    assert data["version"] == 2
+    assert data["sparse"] is None
+    assert data["store"] == {"distance": "cosine", "exact": True}
     assert sorted(data["embedder"]) == ["dimension", "identity", "ref"]
     assert sorted(data["splitter"]) == ["identity", "ref"]
     assert sorted(data["documents"]["guide.pdf"]) == [
-        "chunk_ids",
+        "chunks",
         "ingested_at",
         "loader",
         "loader_identity",
         "sha256",
+        "splitter",
     ]
-    assert load_manifest(path) == original
-    assert not path.with_name("manifest.json.tmp").exists()
+    assert parse_manifest(data) == original
 
 
-def test_a_save_interrupted_before_its_rename_leaves_the_old_manifest_whole(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = tmp_path / "manifest.json"
-    old = manifest(**{"a.txt": record()})
-    save_manifest(old, path)
-
-    def crash(src: Any, dst: Any) -> None:
-        raise OSError("crashed before the rename")
-
-    monkeypatch.setattr(os, "replace", crash)
-    with pytest.raises(OSError, match="crashed"):
-        save_manifest(manifest(**{"b.txt": record()}), path)
-    assert load_manifest(path) == old
-
-
-def test_a_manifest_from_before_the_chunking_version_reads_as_version_1(tmp_path: Path) -> None:
-    # The first S2-6 indexes have no "chunking" key, and version 1 made them: they stay
-    # usable without a rebuild.
-    path = tmp_path / "manifest.json"
-    save_manifest(manifest(**{"a.txt": record()}), path)
-    data = json.loads(path.read_text())
-    del data["chunking"]
-    path.write_text(json.dumps(data))
-    loaded = load_manifest(path)
-    assert loaded is not None and loaded.chunking == 1
+def test_the_architecture_s_example_manifest_parses() -> None:
+    # The shape §3.4 documents, so the doc and the code cannot drift apart.
+    example = {
+        "version": 2,
+        "generation": "rag_qa--gen-20261020T120000123456Z-1a2b3c4d",
+        "chunking": 1,
+        "embedder": {"ref": "components.embedders.minilm_cpu", "identity": "x", "dimension": 384},
+        "splitter": {"ref": "components.splitters.english_recursive", "identity": "y"},
+        "sparse": None,
+        "store": {"distance": "cosine", "exact": True},
+        "documents": {
+            "2412.14140v2.pdf": {
+                "sha256": "z",
+                "loader": "components.loaders.pdf",
+                "loader_identity": "w",
+                "splitter": "y",
+                "chunks": 412,
+                "ingested_at": "2026-10-20T12:00:00Z",
+            }
+        },
+    }
+    assert parse_manifest(example).documents["2412.14140v2.pdf"].chunks == 412
 
 
-def test_no_manifest_file_is_none_not_an_error(tmp_path: Path) -> None:
-    assert load_manifest(tmp_path / "manifest.json") is None
-
-
-def test_a_manifest_that_cannot_be_read_is_refused_without_its_path(tmp_path: Path) -> None:
-    (tmp_path / "manifest.json").mkdir()
-    with pytest.raises(ManifestError, match=r"cannot read it \(IsADirectoryError") as exc:
-        load_manifest(tmp_path / "manifest.json")
-    assert str(tmp_path) not in str(exc.value)
+def test_chunk_ids_are_derived_from_each_document_s_count() -> None:
+    # Version 2 counts chunks rather than listing their IDs (DEC-19): chunk_id makes them.
+    m = manifest(**{"a.txt": record("1" * 64, chunks=2), "b.txt": record("2" * 64, chunks=0)})
+    assert m.chunk_ids_of("a.txt") == [chunk_id("a.txt", "1" * 64, i) for i in range(2)]
+    assert m.chunk_ids_of("b.txt") == []
+    assert m.chunk_ids() == set(m.chunk_ids_of("a.txt"))
 
 
 @pytest.mark.parametrize(
-    ("text", "problem"),
+    ("data", "problem"),
     [
-        ("{oops", "not valid JSON"),
-        (b"\xff\xfe\xfa", "not valid JSON"),
-        ("[1, 2]", "not a JSON object but a list"),
-        ('{"version": 2}', "unknown manifest version 2"),
-        ('{"version": true}', "unknown manifest version True"),
-        ('{"generation": "g"}', "unknown manifest version None"),
-        ('{"version": 1, "generation": "g"}', "not a version-1 manifest: embedder: Field required"),
+        (None, "there is none"),
+        ([1, 2], "not a JSON object but a list"),
+        ({"version": 1, "generation": "g"}, "unknown manifest version 1; this version reads 2"),
+        ({"version": True}, "unknown manifest version True"),
+        ({"generation": "g"}, "unknown manifest version None"),
+        ({"version": 2, "generation": "g"}, "not a version-2 manifest: chunking: Field required"),
     ],
 )
-def test_an_unusable_manifest_is_refused_with_the_reason(
-    tmp_path: Path, text: str | bytes, problem: str
-) -> None:
-    path = tmp_path / "manifest.json"
-    path.write_bytes(text if isinstance(text, bytes) else text.encode())
+def test_an_unusable_manifest_is_refused_with_the_reason(data: Any, problem: str) -> None:
     with pytest.raises(ManifestError, match=problem):
-        load_manifest(path)
+        parse_manifest(data)
 
 
-def test_a_mistyped_field_is_refused_rather_than_coerced(tmp_path: Path) -> None:
-    path = tmp_path / "manifest.json"
-    save_manifest(manifest(**{"a.txt": record()}), path)
-    data = json.loads(path.read_text())
-    data["embedder"]["dimension"] = "384"
-    path.write_text(json.dumps(data))
-    with pytest.raises(ManifestError, match=r"embedder\.dimension"):
-        load_manifest(path)
+@pytest.mark.parametrize(
+    ("edit", "where"),
+    [
+        (lambda d: d["embedder"].update(dimension="384"), r"embedder\.dimension"),
+        (lambda d: d["store"].update(distance="dot"), r"store\.distance"),
+        (lambda d: d["store"].update(exact=False), r"store\.exact"),
+        (lambda d: d.update(sparse={"ref": "x"}), "sparse"),
+        (lambda d: d.pop("sparse"), "sparse: Field required"),
+        (lambda d: d["documents"]["a.txt"].update(chunks=-1), r"documents\.a\.txt\.chunks"),
+        (lambda d: d["documents"]["a.txt"].update(chunk_ids=[]), "Extra inputs"),
+        (lambda d: d.update(extra=1), "extra: Extra inputs"),
+    ],
+    ids=[
+        "a mistyped dimension",
+        "another distance",
+        "an approximate search",
+        "a sparse record, before S3-5 widens the type",
+        "no sparse key",
+        "a negative count",
+        "version 1's chunk_ids",
+        "a field this version does not write",
+    ],
+)
+def test_a_manifest_off_the_strict_shape_is_refused_not_coerced(edit: Any, where: str) -> None:
+    data = manifest_payload(manifest(**{"a.txt": record()}))
+    edit(data)
+    with pytest.raises(ManifestError, match=where):
+        parse_manifest(data)
 
 
 # --- the diff ----------------------------------------------------------------------------

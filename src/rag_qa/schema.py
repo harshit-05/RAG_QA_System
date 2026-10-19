@@ -4,8 +4,10 @@ FR-8: the whole config graph is validated at load time and fails with a specific
 actionable error. The schema mirrors the file's two halves (ARCHITECTURE.md §0.3, §1.4):
 
 * the *skeleton* — the ``components`` kinds, ``pipeline`` and ``paths`` — is closed.
-  An unknown key is an error that names the nearest valid key, which is what makes
-  the ISS-01 typo (``llmS``) and the dead ``vector_stores`` block (ISS-11) unwritable;
+  An unknown key is an error that names the nearest valid key, which is what made the
+  ISS-01 typo (``llmS``) and v2's dead ``vector_stores`` block (ISS-11) unwritable.
+  ``vector_stores`` is a kind again since S3-2, and one is in use: ``pipeline.vector_store``
+  must name it (DEC-19);
 * component *leaves* are open: any kwargs next to ``_target_`` pass straight through
   to :func:`rag_qa.registry.build_object` (ADR-010).
 
@@ -19,6 +21,7 @@ copies. A caller mutating what it got back cannot reach the config.
 """
 
 import difflib
+import re
 import string
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
@@ -39,8 +42,33 @@ from rag_qa.registry import allowlist_hint, is_allowed, removed_prefix_hint
 #: Fallbacks used only when the config file omits a ``paths`` entry.
 PATH_DEFAULTS = {
     "data": "corpus",
-    "vector_store": "vectorstore/db_faiss",
+    "state": "var",
 }
+
+#: What a store's ``collection`` may be: the alias its generations are published under,
+#: which each generation's name extends with ``--gen-…``. With no hyphen allowed in it, a
+#: generation's name parses one way only (DEC-19).
+COLLECTION_NAME = re.compile(r"[a-z0-9_]{1,48}")
+
+#: Why ``paths.vector_store`` is refused, and how to migrate (DEC-19).
+VECTOR_STORE_REMOVED = (
+    "'vector_store' was removed in 1.0: the index is no longer a folder but a Qdrant "
+    "collection (DEC-19). Delete it here and add 'state: var'; copy the "
+    "components.vector_stores block and the pipeline.vector_store line from the "
+    "repository's config.yaml; start Qdrant (docker compose up -d qdrant), then run "
+    'rag-ingest. README, "Upgrading from v0.3"'
+)
+
+
+def collection_problem(name: str) -> str | None:
+    """Why ``name`` cannot be a store's collection, or ``None`` when it can."""
+    if COLLECTION_NAME.fullmatch(name):
+        return None
+    return (
+        f"collection {name!r} must be 1 to 48 lowercase letters, digits or underscores, "
+        f"for example rag_qa or scratch_1: it names the alias, and each generation "
+        f"extends it with '--gen-'"
+    )
 
 
 def _did_you_mean(word: str, candidates: Iterable[str]) -> str:
@@ -147,19 +175,56 @@ class ComponentSpec(BaseModel):
         return self.model_dump(by_alias=True)
 
 
+#: The search the store's retriever runs, and the one search option it takes (S3-2).
+SEARCH_TYPES = ("similarity",)
+SEARCH_KWARGS = ("k",)
+#: How many chunks a retriever returns when its ``search_kwargs`` name no ``k``: what
+#: LangChain's ``as_retriever`` returned, kept so a v0.3 config means what it meant.
+DEFAULT_K = 4
+
+
 class RetrieverSpec(_Strict):
-    """Kwargs for ``VectorStore.as_retriever()``.
+    """How the store's retriever searches: by similarity, for ``search_kwargs.k`` chunks.
 
     Not a buildable component: a retriever is derived from the opened store, so this
-    entry has no ``_target_``, and a ``_target_`` here is an unknown-key error.
+    entry has no ``_target_``, and a ``_target_`` here is an unknown-key error. Its shape
+    is FAISS's ``as_retriever()`` keyword arguments, kept so that its dump, which tier 2
+    hashes, does not move. Since S3-2 only the options the Qdrant retriever honours are
+    accepted: one ignored silently would make a config say what it does not do.
     """
 
     search_type: str | None = None
     search_kwargs: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def check_supported(self) -> "RetrieverSpec":
+        problems = []
+        if self.search_type is not None and self.search_type not in SEARCH_TYPES:
+            problems.append(
+                f"search_type {self.search_type!r} is not supported: the store searches by "
+                f"similarity only (leave search_type out, or set it to 'similarity')"
+            )
+        unknown = sorted(set(self.search_kwargs) - set(SEARCH_KWARGS))
+        if unknown:
+            problems.append(
+                f"search_kwargs {', '.join(map(repr, unknown))} not supported: the store's "
+                f"retriever takes only 'k', how many chunks it returns"
+            )
+        k = self.search_kwargs.get("k", DEFAULT_K)
+        if not isinstance(k, int) or isinstance(k, bool) or k < 1:
+            problems.append(f"search_kwargs.k must be a whole number of at least 1, not {k!r}")
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
+
     def kwargs(self) -> dict[str, Any]:
-        """A fresh kwargs dict for ``as_retriever``, with unset options left out."""
+        """A fresh dict of the settings, with unset options left out: what tier 2 hashes."""
         return self.model_dump(exclude_none=True)
+
+    def k(self) -> int:
+        """How many chunks the retriever returns."""
+        k: int = self.search_kwargs.get("k", DEFAULT_K)
+        return k
 
 
 class Components(_Strict):
@@ -171,6 +236,27 @@ class Components(_Strict):
     llms: dict[str, ComponentSpec]
     retrievers: dict[str, RetrieverSpec]
     rerankers: dict[str, ComponentSpec] = Field(default_factory=dict)
+    #: Where the index lives (DEC-19): ``rag_qa.vectorstore.QdrantStore`` entries.
+    vector_stores: dict[str, ComponentSpec] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def check_collections(self) -> "Components":
+        """A store's ``collection`` is checked at load (FR-8), not when Qdrant refuses it."""
+        problems = []
+        for name, spec in self.vector_stores.items():
+            collection = spec.spec().get("collection")
+            if collection is None:
+                continue
+            problem = (
+                collection_problem(collection)
+                if isinstance(collection, str)
+                else f"collection must be a name, got {type(collection).__name__}"
+            )
+            if problem is not None:
+                problems.append(f"vector_stores.{name}: {problem}")
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
 
     @model_validator(mode="after")
     def check_loader_shape(self) -> "Components":
@@ -351,6 +437,8 @@ class Query(_Strict):
 class Pipeline(_Strict):
     ingestion: Ingestion
     query: Query
+    #: The store both halves share: ingestion writes it, queries read it (DEC-19).
+    vector_store: str
 
 
 @dataclass(frozen=True)
@@ -381,23 +469,23 @@ class Paths(_Strict):
       machine-specific paths.
 
     Without a :class:`PathContext` (programmatic construction) values are taken as
-    given.
+    given. Absolute means symlinks resolved.
 
-    Absolute means symlinks resolved, except in the last part of ``vector_store``: from
-    S2-6 that path is a symlink to the live index generation (DEC-17). Resolved at load,
-    it would freeze every caller on one generation, and ingestion would take that real
-    directory for a v0.2 index.
+    ``state`` holds what the host keeps beside the index, never the index itself: the
+    writer lock (DEC-19), and S3-8's job records. ``vector_store``, v0.3's index folder, is
+    refused with the migration: the index lives in Qdrant now.
     """
 
     data: Path = Path(PATH_DEFAULTS["data"])
-    vector_store: Path = Path(PATH_DEFAULTS["vector_store"])
+    state: Path = Path(PATH_DEFAULTS["state"])
 
-    @staticmethod
-    def _absolute(key: str, path: Path) -> Path:
-        # resolve() follows links before applying "..", as the parent must here too.
-        if key != "vector_store" or path.name in ("", ".", ".."):
-            return path.resolve()
-        return path.parent.resolve() / path.name
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_vector_store(cls, data: Any) -> Any:
+        """v0.3's ``paths.vector_store`` gets the migration, not "unknown key"."""
+        if isinstance(data, dict) and "vector_store" in data:
+            raise ValueError(VECTOR_STORE_REMOVED)
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -422,7 +510,7 @@ class Paths(_Strict):
             env_var = context.env_vars[key]
             override = context.overrides.get(key)
             if override:
-                resolved[key] = cls._absolute(key, Path.cwd() / Path(override).expanduser())
+                resolved[key] = (Path.cwd() / Path(override).expanduser()).resolve()
                 continue
 
             raw = data.get(key, default)
@@ -443,7 +531,7 @@ class Paths(_Strict):
                     f"{env_var} for a machine-specific location"
                 )
                 continue
-            resolved[key] = cls._absolute(key, context.base_dir / path)
+            resolved[key] = (context.base_dir / path).resolve()
 
         if problems:
             raise ValueError("\n".join(problems))
@@ -555,6 +643,7 @@ class RagConfig(_Strict):
                 yield f"pipeline.{stage}.{slot}", ref, kind
         for extension, ref in self.pipeline.ingestion.loaders.items():
             yield f"pipeline.ingestion.loaders[{extension!r}]", ref, "loaders"
+        yield "pipeline.vector_store", self.pipeline.vector_store, "vector_stores"
 
     @model_validator(mode="after")
     def check_references(self) -> "RagConfig":

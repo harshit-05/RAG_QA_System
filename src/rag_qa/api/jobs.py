@@ -11,7 +11,8 @@ them are path-free (S2-6), since they go over HTTP.
   ``ingest()`` takes it itself.
 - **In a daemon thread.** An ingest cannot be interrupted and can take minutes, so
   stopping the server abandons a job rather than waiting for it. That is safe: a run never
-  writes into the live index generation, and the next run cleans up what it left (DEC-17).
+  writes into the live index generation, and the next run cleans up what it left (DEC-17,
+  DEC-19).
 - **In memory.** The last :data:`KEEP` jobs are kept; Phase 3 brings a durable queue.
 - **What it changes.** When a job ends, ``after`` runs (the server's refresh), so a
   published generation is served at once.
@@ -34,6 +35,7 @@ from rag_qa.ingest import (
     EXIT_OK,
     EXIT_RUN_FAILED,
     CorpusUnreadableError,
+    IndexInTheWayError,
     IngestionRunningError,
     IngestReport,
     describe_error,
@@ -42,6 +44,7 @@ from rag_qa.ingest import (
 )
 from rag_qa.ingest import logger as ingest_logger
 from rag_qa.schema import RagConfig
+from rag_qa.vectorstore import StoreUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -144,10 +147,11 @@ class IngestJobs:
             ConfigError,
             FileNotFoundError,
             CorpusUnreadableError,
-            FileExistsError,
+            IndexInTheWayError,
             IngestionRunningError,
+            StoreUnavailableError,
         ) as e:
-            # What rag-ingest reports as "could not start", with exit status 2.
+            # What rag-ingest reports with exit status 2, having published nothing.
             job.exit_code = EXIT_CANNOT_START
             job.log.append(f"Error: {describe_error(e, self._config)}")
         # Deliberately broad: an unexpected error ends the job, never the server.

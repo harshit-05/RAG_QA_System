@@ -2,6 +2,12 @@
 
 Binary fixtures (PDF, DOCX) are generated at test time rather than committed —
 CLAUDE.md: never commit binaries — and the generators are small enough to read.
+
+**Qdrant runs in process** (DEC-19, ARCHITECTURE.md §3.5). Every test gets one
+``QdrantClient(":memory:")``, the :func:`qdrant` fixture, which every store the test
+builds connects to: ingestion and the query side see the same data, as they would on one
+server. Tests that need the real server carry the ``qdrant_server`` marker and are skipped
+unless ``RAG_TEST_QDRANT_URL`` names one (CI's eval-retrieval job does).
 """
 
 import asyncio
@@ -23,13 +29,52 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
+from qdrant_client import QdrantClient
 
-from rag_qa.settings import ENV_CONFIG, ENV_DATA_PATH, ENV_VECTOR_STORE_PATH
+from rag_qa.settings import ENV_CONFIG, ENV_DATA_PATH, ENV_STATE_PATH
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REAL_CONFIG = REPO_ROOT / "config.yaml"
 
+#: The collection the real config names, and so every test's store unless it says otherwise.
+COLLECTION = "rag_qa"
+
+#: The server the ``qdrant_server`` tests run against. Read here, at import, because the
+#: autouse ``isolate_env`` fixture clears every ``RAG_*`` variable before a test runs.
+QDRANT_TEST_URL = os.environ.get("RAG_TEST_QDRANT_URL") or None
+
 MakeConfig = Callable[..., Path]
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip the ``qdrant_server`` tests unless ``RAG_TEST_QDRANT_URL`` names a server."""
+    if QDRANT_TEST_URL is not None:
+        return
+    skip = pytest.mark.skip(reason="needs a Qdrant server: set RAG_TEST_QDRANT_URL")
+    for item in items:
+        if item.get_closest_marker("qdrant_server"):
+            item.add_marker(skip)
+
+
+def in_memory_client() -> QdrantClient:
+    """A local-mode client whose ``close`` does nothing, so one store closing it (an ingest
+    closes the store it built) leaves it open for the next."""
+    client = QdrantClient(":memory:")
+    client.close = lambda **kwargs: None  # type: ignore[method-assign]
+    return client
+
+
+@pytest.fixture(autouse=True)
+def qdrant(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> QdrantClient:
+    """The test's Qdrant: every store it builds connects to this one in-memory client.
+
+    Autouse, so no test reaches a real server by accident. The ``qdrant_server`` tests
+    connect to the real one themselves, and are left unpatched.
+    """
+    client = in_memory_client()
+    if request.node.get_closest_marker("qdrant_server") is None:
+        monkeypatch.setattr("rag_qa.vectorstore.connect", lambda *args, **kwargs: client)
+    return client
 
 
 def write_pdf(path: Path, texts: list[str], page_labels: str | None = None) -> Path:
@@ -139,12 +184,15 @@ def sample_corpus(tmp_path: Path) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A developer's exported RAG_* variables must not leak into any test: the paths, and
-    since S2-7 the server's RAG_API_* settings, a token included."""
-    for name in {ENV_CONFIG, ENV_DATA_PATH, ENV_VECTOR_STORE_PATH, *os.environ}:
+def isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A developer's exported RAG_* variables must not leak into any test: the paths, since
+    S2-7 the server's RAG_API_* settings, a token included, and since S3-2 the store's
+    RAG_QDRANT_* ones, a key included. ``paths.state`` goes to the test's own folder, so
+    no test takes the repository's writer lock."""
+    for name in {ENV_CONFIG, ENV_DATA_PATH, *os.environ}:
         if name.startswith("RAG_"):
             monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(ENV_STATE_PATH, str(tmp_path / "var"))
 
 
 @pytest.fixture
@@ -310,30 +358,50 @@ def use_fakes_and_reranker(c: dict[str, Any]) -> None:
     c["pipeline"]["query"]["reranker_candidates"] = RERANK_CANDIDATES
 
 
-def live_generation(store: Path) -> Path:
-    """The generation folder an index's symlink points to (DEC-17)."""
-    return store.parent / os.readlink(store)
+def live_generation(client: QdrantClient, collection: str = COLLECTION) -> str:
+    """The generation the alias names (DEC-19); fails the test when there is none."""
+    targets = [
+        a.collection_name for a in client.get_aliases().aliases if a.alias_name == collection
+    ]
+    assert targets, f"no alias {collection!r}"
+    return targets[0]
 
 
-def edit_manifest(store: Path, edit: Callable[[dict[str, Any]], None]) -> None:
-    """Rewrite the live generation's ``manifest.json`` through ``edit``, as tampering would."""
-    path = live_generation(store) / "manifest.json"
-    data = json.loads(path.read_text())
-    edit(data)
-    path.write_text(json.dumps(data))
+def published(client: QdrantClient, collection: str = COLLECTION) -> bool:
+    """Whether an index is published under ``collection``: its alias exists."""
+    return any(a.alias_name == collection for a in client.get_aliases().aliases)
+
+
+def generations(client: QdrantClient, collection: str = COLLECTION) -> list[str]:
+    """Every generation of ``collection`` on the client, oldest first."""
+    prefix = f"{collection}--gen-"
+    return sorted(c.name for c in client.get_collections().collections if c.name.startswith(prefix))
+
+
+def metadata(client: QdrantClient, generation: str) -> dict[str, Any]:
+    """A generation's metadata: its manifest under ``manifest``, and ``complete``."""
+    return dict(client.get_collection(generation).config.metadata or {})
+
+
+def edit_manifest(
+    client: QdrantClient, edit: Callable[[dict[str, Any]], None], collection: str = COLLECTION
+) -> None:
+    """Rewrite the live generation's manifest through ``edit``, whole, as tampering would."""
+    generation = live_generation(client, collection)
+    manifest = copy.deepcopy(metadata(client, generation)["manifest"])
+    edit(manifest)
+    client.update_collection(generation, metadata={"manifest": manifest})
 
 
 @pytest.fixture
-def fake_rag(
-    make_config: MakeConfig, sample_corpus: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Path:
+def fake_rag(make_config: MakeConfig, sample_corpus: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A hermetic RAG setup: the real ingest built an index of ``sample_corpus`` with
-    the fakes. Returns the config path; both data and index paths point at scratch."""
+    the fakes, in the test's in-memory Qdrant. Returns the config path; the corpus and
+    ``paths.state`` are scratch folders."""
     from rag_qa.config import load_config
     from rag_qa.ingest import ingest
 
     monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
     path = make_config(use_fakes)
     ingest(load_config(path))
     return path
@@ -451,15 +519,14 @@ def fake_ollama() -> Iterator[FakeOllama]:
 
 @pytest.fixture
 def fake_config(make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
-    """The fakes' config, with an empty corpus and an index path that holds nothing, in tmp.
+    """The fakes' config, with an empty corpus, in tmp, and an empty in-memory Qdrant.
 
-    For a server over :func:`fake_serving`: with no index at the path, it never reopens one.
+    For a server over :func:`fake_serving`: with no index in the store, it never reopens one.
     """
     from rag_qa.config import load_config
 
     (tmp_path / "corpus").mkdir()
     monkeypatch.setenv(ENV_DATA_PATH, str(tmp_path / "corpus"))
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
     return load_config(make_config(use_fakes))
 
 
@@ -476,6 +543,7 @@ def fake_serving(
 
     from rag_qa.api.state import Served, Serving
     from rag_qa.chain import QueryPipeline
+    from rag_qa.components import build_store
 
     docs = [
         Document(
@@ -496,6 +564,7 @@ def fake_serving(
         config,
         pipeline,
         Served(generation=None, manifest=None, problem=None),
+        store=build_store(config),
         embeddings=DeterministicFakeEmbedding(size=8),
         reranker=None,
         max_concurrent=max_concurrent,

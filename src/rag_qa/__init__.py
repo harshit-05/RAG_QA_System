@@ -9,8 +9,8 @@ Module layout is fixed by ARCHITECTURE.md §0.2, §1.2 and §2.2:
 - ``loaders``     PDF / DOCX / text loaders on ``pypdf`` and ``docx2txt``
 - ``components``  builds the embedder, splitter, LLM and loaders from a ``RagConfig``
 - ``rerankers``   our own cross-encoder reranker on ``sentence-transformers`` (DEC-16)
-- ``manifest``    what each index generation holds: file hashes, identities, chunk IDs
-- ``vectorstore`` the only FAISS touchpoints, generations and their flip; the Phase 3 seam
+- ``manifest``    what each index generation holds: file hashes, identities, chunk counts
+- ``vectorstore`` the only module that talks to Qdrant: generations behind an alias (DEC-19)
 - ``ingest``      corpus walk, diff against the manifest, incremental index update
 - ``chain``       ``build_query_pipeline(cfg) -> QueryPipeline``; ``build_rag_chain`` for invoke
 - ``answering``   ``stream_answer``: one answer as typed events, for every front end

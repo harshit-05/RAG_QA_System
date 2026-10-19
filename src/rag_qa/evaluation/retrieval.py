@@ -44,7 +44,7 @@ from langchain_core.documents import Document
 
 from rag_qa.answering import source_refs
 from rag_qa.chain import build_retrieve, check_index, format_docs
-from rag_qa.components import build_embedder
+from rag_qa.components import build_embedder, build_store
 from rag_qa.evaluation.dataset import GoldenItem
 from rag_qa.schema import RagConfig
 
@@ -178,11 +178,13 @@ def evaluate_retrieval(
     :class:`~rag_qa.chain.IncompatibleIndexError` when the config cannot use it, both
     before any model is loaded.
     """
+    store = build_store(config)
     # Before the embedder is built: build_retrieve checks too, but only once it has one.
-    check_index(config)
+    check_index(config, store=store)
     # The same embedder the index was built with: build_embedder is the one place that
-    # choice is made, and the manifest has just confirmed it. No LLM is built.
-    retrieve = build_retrieve(config, build_embedder(config))
+    # choice is made, and the manifest has just confirmed it. No LLM is built. The half
+    # resolves the alias before each item, as rag-query does before each question (DEC-19).
+    retrieve = build_retrieve(config, build_embedder(config), store=store)
     asked = [item for item in items if item.answerable or record is not None]
 
     async def retrieve_all() -> list[list[Document]]:

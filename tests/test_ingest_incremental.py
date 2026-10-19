@@ -1,10 +1,10 @@
-"""Incremental ingestion (S2-6, DEC-17), end to end through the real ``ingest``.
+"""Incremental ingestion (S2-6, DEC-17, DEC-19), end to end through the real ``ingest``.
 
-Everything is real: the walk, the loaders, the splitter, the FAISS index, the
-generations, the flip and the lock. The exception is the embedder, which is the
-deterministic fake, so nothing downloads. Both RAG paths always point at scratch
-(caveat 9). ``sample_corpus`` indexes as 5 documents and 7 chunks: the PDF's 3 pages and
-one chunk for each of the other 4 files.
+Everything is real: the walk, the loaders, the splitter, the generations in Qdrant, the
+alias switch, recovery and the lock. The exceptions are the embedder, which is the
+deterministic fake, so nothing downloads, and Qdrant, which is the test's own in-memory
+client (conftest's ``qdrant``). ``sample_corpus`` indexes as 5 documents and 7 chunks: the
+PDF's 3 pages and one chunk for each of the other 4 files.
 """
 
 import hashlib
@@ -15,15 +15,24 @@ import re
 import subprocess
 import sys
 import threading
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import MakeConfig, edit_manifest, live_generation, use_fakes
+from conftest import (
+    MakeConfig,
+    edit_manifest,
+    generations,
+    live_generation,
+    metadata,
+    published,
+    use_fakes,
+)
+from langchain_core.documents import Document
 from langchain_core.embeddings import DeterministicFakeEmbedding
+from qdrant_client import QdrantClient, models
 
 from rag_qa.chain import build_query_pipeline, check_index, citation
 from rag_qa.config import load_config
@@ -36,12 +45,13 @@ from rag_qa.ingest import (
     discover_files,
     ingest,
     main,
+    scan_corpus,
 )
 from rag_qa.loaders import TextLoader
-from rag_qa.manifest import CHUNKING_VERSION, file_sha256
+from rag_qa.manifest import CHUNKING_VERSION, Manifest, file_sha256, parse_manifest
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_DATA_PATH, ENV_VECTOR_STORE_PATH
-from rag_qa.vectorstore import open_generation, open_store, store_exists
+from rag_qa.vectorstore import StoreError, StoreUnavailableError
 
 Edit = Callable[[dict[str, Any]], None]
 DOCUMENTS = {"README.md", "guide.pdf", "notes.txt", "sub/deeper/LOUD.TXT", "sub/report.docx"}
@@ -49,10 +59,11 @@ DOCUMENTS = {"README.md", "guide.pdf", "notes.txt", "sub/deeper/LOUD.TXT", "sub/
 
 @dataclass
 class Scratch:
-    """``sample_corpus`` and a scratch index, with the fakes, plus ways to look inside."""
+    """``sample_corpus`` and the test's Qdrant, with the fakes, plus ways to look inside."""
 
     corpus: Path
-    store: Path
+    client: QdrantClient
+    state: Path
     make_config: MakeConfig
 
     def config_path(self, edit: Edit | None = None) -> Path:
@@ -72,33 +83,51 @@ class Scratch:
     def main(self, *args: str) -> int:
         return main(["--config", str(self.config_path()), *args])
 
-    def live(self) -> Path:
-        return live_generation(self.store)
+    def live(self) -> str:
+        return live_generation(self.client)
+
+    def manifest(self) -> Manifest:
+        return parse_manifest(metadata(self.client, self.live())["manifest"])
 
     def documents(self) -> dict[str, Any]:
-        return json.loads((self.live() / "manifest.json").read_text())["documents"]
+        return metadata(self.client, self.live())["manifest"]["documents"]
 
-    def ids(self) -> set[str]:
-        """The chunk IDs the live index holds."""
-        return set(open_generation(self.live()).ids)
+    def ids(self, generation: str | None = None) -> set[str]:
+        """The chunk IDs a generation holds, the live one by default."""
+        points, _ = self.client.scroll(generation or self.live(), limit=10_000)
+        return {str(point.id) for point in points}
+
+    def chunks(self, generation: str | None = None) -> list[Document]:
+        """A generation's chunks as the retriever returns them, in point ID order."""
+        points, _ = self.client.scroll(generation or self.live(), limit=10_000, with_payload=True)
+        return [
+            Document(
+                id=str(p.id), page_content=p.payload["page_content"], metadata=p.payload["metadata"]
+            )
+            for p in points
+            if p.payload is not None
+        ]
 
     def listed(self) -> set[str]:
-        """The chunk IDs the live manifest lists."""
-        return {cid for record in self.documents().values() for cid in record["chunk_ids"]}
+        """The chunk IDs the live manifest's documents derive to."""
+        return self.manifest().chunk_ids()
 
     def generations(self) -> list[str]:
-        prefix = f"{self.store.name}.gen-"
-        return sorted(p.name for p in self.store.parent.iterdir() if p.name.startswith(prefix))
+        return generations(self.client)
 
 
 @pytest.fixture
 def scratch(
-    sample_corpus: Path, make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    sample_corpus: Path,
+    make_config: MakeConfig,
+    qdrant: QdrantClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Scratch:
-    store = tmp_path / "index"
     monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(store))
-    return Scratch(corpus=sample_corpus, store=store, make_config=make_config)
+    return Scratch(
+        corpus=sample_corpus, client=qdrant, state=tmp_path / "var", make_config=make_config
+    )
 
 
 @pytest.fixture
@@ -115,11 +144,6 @@ def embedded(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 
     monkeypatch.setattr(DeterministicFakeEmbedding, "embed_documents", counting)
     return calls
-
-
-def contents(folder: Path) -> dict[str, bytes]:
-    """Every file in a generation, byte for byte."""
-    return {path.name: path.read_bytes() for path in sorted(folder.iterdir())}
 
 
 @pytest.fixture
@@ -152,14 +176,14 @@ def test_a_run_with_nothing_to_do_says_so_and_exits_0(scratch: Scratch, capsys: 
     out = capsys.readouterr().out
     assert "Nothing changed: the index is up to date." in out
     assert "5 unchanged" in out
-    assert "Nothing changed; the index at" in out
+    assert "Nothing changed; the Qdrant collection 'rag_qa' at" in out
 
 
 def test_an_add_a_change_and_a_delete_touch_only_those_documents(
     scratch: Scratch, embedded: list[int]
 ) -> None:
     scratch.ingest()
-    before = scratch.documents()
+    before, before_ids = scratch.documents(), scratch.manifest().chunk_ids_of("notes.txt")
     (scratch.corpus / "new.txt").write_text("A new note.\n", encoding="utf-8")
     (scratch.corpus / "notes.txt").write_text("Edited notes.\n", encoding="utf-8")
     (scratch.corpus / "README.md").unlink()
@@ -172,8 +196,8 @@ def test_an_add_a_change_and_a_delete_touch_only_those_documents(
     assert set(after) == (DOCUMENTS - {"README.md"}) | {"new.txt"}
     for name in ("guide.pdf", "sub/report.docx", "sub/deeper/LOUD.TXT"):
         assert after[name] == before[name]  # untouched: the same IDs and ingested_at
-    assert after["notes.txt"]["chunk_ids"] != before["notes.txt"]["chunk_ids"]
-    assert scratch.ids() == scratch.listed()  # the index holds exactly what is listed
+    assert scratch.manifest().chunk_ids_of("notes.txt") != before_ids  # new bytes, new IDs
+    assert scratch.ids() == scratch.listed()  # the generation holds exactly what is counted
 
 
 def test_moving_md_to_another_loader_re_embeds_the_md_files_only(
@@ -181,6 +205,7 @@ def test_moving_md_to_another_loader_re_embeds_the_md_files_only(
 ) -> None:
     scratch.ingest()
     before = scratch.documents()["README.md"]
+    before_ids = scratch.manifest().chunk_ids_of("README.md")
     embedded.clear()
 
     def markdown_loader(c: dict[str, Any]) -> None:
@@ -194,8 +219,9 @@ def test_moving_md_to_another_loader_re_embeds_the_md_files_only(
     after = scratch.documents()["README.md"]
     assert after["loader"] == "components.loaders.md"
     assert after["loader_identity"] != before["loader_identity"]
-    # The same path, bytes and index give the same IDs back: deleted before they are re-added.
-    assert after["chunk_ids"] == before["chunk_ids"]
+    # The same path, bytes and index give the same IDs back: left out of the copy, then
+    # upserted with the new loader's chunks.
+    assert scratch.manifest().chunk_ids_of("README.md") == before_ids
     assert scratch.ids() == scratch.listed()
 
 
@@ -208,14 +234,14 @@ def test_two_files_with_identical_bytes_both_index_and_deleting_one_keeps_the_ot
         (corpus / folder / "same.txt").write_text("Identical bytes.\n", encoding="utf-8")
     monkeypatch.setenv(ENV_DATA_PATH, str(corpus))
     scratch.ingest()
-    documents = scratch.documents()
+    documents, manifest = scratch.documents(), scratch.manifest()
     assert documents["a/same.txt"]["sha256"] == documents["b/same.txt"]["sha256"]
-    assert documents["a/same.txt"]["chunk_ids"] != documents["b/same.txt"]["chunk_ids"]
+    assert manifest.chunk_ids_of("a/same.txt") != manifest.chunk_ids_of("b/same.txt")
 
     (corpus / "a" / "same.txt").unlink()
     report = scratch.ingest()
     assert report.removed == 1
-    assert scratch.ids() == set(documents["b/same.txt"]["chunk_ids"])
+    assert scratch.ids() == set(manifest.chunk_ids_of("b/same.txt"))
 
 
 # --- failures keep their chunks ------------------------------------------------------------
@@ -240,6 +266,7 @@ def test_a_file_that_becomes_corrupt_keeps_its_chunks_and_the_run_exits_1(
 def test_a_failed_change_beside_other_changes_still_keeps_its_chunks(scratch: Scratch) -> None:
     scratch.ingest()
     before = scratch.documents()["guide.pdf"]
+    before_ids = scratch.manifest().chunk_ids_of("guide.pdf")
     (scratch.corpus / "guide.pdf").write_bytes(b"corrupt")
     (scratch.corpus / "new.txt").write_text("Published beside the failure.\n", encoding="utf-8")
 
@@ -247,7 +274,7 @@ def test_a_failed_change_beside_other_changes_still_keeps_its_chunks(scratch: Sc
     assert report.published is not None  # new.txt went in...
     assert (report.added, report.kept) == (1, 1)
     assert scratch.documents()["guide.pdf"] == before  # ...and guide.pdf kept its chunks
-    assert set(before["chunk_ids"]) <= scratch.ids()
+    assert set(before_ids) <= scratch.ids()
 
 
 def test_a_folder_that_cannot_be_listed_keeps_its_documents_chunks(
@@ -301,7 +328,7 @@ def test_a_corpus_with_no_text_at_all_publishes_nothing_and_exits_1(
     # Not "Rebuilt the index in full", nor "1 added": nothing was (second review).
     assert "A full rebuild was due (there is no index yet), but published nothing." in out
     assert "Documents:" not in out  # every count is zero, so the line is left out (S2-8)
-    assert not scratch.store.exists()
+    assert not published(scratch.client) and scratch.generations() == []
 
 
 def test_a_prune_that_fails_after_the_flip_does_not_fail_the_run(
@@ -309,20 +336,20 @@ def test_a_prune_that_fails_after_the_flip_does_not_fail_the_run(
 ) -> None:
     from rag_qa import ingest as module
 
-    calls: list[Path] = []
+    calls: list[Any] = []
 
-    def recover_then_fail(store: Path) -> list[str]:
+    def recover_then_fail(store: Any) -> list[str]:
         calls.append(store)
         if len(calls) == 1:
             return []  # recovery at the start
-        raise PermissionError(13, "Permission denied", str(store.parent / "old-generation"))
+        raise StoreError("Qdrant at http://qdrant.test answered 500: the disk went away")
 
     monkeypatch.setattr(module, "recover", recover_then_fail)
     caplog.set_level(logging.INFO, logger="rag_qa.ingest")
     report = scratch.ingest()
     assert report.published is not None
-    assert scratch.live().name == report.published  # the flip stands
-    assert "Could not remove an old generation" in caplog.text
+    assert scratch.live() == report.published  # the switch stands
+    assert "Could not remove an old generation: Qdrant at" in caplog.text
     assert str(tmp_path) not in caplog.text
 
 
@@ -392,56 +419,67 @@ def test_the_flag_or_a_new_embedder_or_splitter_rebuilds_in_full(
     assert (report.added, report.unchanged) == (5, 0)
 
 
+def drop_a_point(scratch: Scratch) -> None:
+    (victim,) = scratch.manifest().chunk_ids_of("notes.txt")
+    scratch.client.delete(scratch.live(), points_selector=models.PointIdsList(points=[victim]))
+
+
+def add_a_stray_point(scratch: Scratch) -> None:
+    stray = models.PointStruct(
+        id="00000000-0000-5000-8000-000000000000",
+        vector={"dense": [0.1] * 8},
+        payload={"page_content": "x", "metadata": {}},
+    )
+    scratch.client.upsert(scratch.live(), points=[stray], wait=True)
+
+
 @pytest.mark.parametrize(
     ("damage", "reason"),
     [
         pytest.param(
-            lambda folder: (folder / "manifest.json").unlink(),
-            "the index has no manifest",
+            lambda s: s.client.update_collection(s.live(), metadata={"manifest": None}),
+            "its manifest cannot be used: there is none",
             id="no manifest",
         ),
         pytest.param(
-            lambda folder: (folder / "manifest.json").write_text("{oops"),
-            "its manifest cannot be used: it is not valid JSON",
-            id="not JSON",
-        ),
-        pytest.param(
-            lambda folder: (folder / "manifest.json").write_text(json.dumps({"version": 99})),
+            lambda s: edit_manifest(s.client, lambda m: m.update(version=99)),
             "its manifest cannot be used: unknown manifest version 99",
             id="unknown version",
         ),
         pytest.param(
-            lambda folder: (folder / "index.faiss").unlink(),
-            "the index is missing index.faiss",
-            id="missing index file",
+            lambda s: edit_manifest(s.client, lambda m: m.update(generation="rag_qa--gen-x")),
+            "its manifest describes 'rag_qa--gen-x', not this collection",
+            id="a manifest naming another collection",
         ),
         pytest.param(
-            lambda folder: (folder / "index.pkl").write_bytes(b"not a pickle"),
-            "the index cannot be opened (UnpicklingError",
-            id="corrupt pickle",
+            lambda s: s.client.update_collection(s.live(), metadata={"complete": False}),
+            "it is incomplete",
+            id="marked incomplete",
         ),
         pytest.param(
-            lambda folder: edit_manifest(
-                folder.parent / "index",
-                lambda m: m["documents"]["README.md"]["chunk_ids"].append(
-                    m["documents"]["notes.txt"]["chunk_ids"][0]
-                ),
-            ),
-            "the manifest lists 1 chunk ID(s) more than once",
-            id="an ID listed twice",
+            drop_a_point,
+            "the manifest and its generation disagree: 1 chunk(s) counted but missing, "
+            "0 held but not counted",
+            id="a point missing",
+        ),
+        pytest.param(
+            add_a_stray_point,
+            "the manifest and its generation disagree: 0 chunk(s) counted but missing, "
+            "1 held but not counted",
+            id="a point not counted",
         ),
     ],
 )
 def test_a_damaged_index_rebuilds_in_full_even_when_the_corpus_is_unchanged(
-    scratch: Scratch, embedded: list[int], damage: Callable[[Path], Any], reason: str
+    scratch: Scratch, embedded: list[int], damage: Callable[[Scratch], Any], reason: str
 ) -> None:
     # With nothing changed, a run that skipped these checks would call the index up to
-    # date while rag-query refused it: the two would point at each other (first review).
+    # date while rag-query refused it: the two would point at each other (S2-6's review).
     scratch.ingest()
-    damage(scratch.live())
+    damage(scratch)
     embedded.clear()
     report = scratch.ingest()
-    assert report.rebuild is not None and report.rebuild.startswith(reason)
+    assert report.rebuild is not None and reason in report.rebuild
     assert embedded == [7]
     assert scratch.ids() == scratch.listed()
 
@@ -450,7 +488,7 @@ def test_a_new_chunking_version_rebuilds_in_full(
     scratch: Scratch, embedded: list[int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The code that makes chunks changed, the config did not: without this, every
-    # unchanged file would keep its old chunks for good (second review).
+    # unchanged file would keep its old chunks for good (S2-6's second review).
     scratch.ingest()
     monkeypatch.setattr("rag_qa.ingest.CHUNKING_VERSION", 2)
     embedded.clear()
@@ -459,59 +497,72 @@ def test_a_new_chunking_version_rebuilds_in_full(
         "this version makes chunks differently (chunking version 1 then, 2 now)"
     )
     assert embedded == [7]
-    assert json.loads((scratch.live() / "manifest.json").read_text())["chunking"] == 2
+    assert scratch.manifest().chunking == 2
 
 
-def test_an_index_from_before_the_chunking_version_is_kept_not_rebuilt(
+def test_a_manifest_without_its_chunking_version_rebuilds_in_full(
     scratch: Scratch, embedded: list[int]
 ) -> None:
+    # Version 1 defaulted a missing chunking version to 1, for S2-6's first indexes. Every
+    # version-2 manifest writes it, so one without it is not one this code wrote.
     scratch.ingest()
-    edit_manifest(scratch.store, lambda m: m.pop("chunking"))
+    edit_manifest(scratch.client, lambda m: m.pop("chunking"))
     embedded.clear()
     report = scratch.ingest()
-    assert (report.rebuild, report.published) == (None, None)
-    assert embedded == []
+    assert report.rebuild is not None and "chunking: Field required" in report.rebuild
+    assert embedded == [7]
 
 
-def test_a_manifest_that_lists_an_id_its_index_lacks_rebuilds_in_full(
+def test_a_manifest_that_counts_a_chunk_its_generation_lacks_rebuilds_in_full(
     scratch: Scratch, embedded: list[int]
 ) -> None:
     scratch.ingest()
-    edit_manifest(
-        scratch.store,
-        lambda m: m["documents"]["notes.txt"]["chunk_ids"].append(str(uuid.uuid4())),
-    )
-    (scratch.corpus / "new.txt").write_text("A change, so the run opens the index.\n")
+    edit_manifest(scratch.client, lambda m: m["documents"]["notes.txt"].update(chunks=2))
+    (scratch.corpus / "new.txt").write_text("A change, so the run reads the index.\n")
     embedded.clear()
 
     report = scratch.ingest()
     assert report.rebuild == (
-        "the manifest and its index disagree: 1 chunk(s) listed but missing, 0 held but not listed"
+        "the manifest and its generation disagree: 1 chunk(s) counted but missing, "
+        "0 held but not counted"
     )
     assert embedded == [8]  # everything, once: checked before anything was embedded
     assert scratch.ids() == scratch.listed()
 
 
-@pytest.mark.parametrize(
-    ("damage", "error"),
-    [
-        pytest.param(b"not a pickle", "UnpicklingError", id="corrupt pickle"),
-        pytest.param(b"", "EOFError", id="empty pickle"),
-    ],
-)
-def test_an_index_that_cannot_be_opened_rebuilds_in_full_and_says_why(
-    scratch: Scratch, embedded: list[int], tmp_path: Path, damage: bytes, error: str
+def test_a_generation_that_cannot_be_read_rebuilds_in_full_and_says_why(
+    scratch: Scratch, embedded: list[int], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     scratch.ingest()
-    (scratch.live() / "index.pkl").write_bytes(damage)
-    (scratch.corpus / "new.txt").write_text("A change, so the run opens the index.\n")
+
+    def unreadable(store: Any, generation: str) -> Any:
+        raise StoreError("Qdrant at http://qdrant.test answered 500: segment is corrupt")
+
+    monkeypatch.setattr("rag_qa.ingest.open_generation", unreadable)
+    (scratch.corpus / "new.txt").write_text("A change, so the run reads the index.\n")
     embedded.clear()
 
     report = scratch.ingest()
     assert report.rebuild is not None
-    assert report.rebuild.startswith(f"the index cannot be opened ({error}")
+    assert report.rebuild.startswith("the index cannot be read (StoreError: Qdrant at")
     assert str(tmp_path) not in report.rebuild
     assert embedded == [8]
+
+
+def test_qdrant_gone_mid_run_stops_it_with_exit_2_and_no_rebuild(
+    scratch: Scratch, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    # An outage says nothing about the index: it must not cost a rebuild (DEC-19).
+    scratch.ingest()
+    live = scratch.live()
+
+    def gone(store: Any, generation: str) -> Any:
+        raise StoreUnavailableError("cannot use Qdrant at http://qdrant.test (ConnectError)")
+
+    monkeypatch.setattr("rag_qa.ingest.open_generation", gone)
+    assert scratch.main() == EXIT_CANNOT_START
+    assert "cannot use Qdrant at" in capsys.readouterr().err
+    assert scratch.live() == live and scratch.generations() == [live]
 
 
 def test_a_run_that_only_deletes_never_loads_the_embedding_model(
@@ -535,46 +586,44 @@ def test_a_run_that_only_deletes_never_loads_the_embedding_model(
 # --- write safety ----------------------------------------------------------------------------
 
 
-def test_a_crash_before_the_flip_publishes_nothing_and_the_next_run_clears_it(
-    scratch: Scratch, monkeypatch: pytest.MonkeyPatch
+def test_a_crash_before_the_switch_publishes_nothing_and_the_next_run_clears_it(
+    scratch: Scratch, monkeypatch: pytest.MonkeyPatch, caplog: Any
 ) -> None:
+    # Story step 11: update_collection_aliases fails mid-update. The live generation is
+    # untouched, and the next run's recovery removes the orphan.
     scratch.ingest()
     live = scratch.live()
-    before = contents(live)
+    before = scratch.ids()
     (scratch.corpus / "new.txt").write_text("Added just before the crash.\n", encoding="utf-8")
-    replace = os.replace
 
-    def crash_at_the_flip(src: Any, dst: Any) -> None:
-        if ".tmp-" in os.fspath(src):  # the flip's rename of the temporary link
-            raise OSError("simulated crash before the flip")
-        replace(src, dst)
+    def crash(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("simulated crash before the switch")
 
-    monkeypatch.setattr(os, "replace", crash_at_the_flip)
-    with pytest.raises(OSError, match="simulated crash"):
+    real = scratch.client.update_collection_aliases
+    monkeypatch.setattr(scratch.client, "update_collection_aliases", crash)
+    with pytest.raises(RuntimeError, match="simulated crash"):
         scratch.ingest()
-    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(scratch.client, "update_collection_aliases", real)
 
     assert scratch.live() == live
-    assert contents(live) == before
-    (orphan,) = [name for name in scratch.generations() if name != live.name]
-    assert list(scratch.store.parent.glob("index.tmp-*"))
+    assert scratch.ids(live) == before
+    (orphan,) = [name for name in scratch.generations() if name != live]
+    assert metadata(scratch.client, orphan)["complete"] is True  # built, never published
     # Queries still read the old generation, which never had new.txt: checked on what the
-    # query side resolves, and on every chunk the store holds, not on a top-5 that might
-    # leave new.txt out anyway (second review).
+    # query side resolves, and on every chunk the live generation holds (S2-6's review).
     config = scratch.config()
     assert check_index(config)[0] == live
     assert build_query_pipeline(config).retrieve is not None
-    every = open_store(DeterministicFakeEmbedding(size=8), scratch.store).similarity_search(
-        "Added just before the crash.", k=20
-    )
+    every = scratch.chunks(live)
     assert len(every) == 7
     assert {doc.metadata["source"] for doc in every} == DOCUMENTS
 
-    report = scratch.ingest()  # recovery first: the orphan and the link go
+    caplog.set_level(logging.INFO, logger="rag_qa.ingest")
+    report = scratch.ingest()  # recovery first: the orphan goes
+    assert f"Removed what an earlier run left behind: {orphan}" in caplog.text
     assert orphan not in scratch.generations()
-    assert not list(scratch.store.parent.glob("index.tmp-*"))
     assert report.added == 1
-    assert scratch.generations() == sorted([live.name, report.published or ""])
+    assert scratch.generations() == sorted([live, report.published or ""])
 
 
 def test_a_failure_in_the_apply_phase_publishes_nothing(
@@ -582,58 +631,84 @@ def test_a_failure_in_the_apply_phase_publishes_nothing(
 ) -> None:
     scratch.ingest()
     live = scratch.live()
-    before = contents(live)
-    taken = scratch.documents()["notes.txt"]["chunk_ids"][0]
+    before = scratch.ids()
+    (taken,) = scratch.manifest().chunk_ids_of("notes.txt")
     (scratch.corpus / "new.txt").write_text("Its ID will collide.\n", encoding="utf-8")
-    # FAISS adds the vector, then its docstore rejects the ID: the in-memory index is now
-    # inconsistent, which is why nothing is ever applied to a live generation.
+    # Two chunks under one ID: the upsert keeps one, so the count check refuses to publish.
     monkeypatch.setattr("rag_qa.ingest.chunk_id", lambda *args: taken)
 
-    with pytest.raises(ValueError, match="already exist"):
+    with pytest.raises(StoreError, match="nothing was published"):
         scratch.ingest()
     assert scratch.live() == live
-    assert contents(live) == before
-    assert scratch.generations() == [live.name]  # not even a folder was written
-
-
-def test_a_v02_directory_is_rebuilt_once_and_kept_beside_the_new_index(scratch: Scratch) -> None:
-    scratch.store.mkdir()
-    (scratch.store / "index.faiss").write_bytes(b"a v0.2 index")
-    (scratch.store / "index.pkl").write_bytes(b"its docstore")
-
-    report = scratch.ingest()
-    assert report.rebuild == "the index was built by v0.2 and has no manifest"
-    assert scratch.store.is_symlink()
-    assert store_exists(scratch.store)
-    (kept,) = scratch.store.parent.glob("index.v02-*")
-    assert (kept / "index.faiss").read_bytes() == b"a v0.2 index"
+    assert scratch.ids(live) == before
+    (orphan,) = [name for name in scratch.generations() if name != live]
+    assert metadata(scratch.client, orphan)["complete"] is False
 
 
 def test_only_the_live_and_the_previous_generation_survive(scratch: Scratch) -> None:
     names = [scratch.ingest(rebuild=True).published for _ in range(3)]
     assert scratch.generations() == names[1:]  # the names sort in the order they were made
-    assert scratch.live().name == names[2]
+    assert scratch.live() == names[2]
 
 
-def test_a_file_where_the_index_goes_exits_2_and_is_left_alone(
-    scratch: Scratch, capsys: Any
+def test_with_its_live_collection_lost_an_ingest_keeps_every_complete_generation(
+    scratch: Scratch, caplog: Any
 ) -> None:
-    scratch.store.write_text("someone's file", encoding="utf-8")
-    assert scratch.main() == EXIT_CANNOT_START
-    assert "is a file, not an index" in capsys.readouterr().err
-    assert scratch.store.read_text(encoding="utf-8") == "someone's file"
+    # Story step 11 (design review 2): deleting the alias's target deletes the alias. The
+    # next ingest must not take that as "nothing is live" and delete the previous
+    # generation, by then the last usable copy: only an incomplete orphan goes.
+    previous = scratch.ingest().published
+    (scratch.corpus / "new.txt").write_text("A second generation.\n", encoding="utf-8")
+    live = scratch.ingest().published
+    orphan = "rag_qa--gen-29991231T235959999999Z-0badf00d"
+    scratch.client.create_collection(orphan, vectors_config={}, metadata={"complete": False})
+    scratch.client.delete_collection(live or "")
+    assert not published(scratch.client)
+
+    caplog.set_level(logging.INFO, logger="rag_qa.ingest")
+    report = scratch.ingest()
+    assert f"Removed what an earlier run left behind: {orphan}" in caplog.text
+    assert report.rebuild == "there is no index yet"
+    assert scratch.generations() == [previous, report.published]  # the previous survived
 
 
-def test_a_generation_named_as_the_index_exits_2_and_is_left_alone(
-    scratch: Scratch, monkeypatch: pytest.MonkeyPatch, capsys: Any
+@pytest.mark.parametrize("taken", ["a collection", "an alias of something else"])
+def test_something_in_the_alias_s_way_exits_2_and_is_left_alone(
+    scratch: Scratch, capsys: Any, taken: str
 ) -> None:
-    scratch.ingest()
-    live = scratch.live()
-    before = contents(live)
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(live))
+    # S2-6's second review, for Qdrant: someone's own data under the alias's name is never
+    # switched away from, written over or deleted.
+    if taken == "a collection":
+        scratch.client.create_collection("rag_qa", vectors_config={}, metadata={"theirs": 1})
+        expected = "is a collection of its own"
+    else:
+        scratch.client.create_collection("theirs", vectors_config={})
+        scratch.client.update_collection_aliases(
+            change_aliases_operations=[
+                models.CreateAliasOperation(
+                    create_alias=models.CreateAlias(collection_name="theirs", alias_name="rag_qa")
+                )
+            ]
+        )
+        expected = "is an alias of 'theirs', which is not one of its generations"
+    before = sorted(c.name for c in scratch.client.get_collections().collections)
     assert scratch.main() == EXIT_CANNOT_START
-    assert "is an index generation folder" in capsys.readouterr().err
-    assert contents(live) == before
+    err = capsys.readouterr().err
+    assert expected in err and "RAG_QDRANT_COLLECTION" in err
+    assert sorted(c.name for c in scratch.client.get_collections().collections) == before
+    assert not scratch.state.joinpath("ingest.lock").exists()  # refused before the lock
+
+
+def test_the_old_index_variable_is_refused_and_nothing_is_written(
+    scratch: Scratch, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    # Caveat 9's habit (DEC-19): a scratch ingest that set only RAG_VECTOR_STORE_PATH would
+    # otherwise write the real index. Exit 2, with the migration.
+    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
+    assert scratch.main() == EXIT_CANNOT_START
+    err = capsys.readouterr().err
+    assert "RAG_VECTOR_STORE_PATH is set" in err and "RAG_QDRANT_COLLECTION" in err
+    assert not published(scratch.client) and not (tmp_path / "index").exists()
 
 
 def test_an_empty_corpus_publishes_nothing_and_leaves_the_index(
@@ -657,7 +732,8 @@ def test_an_empty_corpus_publishes_nothing_and_leaves_the_index(
 def test_a_second_ingestion_exits_2_while_another_process_holds_the_lock(
     scratch: Scratch, capsys: Any
 ) -> None:
-    lock = scratch.store.with_name("index.lock")
+    scratch.state.mkdir(parents=True, exist_ok=True)
+    lock = scratch.state / "ingest.lock"
     hold = (
         "import fcntl, sys, time; f = open(sys.argv[1], 'a'); "
         "fcntl.flock(f.fileno(), fcntl.LOCK_EX); print('locked', flush=True); time.sleep(60)"
@@ -673,7 +749,7 @@ def test_a_second_ingestion_exits_2_while_another_process_holds_the_lock(
         holder.kill()
         holder.wait()
     assert "another ingestion is running" in capsys.readouterr().err
-    assert not scratch.store.exists()  # it never started
+    assert not published(scratch.client)  # it never started
 
 
 def test_a_second_ingestion_exits_2_from_another_thread_of_the_same_process(
@@ -712,9 +788,8 @@ def test_chunks_carry_the_section_7_3_metadata_with_a_corpus_relative_source(
     scratch: Scratch,
 ) -> None:
     scratch.ingest()
-    docs = open_store(DeterministicFakeEmbedding(size=8), scratch.live()).similarity_search(
-        "text", k=7
-    )
+    docs = scratch.chunks()
+    assert len(docs) == 7
     assert {doc.metadata["source"] for doc in docs} == DOCUMENTS
     listed = scratch.listed()
     common = {"source", "loader", "source_sha256", "ingested_at"}
@@ -741,20 +816,24 @@ def test_chunks_carry_the_section_7_3_metadata_with_a_corpus_relative_source(
 SAMPLE_CORPUS_CHUNKS = {1: "556f8396d1dba0f5a1f48ff6a8075f78fa862cb5f84bc6c53117b7770b58162b"}
 
 
-def chunks_digest(generation: Path) -> str:
-    """The sha256 of a generation's chunks in index order: text and metadata, less the
-    file's hash and the run's time, which are not how chunks are made."""
-    db = open_generation(generation).db
+def chunks_digest(scratch: Scratch) -> str:
+    """The sha256 of the live generation's chunks in walk order, as FAISS held them: text
+    and metadata, less the file's hash and the run's time, which are not how chunks are
+    made. Qdrant keeps points in ID order, so walk order is rebuilt from the manifest: each
+    file as the walk finds it, then its chunks by index."""
+    manifest = scratch.manifest()
+    scan = scan_corpus(scratch.config(), IngestReport())
+    ordered = [cid for file in scan.files for cid in manifest.chunk_ids_of(file.name)]
+    by_id = {doc.id: doc for doc in scratch.chunks()}
     chunks = []
-    for position in range(len(db.index_to_docstore_id)):
-        doc = db.docstore.search(db.index_to_docstore_id[position])
-        assert not isinstance(doc, str)
-        metadata = {
+    for cid in ordered:
+        doc = by_id[cid]
+        kept = {
             key: value
             for key, value in doc.metadata.items()
             if key not in ("source_sha256", "ingested_at")
         }
-        chunks.append([doc.page_content, metadata])
+        chunks.append([doc.page_content, kept])
     return hashlib.sha256(json.dumps(chunks, sort_keys=True).encode()).hexdigest()
 
 
@@ -764,7 +843,7 @@ def test_the_sample_corpus_chunks_as_the_chunking_version_says(scratch: Scratch)
     # CHUNKING_VERSION and pin this digest under the new version: every index then
     # rebuilds once, instead of keeping old chunks for every unchanged file.
     scratch.ingest()
-    digest = chunks_digest(scratch.live())
+    digest = chunks_digest(scratch)
     assert SAMPLE_CORPUS_CHUNKS.get(CHUNKING_VERSION) == digest, (
         f"the sample corpus no longer chunks as CHUNKING_VERSION {CHUNKING_VERSION} did: "
         f"bump it in rag_qa/manifest.py, and pin {digest} under the new version"
@@ -791,34 +870,6 @@ def test_the_walk_never_enters_an_ignored_folder(
     assert listing.ignored == 4
 
 
-# --- what may sit at the index's path (S2-6's second review) --------------------------------
-
-
-def test_a_folder_that_is_not_an_index_is_refused_not_renamed_aside(
-    scratch: Scratch, monkeypatch: pytest.MonkeyPatch, capsys: Any
-) -> None:
-    # Any real folder used to count as "the v0.2 index", and was renamed aside: with
-    # RAG_VECTOR_STORE_PATH mis-set to the corpus, the corpus itself.
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(scratch.corpus))
-    assert scratch.main() == EXIT_CANNOT_START
-    assert "is a folder that is not an index" in capsys.readouterr().err
-    assert (scratch.corpus / "guide.pdf").is_file()
-    assert not list(scratch.corpus.parent.glob("corpus.v02-*"))
-
-
-def test_a_link_someone_else_made_at_the_index_path_is_refused_and_left_alone(
-    scratch: Scratch, tmp_path: Path, capsys: Any
-) -> None:
-    # A v0.2 index kept on a bigger disk, linked in by hand: the flip used to replace the
-    # link, and write the new index onto the small disk.
-    elsewhere = tmp_path / "big-disk" / "db_faiss"
-    elsewhere.mkdir(parents=True)
-    scratch.store.symlink_to(elsewhere)
-    assert scratch.main() == EXIT_CANNOT_START
-    assert "not to one of the index's generations" in capsys.readouterr().err
-    assert scratch.store.resolve() == elsewhere
-
-
 # --- more of the second review's cases --------------------------------------------------------
 
 
@@ -841,7 +892,7 @@ def test_vectors_of_another_size_under_the_same_spec_rebuild_in_full(
     scratch: Scratch, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The identity cannot see the weights: a model replaced under the same name can make
-    # vectors of another size, which FAISS refused with a bare assert, every run.
+    # vectors of another size, which the store would refuse, every run.
     scratch.ingest()
     original = DeterministicFakeEmbedding.embed_documents
 
@@ -855,7 +906,8 @@ def test_vectors_of_another_size_under_the_same_spec_rebuild_in_full(
         "the embedder now makes 16-dimension vectors, but the index holds 8-dimension ones"
     )
     assert report.published is not None
-    assert open_generation(scratch.live()).db.index.d == 16
+    vectors = scratch.client.get_collection(scratch.live()).config.params.vectors
+    assert isinstance(vectors, dict) and vectors["dense"].size == 16
 
 
 def test_a_folder_named_like_a_word_lock_file_is_still_walked(sample_corpus: Path) -> None:
@@ -907,8 +959,8 @@ def test_renaming_a_loader_entry_rewrites_the_manifest_without_embedding(
 
 
 def test_no_absolute_path_survives_in_a_described_error(scratch: Scratch) -> None:
-    # Paths outside the corpus and the index's folder used to pass through: a moved
-    # pickled class names its module's file, and FAISS names the file it read.
+    # Paths outside the corpus and paths.state used to pass through: a module's file named
+    # in an error, say, or the lock's own path.
     from rag_qa.ingest import describe_error
 
     config = scratch.config()
@@ -919,10 +971,9 @@ def test_no_absolute_path_survives_in_a_described_error(scratch: Scratch) -> Non
     described = describe_error(moved, config)
     assert "/home/someone" not in described
     assert "from 'base.py'>" in described
-    read = f"{scratch.store.parent}/index.gen-1/index.faiss"
-    faiss = RuntimeError(f"could not open {read} for reading")
-    assert describe_error(faiss, config) == (
-        "RuntimeError: could not open index.gen-1/index.faiss for reading"
+    lock = OSError(30, "Read-only file system", f"{config.paths.state}/ingest.lock")
+    assert describe_error(lock, config) == (
+        "OSError: [Errno 30] Read-only file system: 'ingest.lock'"
     )
     elsewhere = OSError(13, "Permission denied", "/var/data/secret.txt")  # a PermissionError
     assert describe_error(elsewhere, config) == (

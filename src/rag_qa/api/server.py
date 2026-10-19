@@ -5,10 +5,10 @@ bearer-token authentication, and only then may ``--host`` be anything but loopba
 plain HTTP the token travels in cleartext until Phase 3 adds TLS, so ``rag-serve`` warns
 when it listens beyond this machine.
 
-Before uvicorn starts, it checks that the language model's server answers
-(:func:`rag_qa.components.preflight`, which ``rag-query`` runs too). A failure inside
-uvicorn's start-up would end in a traceback, not a reason (Starlette hands uvicorn the
-formatted traceback of a failed lifespan).
+Before uvicorn starts, it checks Qdrant (DEC-19), then that the language model's server
+answers (:func:`rag_qa.components.preflight`, which ``rag-query`` runs too). A failure
+inside uvicorn's start-up would end in a traceback, not a reason (Starlette hands uvicorn
+the formatted traceback of a failed lifespan).
 
 uvicorn reports ASGI spec 2.3, under which a client disconnect cancels its answer at once,
 during the model's prompt evaluation too. That is why this command runs uvicorn and
@@ -16,7 +16,8 @@ nothing else (DEC-18).
 
 ``rag-serve`` exit codes: **0** the server ran and was stopped with Ctrl-C; **2** it could
 not start (invalid settings, a non-loopback host without a token, a configuration error,
-the model's server not answering, the address in use, or a usage error). A SIGTERM shuts
+Qdrant unusable, the model's server not answering, the address in use, or a usage error).
+A SIGTERM shuts
 it down the same way, and uvicorn then ends the process by that signal, as service
 managers expect (status 143 in a shell).
 """
@@ -30,7 +31,7 @@ import uvicorn
 from pydantic import ValidationError
 
 from rag_qa.api.app import create_app
-from rag_qa.components import preflight
+from rag_qa.components import build_store, preflight
 from rag_qa.config import ConfigError, load_config
 from rag_qa.settings import (
     ENV_CONFIG,
@@ -38,6 +39,7 @@ from rag_qa.settings import (
     describe_settings_error,
     is_loopback,
 )
+from rag_qa.vectorstore import StoreUnavailableError
 
 EXIT_OK = 0
 EXIT_CANNOT_START = 2
@@ -116,9 +118,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_CANNOT_START
     try:
         config = load_config(args.config)
-    except ConfigError as e:
+        store = build_store(config)
+        store.check()  # Qdrant first (DEC-19): before the model's server, and uvicorn
+    except (ConfigError, StoreUnavailableError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return EXIT_CANNOT_START
+    store.close()  # the server builds its own, which lives as long as it does
 
     configure_logging()
     if not is_loopback(host):

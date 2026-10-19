@@ -36,7 +36,7 @@ from rag_qa.evaluation.cli import EXIT_CANNOT_RUN, EXIT_FLOOR_MISSED, EXIT_OK, m
 from rag_qa.evaluation.dataset import GoldenItem, load_golden
 from rag_qa.evaluation.gate import RetrievalFloors, ThresholdsError, below_floors, load_thresholds
 from rag_qa.evaluation.retrieval import aggregate, context_record, evaluate_retrieval, score_item
-from rag_qa.settings import ENV_VECTOR_STORE_PATH
+from rag_qa.settings import ENV_QDRANT_COLLECTION
 
 CORPUS = Path("/corpus")
 PAPER = {"source": "paper.pdf", "pages": ["7"]}
@@ -507,7 +507,7 @@ def test_a_reranked_run_says_how_many_candidates_it_fetched(
 def test_no_index_exits_2_and_says_to_ingest(
     evals: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "no-index"))
+    monkeypatch.setenv(ENV_QDRANT_COLLECTION, "no_index")  # a collection nothing published
     assert run(evals) == EXIT_CANNOT_RUN
     assert "Run rag-ingest first" in capsys.readouterr().err
 

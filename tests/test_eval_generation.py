@@ -30,7 +30,7 @@ from rag_qa.evaluation.dataset import load_golden
 from rag_qa.evaluation.gate import Generator, load_answers
 from rag_qa.evaluation.generation import answer, generator_record
 from rag_qa.schema import RagConfig
-from rag_qa.settings import ENV_DATA_PATH, ENV_VECTOR_STORE_PATH
+from rag_qa.settings import ENV_DATA_PATH, ENV_QDRANT_COLLECTION
 
 GOLDEN = [
     {
@@ -132,7 +132,7 @@ def test_no_index_cannot_run(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "no-index"))
+    monkeypatch.setenv(ENV_QDRANT_COLLECTION, "no_index")  # a collection nothing published
     config = make_config(use_fakes)
     write_golden(config)
     assert generate(config) == EXIT_CANNOT_RUN

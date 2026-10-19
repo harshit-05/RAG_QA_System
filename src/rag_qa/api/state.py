@@ -3,17 +3,19 @@
 Built once, at start-up (:meth:`Serving.build`), and shared by every request (DEC-18).
 
 **The index can change under the server.** An ingest job, or a ``rag-ingest`` run outside
-the server, publishes a new generation by flipping the index path's symlink (DEC-17).
-Before reading what is served, a request calls :meth:`Serving.refresh`, which compares the
-link with the generation being served. On a change, it reopens the index in a thread and
-swaps only the retrieval half (``dataclasses.replace``): an answer in flight keeps the one
-it started with, and the LLM and its clients are never rebuilt.
+the server, publishes a new generation by switching the Qdrant alias (DEC-19). Before
+reading what is served, a request calls :meth:`Serving.refresh`, which compares the
+alias's target (one ``GET /aliases``) with the generation being served. On a change, it
+reopens the index in a thread and swaps only the retrieval half (``dataclasses.replace``):
+an answer in flight keeps the one it started with, bound to its generation, and the LLM
+and its clients are never rebuilt.
 
 - A reopen runs the same checks as start-up. An index from another embedder is never
   served: the server goes not-ready until an ingest fixes it.
-- An open that fails for another reason (a disk error, a failing embedder) is not a verdict
-  on the index. The server goes not-ready with a fixed message, logs the exception, and
-  tries again on the next request, rather than answer 500 (S2-7's first review).
+- An open that fails for another reason (Qdrant unreachable, a failing embedder) is not a
+  verdict on the index. The server goes not-ready with a fixed message, logs the
+  exception, and tries again on the next request, rather than answer 500 (S2-7's first
+  review). So does a refresh that cannot read the alias.
 - The embedder and the reranker are built once and reused on every reopen. The reranker
   alone takes seconds and about 90 MB to load (S2-4).
 
@@ -36,7 +38,6 @@ import logging
 import threading
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any
 
 from langchain_core.documents import BaseDocumentCompressor, Document
@@ -53,9 +54,10 @@ from rag_qa.chain import (
     live_generation,
     open_retrieval,
 )
-from rag_qa.components import build_embedder, build_llm, build_reranker
+from rag_qa.components import build_embedder, build_llm, build_reranker, build_store
 from rag_qa.manifest import Manifest
 from rag_qa.schema import RagConfig
+from rag_qa.vectorstore import QdrantStore, StoreError
 
 logger = logging.getLogger(__name__)
 
@@ -77,54 +79,71 @@ class Served:
     """The index generation served and its manifest, or why there is none.
 
     ``generation`` is what :func:`rag_qa.chain.live_generation` said when the index was
-    last opened, or tried, so a refresh reopens only when the link has moved since.
+    last opened, or tried, so a refresh reopens only when the alias has moved since.
+    ``unseen`` marks a refresh that could not read the alias at all: the next one reopens,
+    whatever the alias says then.
     """
 
-    generation: Path | None
+    generation: str | None
     manifest: Manifest | None
     problem: str | None  # None while an index is served
+    unseen: bool = False
 
     @property
     def ready(self) -> bool:
         return self.problem is None
 
 
+#: What is served while Qdrant cannot be asked: nothing, and the next request asks again.
+NOT_SEEN = Served(generation=None, manifest=None, problem=UNAVAILABLE, unseen=True)
+
+
 def open_served(
-    config: RagConfig, embeddings: Embeddings, reranker: BaseDocumentCompressor | None
+    config: RagConfig,
+    store: QdrantStore,
+    embeddings: Embeddings,
+    reranker: BaseDocumentCompressor | None,
 ) -> tuple[Runnable[str, list[Document]] | None, Served]:
     """Open the live index as a retrieval half, or say why it cannot be served."""
-    seen = live_generation(config)
-    opened = _try_open(config, embeddings, reranker)
-    if isinstance(opened, NoIndexError) and live_generation(config) != seen:
-        # A flip landed while it opened. Only the live generation and the previous one are
-        # kept, so the one it checked may be gone already: look once more rather than
-        # report a missing index that is there (S2-6's third review).
-        seen = live_generation(config)
-        opened = _try_open(config, embeddings, reranker)
+    try:
+        seen = live_generation(store)
+        opened = _try_open(config, store, embeddings, reranker)
+        if isinstance(opened, NoIndexError) and live_generation(store) != seen:
+            # A switch landed while it opened. Only the live generation and the previous
+            # one are kept, so the one it checked may be gone already: look once more
+            # rather than report a missing index that is there (S2-6's third review).
+            seen = live_generation(store)
+            opened = _try_open(config, store, embeddings, reranker)
+    except StoreError:
+        logger.exception("Could not read the index's alias")
+        return None, NOT_SEEN
     if isinstance(opened, NoIndexError):
-        logger.warning("Not serving an index: %s", opened)  # the server log may name paths
+        logger.warning("Not serving an index: %s", opened)  # the server log may name hosts
         problem = REINGEST if isinstance(opened, IncompatibleIndexError) else NO_INDEX_YET
         return None, Served(generation=seen, manifest=None, problem=problem)
     if isinstance(opened, Exception):
-        # Not a verdict on the index (S2-7's first review): a disk error, a failing embedder.
-        # No generation is recorded as seen, so the next request tries again.
-        return None, Served(generation=None, manifest=None, problem=UNAVAILABLE)
+        # Not a verdict on the index (S2-7's first review): Qdrant gone, a failing embedder.
+        # Nothing is recorded as seen, so the next request tries again.
+        return None, NOT_SEEN
     logger.info(
         "Serving index %s (%d documents).",
-        opened.generation.name,
+        opened.generation,
         len(opened.manifest.documents),
     )
     return opened.retrieve, Served(opened.generation, opened.manifest, problem=None)
 
 
 def _try_open(
-    config: RagConfig, embeddings: Embeddings, reranker: BaseDocumentCompressor | None
+    config: RagConfig,
+    store: QdrantStore,
+    embeddings: Embeddings,
+    reranker: BaseDocumentCompressor | None,
 ) -> Retrieval | Exception:
     """The index opened, or why not: a :class:`NoIndexError` (``IncompatibleIndexError``
     too) when the index is missing or unusable, any other exception when opening it failed
     for a reason that says nothing about the index. That one is logged here, in full."""
     try:
-        return open_retrieval(config, embeddings, reranker=reranker)
+        return open_retrieval(config, embeddings, reranker=reranker, store=store)
     except NoIndexError as e:  # IncompatibleIndexError too
         return e
     # Deliberately broad: a reopen runs inside a request (and inside health), and an error
@@ -237,11 +256,13 @@ class Serving:
         pipeline: QueryPipeline,
         served: Served,
         *,
+        store: QdrantStore,
         embeddings: Embeddings,
         reranker: BaseDocumentCompressor | None,
         max_concurrent: int,
     ) -> None:
         self.config = config
+        self.store = store
         self.embeddings = embeddings
         self.reranker = reranker
         self.slots = SlotPool(max_concurrent)
@@ -257,13 +278,14 @@ class Serving:
         """Build the LLM half, load the embedder and the reranker, and open the index.
 
         Blocking, for seconds: run it in a thread. The LLM comes first, since it is the
-        part whose failure stops the server (Ollama down). A missing or unusable index only
-        makes the server not-ready.
+        part whose failure stops the server (Ollama down); ``rag-serve`` has checked Qdrant
+        before that. A missing or unusable index only makes the server not-ready.
         """
         llm = build_llm(config)  # validate_model_on_init asks Ollama for its models
+        store = build_store(config)
         embeddings = build_embedder(config)
         reranker = build_reranker(config)
-        retrieve, served = open_served(config, embeddings, reranker)
+        retrieve, served = open_served(config, store, embeddings, reranker)
         pipeline = QueryPipeline(
             retrieve=retrieve,
             prompt=build_prompt(config),
@@ -274,6 +296,7 @@ class Serving:
             config,
             pipeline,
             served,
+            store=store,
             embeddings=embeddings,
             reranker=reranker,
             max_concurrent=max_concurrent,
@@ -284,30 +307,54 @@ class Serving:
     ) -> Runnable[str, list[Document]] | None:
         return None if retrieve is None else serialized(retrieve, self.retrieval_lock)
 
-    async def refresh(self) -> None:
-        """Serve the generation the index path links to now, if it is not the one served.
+    async def _current(self) -> str | None | StoreError:
+        """The alias's target now, read in a thread (a request with a timeout must not hold
+        the event loop), or the error that stopped it being read."""
+        try:
+            return await asyncio.to_thread(live_generation, self.store)
+        except StoreError as e:
+            return e
 
-        A few system calls when nothing changed. A reopen runs in a thread, under the
+    def _unchanged(self, current: str | None) -> bool:
+        return not self.served.unseen and current == self.served.generation
+
+    async def refresh(self) -> None:
+        """Serve the generation the alias names now, if it is not the one served.
+
+        One ``GET /aliases`` when nothing changed. A reopen runs in a thread, under the
         retrieval lock, so it never overlaps a retrieval that uses the same embedder and
         reranker. Concurrent requests reopen once, whether the open succeeds or fails: a
         failed one records no generation as seen, so without the attempt count each request
-        queued behind it would try again in turn (S2-7's second review).
+        queued behind it would try again in turn (S2-7's second review). An alias that
+        cannot be read makes the server not-ready until one can.
         """
-        if live_generation(self.config) == self.served.generation:
+        current = await self._current()
+        if not isinstance(current, StoreError) and self._unchanged(current):
             return
         attempts = self._reopens
         async with self._reopen_lock:
-            if self._reopens != attempts or live_generation(self.config) == self.served.generation:
+            if self._reopens != attempts:
                 return  # another request reopened it, or tried, while this one waited
-            retrieve, served = await asyncio.to_thread(self._reopen)
+            current = await self._current()
+            if isinstance(current, StoreError):
+                if not self.served.unseen:
+                    logger.warning("Not serving an index: %s", current)
+                retrieve, served = None, NOT_SEEN
+            elif self._unchanged(current):
+                return
+            else:
+                retrieve, served = await asyncio.to_thread(self._reopen)
             self._reopens += 1
             self.served = served
             self.pipeline = replace(self.pipeline, retrieve=self._serialized(retrieve))
 
     def _reopen(self) -> tuple[Runnable[str, list[Document]] | None, Served]:
         with self.retrieval_lock:
-            return open_served(self.config, self.embeddings, self.reranker)
+            return open_served(self.config, self.store, self.embeddings, self.reranker)
 
     async def aclose(self) -> None:
-        """Close the model's HTTP clients, on the server's loop."""
-        await self.pipeline.aclose()
+        """Close the model's and the store's clients, on the server's loop."""
+        try:
+            await self.pipeline.aclose()
+        finally:
+            self.store.close()
