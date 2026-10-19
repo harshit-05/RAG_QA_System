@@ -5,7 +5,8 @@ Two tiers, by what can be computed where:
 - ``rag-eval retrieval`` scores retrieval against the golden set: tier 1, which CI
   recomputes on every pull request and every push to ``main``
   (:mod:`rag_qa.evaluation.retrieval`). It prints one row per answerable question, misses
-  first, then the means against their floors.
+  first, then the means against their floors. With ``--contexts-out`` it also writes the
+  contexts digest of every golden question, which proves two stores retrieve alike (S3-2).
 - Tier 2 runs offline, for hours, and is committed (S2-5):
   ``rag-eval generate`` answers every golden question through ``stream_answer``
   (:mod:`.generation`); ``rag-eval score`` scores those answers with RAGAs and a local
@@ -72,9 +73,11 @@ from rag_qa.evaluation.gate import (
 from rag_qa.evaluation.generation import StaleIndexError, generate
 from rag_qa.evaluation.ragas_scoring import ScoreRequest, ScoringError, score
 from rag_qa.evaluation.retrieval import (
+    CONTEXTS_VERSION,
     ItemScore,
     RetrievalScores,
     aggregate,
+    context_record,
     evaluate_retrieval,
 )
 from rag_qa.schema import RagConfig
@@ -276,8 +279,14 @@ def run_retrieval(args: argparse.Namespace) -> int:
         f"Retriever: {query.retriever} {config.retriever(query.retriever).kwargs()}, "
         f"reranker: {reranking}"
     )
+    contexts: list[dict[str, Any]] = []
+    record = (
+        (lambda item, docs: contexts.append(context_record(item, docs, config.paths.data)))
+        if args.contexts_out
+        else None
+    )
     try:
-        scores = evaluate_retrieval(config, answerable)
+        scores = evaluate_retrieval(config, items, record=record)
     except NoIndexError as e:
         return _cannot_run(e)
     # Deliberately broad: whatever stops retrieval from running is "could not run",
@@ -299,6 +308,18 @@ def run_retrieval(args: argparse.Namespace) -> int:
             )
         except OSError as e:
             return _cannot_run(f"cannot write {args.json}: {e.strerror}")
+    if args.contexts_out:
+        written = {
+            "version": CONTEXTS_VERSION,
+            "items": sorted(contexts, key=lambda context: context["id"]),
+        }
+        try:
+            Path(args.contexts_out).write_text(
+                json.dumps(written, indent=2) + "\n", encoding="utf-8"
+            )
+        except OSError as e:
+            return _cannot_run(f"cannot write {args.contexts_out}: {e.strerror}")
+        print(f"\nWrote the contexts of {len(contexts)} questions to {args.contexts_out}.")
     shown = _shown(thresholds_file.resolve())
     if below:
         missed = "; ".join(
@@ -587,8 +608,9 @@ def build_parser() -> argparse.ArgumentParser:
         "the answerable questions, checked against the floors (tier 1). Needs the index and "
         "the embedder only.",
         epilog="Exit status: 0 every floor is met; 1 a floor is missed; 2 could not run "
-        "(no index; a bad config, dataset or thresholds file; a --json file that cannot be "
-        "written; a usage error; or any other error while retrieving, with its traceback).",
+        "(no index; a bad config, dataset or thresholds file; a --json or --contexts-out "
+        "file that cannot be written; a usage error; or any other error while retrieving, "
+        "with its traceback).",
     )
     retrieval.add_argument(
         "--config",
@@ -609,6 +631,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         metavar="OUT",
         help="also write the per-question results and the means to this JSON file",
+    )
+    retrieval.add_argument(
+        "--contexts-out",
+        metavar="OUT",
+        help="also write, for every golden question in id order, answerable or not, the "
+        "sha256 of the context its prompt gets and its citations: two runs whose files "
+        "are identical put the same prompts in front of the model",
     )
     retrieval.set_defaults(run=run_retrieval)
 

@@ -6,6 +6,8 @@ embedder, so nothing downloads (DEC-11). Its tests also make building an LLM fai
 must run where there is no Ollama, as in CI's ``eval-retrieval`` job.
 """
 
+import asyncio
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -16,17 +18,24 @@ from conftest import (
     RERANK_CANDIDATES,
     RERANK_TOP_N,
     MakeConfig,
+    StreamingFakeChatModel,
     StubCrossEncoder,
     use_fakes,
     use_fakes_and_reranker,
 )
 from langchain_core.documents import Document
+from langchain_core.runnables import RunnableLambda
 
-from rag_qa.evaluation import cli
+from rag_qa import answering
+from rag_qa.answering import stream_answer
+from rag_qa.chain import QueryPipeline, build_prompt, build_retrieve, format_docs
+from rag_qa.components import build_embedder
+from rag_qa.config import load_config
+from rag_qa.evaluation import cli, retrieval
 from rag_qa.evaluation.cli import EXIT_CANNOT_RUN, EXIT_FLOOR_MISSED, EXIT_OK, main
-from rag_qa.evaluation.dataset import GoldenItem
+from rag_qa.evaluation.dataset import GoldenItem, load_golden
 from rag_qa.evaluation.gate import RetrievalFloors, ThresholdsError, below_floors, load_thresholds
-from rag_qa.evaluation.retrieval import aggregate, score_item
+from rag_qa.evaluation.retrieval import aggregate, context_record, evaluate_retrieval, score_item
 from rag_qa.settings import ENV_VECTOR_STORE_PATH
 
 CORPUS = Path("/corpus")
@@ -145,6 +154,31 @@ def test_a_source_listed_without_pages_matches_any_chunk_of_that_file() -> None:
     docs = [*pdf("1"), chunk("/corpus/notes.txt")]
     score = score_item(item({"source": "notes.txt"}), docs, CORPUS)
     assert (score.rank, score.covered, score.expected) == (2, 1, 1)
+
+
+def test_a_context_record_digests_the_rendered_context_and_lists_its_citations() -> None:
+    # The digest is of format_docs' output, the context the prompt is rendered with, so
+    # equal records mean equal prompts (S3-2). A citation names the corpus-relative file,
+    # and its printed page when it has one.
+    docs = [chunk("/corpus/sub/paper.pdf", "7", page=6), chunk("/corpus/notes.txt")]
+    record = context_record(item(PAPER), docs, CORPUS)
+    rendered = format_docs(docs).encode("utf-8")
+    assert record == {
+        "id": "q",
+        "answerable": True,
+        "context_sha256": hashlib.sha256(rendered).hexdigest(),
+        "citations": ["sub/paper.pdf, p. 7", "notes.txt"],
+    }
+
+
+def test_a_context_record_carries_no_score() -> None:
+    # The prompt shows no score: not the reranker's, and not a store's, should a retriever
+    # attach one. So a score may differ while the prompt does not (S3-2 review).
+    reranked = [chunk("/corpus/paper.pdf", "7", rerank_score=1.5)]
+    plain = [chunk("/corpus/paper.pdf", "7")]
+    assert context_record(item(PAPER), reranked, CORPUS) == context_record(
+        item(PAPER), plain, CORPUS
+    )
 
 
 def test_the_aggregates_are_the_means() -> None:
@@ -309,6 +343,145 @@ def test_json_holds_every_question_in_golden_order(evals: Path, tmp_path: Path) 
     assert (no_such_page["hit"], no_such_page["rank"]) == (False, None)
 
 
+def test_contexts_out_holds_every_question_in_id_order_answerable_or_not(
+    evals: Path, tmp_path: Path, capsys: Any
+) -> None:
+    out = tmp_path / "contexts.json"
+    assert run(evals, "--contexts-out", str(out)) == EXIT_OK
+    written = json.loads(out.read_text())
+    assert written["version"] == retrieval.CONTEXTS_VERSION
+    items = written["items"]
+    assert [(i["id"], i["answerable"]) for i in items] == [
+        ("every-file", True),
+        ("no-such-page", True),
+        ("unanswerable", False),  # retrieved too: its prompt has a context as well
+    ]
+    for record in items:
+        assert len(record["context_sha256"]) == 64
+        assert len(record["citations"]) == 5  # the retriever's k
+    assert "Wrote the contexts of 3 questions" in capsys.readouterr().out
+    # The table and the floors are tier 1's as before: the unanswerable one is not scored.
+    report = tmp_path / "run.json"
+    assert run(evals, "--json", str(report)) == EXIT_OK
+    assert len(json.loads(report.read_text())["items"]) == 2
+
+
+def test_contexts_out_is_the_same_file_on_every_run(evals: Path, tmp_path: Path) -> None:
+    # What lets a later story diff its file against S3-2's: nothing in it varies by run.
+    first, second = tmp_path / "first.json", tmp_path / "second.json"
+    assert run(evals, "--contexts-out", str(first)) == EXIT_OK
+    assert run(evals, "--contexts-out", str(second)) == EXIT_OK
+    assert first.read_bytes() == second.read_bytes()
+
+
+def test_a_digest_is_of_the_context_stream_answer_gives_the_model(
+    evals: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # What the tool rests on: equal records mean equal prompts (S3-2 review). So every
+    # question also goes through the real answer path, and each digest must be of the
+    # context the model was given there. A step added between retrieval and format_docs
+    # in stream_answer, or a context no longer rendered by format_docs, fails here.
+    config = load_config(evals)
+    items = load_golden(evals.parent / "eval" / "eval_dataset.jsonl")
+    records: list[dict[str, Any]] = []
+    evaluate_retrieval(
+        config,
+        items,
+        record=lambda i, docs: records.append(context_record(i, docs, config.paths.data)),
+    )
+
+    rendered: list[str] = []
+
+    def capturing(docs: Any) -> str:
+        rendered.append(format_docs(docs))
+        return rendered[-1]
+
+    monkeypatch.setattr(answering, "format_docs", capturing)
+    model = StreamingFakeChatModel()
+    prompt = build_prompt(config)
+    pipeline = QueryPipeline(
+        retrieve=build_retrieve(config, build_embedder(config)),
+        prompt=prompt,
+        llm=model,
+        corpus_root=config.paths.data,
+    )
+
+    async def answer_all() -> None:
+        for i in items:
+            async for _ in stream_answer(pipeline, i.question):
+                pass
+
+    asyncio.run(answer_all())
+    assert model.prompts == [
+        "\n".join(
+            f"{m.type}: {m.content}"
+            for m in prompt.format_messages(context=text, question=i.question)
+        )
+        for i, text in zip(items, rendered, strict=True)
+    ]
+    assert [r["context_sha256"] for r in records] == [
+        hashlib.sha256(text.encode("utf-8")).hexdigest() for text in rendered
+    ]
+
+
+def test_tier_1_retrieves_through_ainvoke_as_every_answer_does(
+    evals: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # stream_answer awaits ainvoke. A retriever with an async path of its own must be
+    # measured on that path, not on invoke's (S3-2 review).
+    real = retrieval.build_retrieve
+
+    def async_only(*args: Any, **kwargs: Any) -> Any:
+        retrieve = real(*args, **kwargs)
+
+        def not_this_path(question: str) -> Any:
+            raise AssertionError("tier 1 retrieved through invoke")
+
+        async def answers_path(question: str) -> Any:
+            return await retrieve.ainvoke(question)
+
+        return RunnableLambda(not_this_path, afunc=answers_path)
+
+    monkeypatch.setattr(retrieval, "build_retrieve", async_only)
+    assert run(evals) == EXIT_OK
+
+
+def test_without_contexts_out_an_unanswerable_question_is_not_retrieved(
+    evals: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked: list[str] = []
+    real = retrieval.build_retrieve
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        retrieve = real(*args, **kwargs)
+
+        def ask(question: str) -> Any:
+            asked.append(question)
+            return retrieve.invoke(question)
+
+        return RunnableLambda(ask)
+
+    monkeypatch.setattr(retrieval, "build_retrieve", counting)
+    assert run(evals) == EXIT_OK
+    assert asked == [EVERY_FILE["question"], NO_SUCH_PAGE["question"]]
+
+
+def test_contexts_out_is_written_when_a_floor_is_missed(evals: Path, tmp_path: Path) -> None:
+    # The digest compares prompts, not quality: a run that misses a floor still has one.
+    strict = write_floors(tmp_path, "retrieval: {hit_rate: 0.51, mrr: 0, recall: 0}\n")
+    out = tmp_path / "contexts.json"
+    assert run(evals, "--thresholds", str(strict), "--contexts-out", str(out)) == EXIT_FLOOR_MISSED
+    assert len(json.loads(out.read_text())["items"]) == 3
+
+
+def test_a_contexts_file_that_cannot_be_written_exits_2(
+    evals: Path, tmp_path: Path, capsys: Any
+) -> None:
+    out = tmp_path / "missing-dir" / "contexts.json"
+    assert run(evals, "--contexts-out", str(out)) == EXIT_CANNOT_RUN
+    assert "cannot write" in capsys.readouterr().err
+
+
 def test_a_reranked_run_says_how_many_candidates_it_fetched(
     evals: Path,
     make_config: MakeConfig,
@@ -365,7 +538,7 @@ def test_an_error_while_retrieving_exits_2_with_its_traceback(
 ) -> None:
     # The error CI's offline eval step gets when a model is not in the cache. Exit 1
     # would read as "a floor is missed" (S2-3's second review).
-    def offline(config: Any, items: Any) -> None:
+    def offline(config: Any, items: Any, **kwargs: Any) -> None:
         raise OSError("We couldn't connect to 'https://huggingface.co' to load the files")
 
     monkeypatch.setattr("rag_qa.evaluation.cli.evaluate_retrieval", offline)
