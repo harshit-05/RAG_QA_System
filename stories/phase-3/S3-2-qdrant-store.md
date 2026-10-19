@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | In progress (2026-10-17) |
 | **Closes** | DEC-3, DEC-19; NFR-4 (upsert in the store); SRS §11 (an interrupted ingestion never leaves the store half-written) |
 | **Depends on** | S3-1 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -30,6 +30,12 @@ and the rest follows. Not the store against the API's refresh, CI and the docs (
 1): between those two, `main`'s API and CI would point at a store that is gone. It records the
 decision here.
 
+**Decided in the plan (2026-10-17, maintainer approved): no split.** The parity tool is about
+100 lines, and a pull request of its own would add a whole review and close-out cycle to save
+the main one almost nothing. It lands instead as the branch's first commit, made by the
+maintainer at a checkpoint once it has run on FAISS, before any store code is written. So the
+FAISS file comes from a committed tool, and no later commit has to stage part of a file.
+
 1. **First commit, while FAISS is still the store: the parity tool.**
    `rag-eval retrieval --contexts-out FILE` writes, for all 25 golden questions,
    answerable or not, in id order:
@@ -40,6 +46,19 @@ decision here.
    Then run it against the current FAISS index, and keep the file outside the repository
    somewhere a reboot does not clear (for example `~/dev/rag-s3-2/contexts-faiss.json`).
    Paste its sha256 here.
+
+   **Run on FAISS (2026-10-17),** the live generation `db_faiss.gen-20261005T080811.306241Z-3e556052`
+   (3 documents, 1,708 chunks), with HF offline:
+   - `~/dev/rag-s3-2/contexts-faiss.json`: sha256
+     `5a36e2f9d00bbdaf49edaf07b8ba6af6f0e2ed52a5cf4c2e16c39aa66a074cbc`, 25 questions (5
+     unanswerable);
+   - `~/dev/rag-s3-2/tier1-faiss.json` (`--json`, for the per-question comparison): sha256
+     `e5dc2aff6815b9d96835b12bf999392db84300d09f1437a44cd2013bb7a4eb46`; hit rate 0.950, MRR
+     0.7958, recall 0.8583, S2-4's figures.
+
+   **Re-run with the reviewed tool (2026-10-19),** which retrieves through `ainvoke` as every
+   answer does (Review, below): both files came out with the same two sha256s, so the files
+   above are what the committed tool writes.
 2. **Dependency:** `uv add "qdrant-client>=1.19.1"`. Record the resolved versions; no locked
    version should move (checked in the architecture pass).
 3. **`compose.yaml`**, with one service, `qdrant`:
@@ -102,9 +121,9 @@ decision here.
      insertion order and across restarts. So every search asks for more than the cut,
      extends while the point at the cut ties with the next, orders by score, then point ID,
      and cuts. The real corpus has no tie at the cut today, so parity is unaffected.
-   - **Documents come back as FAISS returned them:** the same `page_content` and metadata.
-     No `_id` or `_collection_name` keys, since the prompt and `SourceRef` read the
-     metadata.
+   - **Documents come back as FAISS returned them:** the same `page_content` and metadata,
+     except `ingested_at`, which the re-ingest sets anew (Discovered). No `_id` or
+     `_collection_name` keys, since the prompt and `SourceRef` read the metadata.
    - **It is the only module importing `qdrant_client`.**
 7. **Ingest** (`ingest.py`): the writer lock moves to `paths.state`. `_open_live` checks the
    generation's point IDs against the manifest's derived ones. Every DEC-17 rule keeps
@@ -225,8 +244,56 @@ gh pr checks
 
 ## Discovered
 
-(Filled during implementation.)
+- **`ingested_at` will differ from FAISS's** (second review). Every chunk's metadata carries
+  it, set once per ingest run (`ingest.py`, `_prepare`). Qdrant's index is a
+  fresh ingest, so step 6's "the same metadata" cannot hold for that one key. Design review
+  2's payloads came back equal because it copied FAISS's own payloads; it did not
+  re-ingest. A test comparing metadata with FAISS's must leave `ingested_at` out. The
+  contexts digest is unaffected: the prompt never shows it.
+- **Two questions share a context:** `cade7-venue` and `unanswerable-cade8-venue` get the
+  same five chunks, so the FAISS file has 24 distinct digests for 25 questions. Expected:
+  the unanswerable one is a near-miss of the answerable one.
 
 ## Deviation from plan
 
 (Filled at close-out.)
+
+## Review (2026-10-19)
+
+**Second review of phase A, the parity tool (Opus 5.5): no blockers; 2 findings, 1 wording
+fix and 2 nits, fixed before the first commit.** It checked the tool's three claims against
+the real answer path, not against its own code.
+
+- **Checked and sound:**
+  - **The digest is what the prompt gets.** All 25 golden questions went through the real
+    `stream_answer` with a fake model recording its messages: each got the config's prompt
+    rendered with the context whose sha256 the FAISS file holds. 0 mismatches.
+  - **The FAISS run reproduces.** From the working tree, HF offline, `contexts-faiss.json`
+    and `tier1-faiss.json` came out byte-identical to the recorded sha256s (34 s), from the
+    live generation the story names.
+  - **Without the flag, nothing extra is retrieved.** The code skips unanswerable questions,
+    a test counts the calls, and a run with the flag gave the same tier-1 JSON.
+  - **Scores:** FAISS's retriever attaches none; the chunks' only score is the reranker's,
+    which came out bit-identical with its candidates reversed. Leaving it out is right
+    because the prompt never shows it.
+  - **The gates:** ruff, format and mypy clean; `rag-eval check` exit 0.
+- **Findings, fixed:**
+  - **The tool retrieved with `invoke`; every answer retrieves with `ainvoke`**
+    (`stream_answer`, so `rag-query`, the API and tier-2 `generate`). Equal on FAISS, but a
+    Qdrant retriever with an async path of its own would have been proven on a path no
+    answer takes. `evaluate_retrieval` now awaits `ainvoke` in one `asyncio.run`; step 1,
+    re-run with it, gave the same two sha256s.
+  - **`test_contexts_out_digests_exactly_what_was_retrieved` could not fail on its own:** it
+    checked `context_record`'s definition. Replaced by
+    `test_a_digest_is_of_the_context_stream_answer_gives_the_model`, which runs the real
+    answer path. A new `test_tier_1_retrieves_through_ainvoke_as_every_answer_does` guards
+    the first fix. Each failed on a scratch copy with its guard broken (tier 1 back on
+    `invoke`; a step between retrieval and `format_docs` in `stream_answer`), and only that
+    one.
+  - **Wording:** the no-score test blamed "FAISS's L2, Qdrant's cosine", which no chunk
+    carries; it now says the prompt shows no score.
+  - **Nits:** `CONTEXTS_VERSION` moved beside `context_record` in `retrieval.py`; a
+    redundant `str()` in the sort key went.
+- **After the fixes:** **899 passed, 5 xfailed**, coverage 98.38%; ruff, format and mypy
+  clean; `rag-eval check` exit 0.
+- **Recorded for phase B:** `ingested_at` (Discovered), and step 6's wording.

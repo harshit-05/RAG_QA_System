@@ -5,9 +5,24 @@
 
 ## Now
 
-**Next action: merge PR #19 (S3-1) with a merge commit, then start S3-2.** Not a squash or
-a rebase: `.git-blame-ignore-revs` names the reformat, `01854a1`, by its SHA, and only a
-merge commit keeps that commit.
+**Next action: S3-2's first commit, the parity tool, on `feat/s3-2-qdrant-store`; then
+phase B, the store.** PR #19 (S3-1) is merged with a merge commit (`bafa980`). The tool ran
+on FAISS and passed its second review; the FAISS files are in `~/dev/rag-s3-2/`, with their
+sha256s in the story.
+
+**Second review of S3-2 phase A, the parity tool (2026-10-19): no blockers; 2 findings, 1
+wording fix and 2 nits, fixed before the first commit.** All 25 golden questions, run
+through the real `stream_answer` with a recording fake model, got exactly the prompt whose
+context the FAISS file digests. The FAISS run reproduced byte for byte. Detail in the story.
+
+- **The tool now retrieves through `ainvoke`,** as every answer does. Equal on FAISS (step 1
+  re-run: the same sha256s), but a Qdrant retriever with its own async path would otherwise
+  have been proven on a path no answer takes.
+- **A test that checked only `context_record`'s definition** is replaced by one that runs
+  the answer path, plus one that tier 1 uses `ainvoke`. Each failed with its guard broken.
+- **For phase B:** chunks carry `ingested_at`, which the Qdrant re-ingest sets anew, so
+  "the same metadata as FAISS" holds except for that key (Discovered).
+- **The suite:** 899 passed, 5 xfailed, coverage 98.38%; `rag-eval check` exit 0.
 
 - **The maintainer, in parallel** (no session needed):
   - hand-label faithfulness for the 20 answerable v0.3 answers, before S3-11 (format in
