@@ -25,6 +25,7 @@ dependencies = [
     "fastapi>=0.135",
     "uvicorn>=0.32.1",
     "requests>=2.34.2",   # scripts/fetch_dataset.py; declared, not left transitive (S2-8)
+    "qdrant-client>=1.19.1",   # the index (DEC-19, S3-2); only rag_qa.vectorstore imports it
 ]
 
 [project.scripts]

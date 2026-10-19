@@ -1,0 +1,27 @@
+# compose.yaml — the services the RAG engine talks to (ARCHITECTURE.md §3.1, DEC-19, DEC-24).
+#
+# S3-2: Qdrant alone, the vector store every command reads and rag-ingest writes. Start it
+# before the first rag-ingest:
+#     docker compose up -d qdrant
+#     curl -s 127.0.0.1:6333/readyz
+# S3-9 adds the application, Caddy and the rest of the stack, and Qdrant's API key.
+#
+# The image is pinned by its index digest (DEC-24's table): a tag can be moved, a digest
+# cannot. It is the unprivileged variant, which runs as uid 1000. The plain image runs as
+# root, and a volume first written by root would stay root's after a switch (design review 2).
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.19.2-unprivileged@sha256:efb96a9425a90d2d5a1a0a474156280df1892dcdf1af3e8515bd2589b1bfd88b
+    # Loopback only: there is no API key until S3-9, so nothing beyond this machine may
+    # reach it. 6333 is the REST API qdrant-client uses; gRPC (6334) is not published.
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  # The index lives here: every generation, behind the alias rag-ingest switches. Removing
+  # the volume removes the index; rag-ingest builds it again from the corpus.
+  qdrant-storage:
