@@ -1,0 +1,236 @@
+# S2-3: Score retrieval against the golden set, in CI on every pull request
+
+| | |
+| --- | --- |
+| **Status** | Done 2026-10-04 (PR #9, merged after the cancel-race fix in PR #10). Verification 1–4 run and shown; reviewed twice |
+| **Closes** | FR-7 (tier 1 of the quality gate) |
+| **Depends on** | S2-1 (`build_retrieve`), S2-2 (the golden set) |
+| **Plan-first** | no |
+| **Branch** | `feat/s2-3-retrieval-eval`. Risky: it adds the first CI job with network access, and a gate that can turn PRs red. |
+
+## Goal
+
+Retrieval quality becomes numbers that CI recomputes on every pull request and every push
+to `main`. For each answerable golden question, three are taken over what the prompt
+would actually receive:
+
+- **hit rate**: an expected page, or one of its `also_pages`, appears anywhere in the
+  context;
+- **MRR**: the reciprocal rank of the first such page;
+- **recall**: the share of the expected `pages` the context covers (`also_pages` are not
+  in the denominator).
+
+`also_pages` came from S2-2's second review: three records name pages that repeat the
+whole answer. Without them, retrieving the repeat scores as a miss (ARCHITECTURE.md §2.1,
+DEC-15 tier 1).
+
+This is the half of the quality bar that can be recomputed: deterministic, with no LLM,
+and taking minutes. Design: ARCHITECTURE.md §2.1 DEC-15 (tier 1), CI in §2.5.
+
+## Scope
+
+- **`evaluation/retrieval.py`.**
+  - For each answerable item, run the question through the retrieval half that S2-1's
+    `build_retrieve` produces.
+  - Match the returned chunks to `expected_sources`. A chunk's `source` is made relative
+    to `paths.data`, which works both before and after S2-6, and its `page_label` is
+    compared with the record's printed pages.
+  - Compute hit, reciprocal rank and recall for each item, and their means.
+  - It needs the embedder and the index only, with no LLM, so it runs without Ollama.
+- **`evaluation/cli.py`, the `rag-eval` entry point.** It is registered in
+  `[project.scripts]`, and its other subcommands arrive in S2-5.
+  - Usage:
+    `rag-eval retrieval [--config PATH] [--dataset PATH] [--thresholds PATH] [--json OUT]`.
+  - It prints a table for each item (misses first) and the aggregates.
+  - Exit codes:
+
+    | Code | Meaning |
+    | --- | --- |
+    | 0 | every floor is met |
+    | 1 | a floor is missed |
+    | 2 | it cannot run: no index, a bad dataset or config, or any error while retrieving (with its traceback) |
+
+- **`eval/thresholds.yaml`, `retrieval:` section.**
+  - Measure the baseline of the current config: dense search, k=5, no reranker.
+  - Set each floor to the baseline minus a 0.05 tolerance. That is one question on about
+    20, so the first CI run must reproduce the local baseline on the runner's CPU before
+    the floors are trusted.
+  - Record both numbers here.
+- **The CI job `eval-retrieval`**, which runs after `check` (`needs: check`):
+  1. checkout and setup-uv, with the same pins as `check`;
+  2. `uv sync --locked`;
+  3. `actions/cache`, pinned by SHA, on `~/.cache/huggingface`, keyed on the model names
+     (the embedder now; S2-4 adds the cross-encoder), not on `config.yaml`, so a prompt
+     edit does not drop 180 MB of weights;
+  4. `rag-ingest` into `$RUNNER_TEMP/index` through `RAG_VECTOR_STORE_PATH`. This step
+     may use the network, and fills the cache on a miss;
+  5. `rag-eval retrieval` under `HF_HUB_OFFLINE=1`.
+
+  A comment in `ci.yml` says why this job alone has network access (DEC-15, caveat 19).
+  The `check` job keeps `HF_HUB_OFFLINE` exactly as it is.
+- **Tests.**
+  - Metric arithmetic on hand-built documents: a hit at rank 1, at rank 3 and no hit;
+    partial recall; `page_label` matching; absolute versus relative `source`. An
+    `also_pages` hit counts for hit rate and MRR but leaves recall unchanged; an
+    expected page ranked below an also-page sets the rank by the also-page.
+  - `rag-eval retrieval` exit codes, against a tiny index built with
+    `DeterministicFakeEmbedding`.
+
+## Out of scope
+
+- The reranker: S2-4 adds it, and re-baselines with these metrics.
+- Generation metrics (S2-5).
+- Tuning k, chunk size or the embedder. Note what the numbers suggest under Discovered;
+  each is a later, measured change.
+
+## Verification
+
+```bash
+# 1. the gates
+uv run ruff check && uv run mypy && uv run pytest --cov=rag_qa -q
+
+# 2. the real baseline, on a scratch index. The real index is untouched (caveat 9).
+#    The corpus is the real one, so only the index path is overridden.
+RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-ingest                 # ~2 min, 1,708 chunks
+RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-eval retrieval; echo "exit $?"
+#    → the item table and the aggregates; exit 0 against the new floors
+
+# 3. negative control: a floor above what was measured must fail
+printf 'retrieval: {hit_rate: 1.01, mrr: 0, recall: 0}\n' > <scratch>/strict.yaml
+RAG_VECTOR_STORE_PATH=<scratch>/index uv run rag-eval retrieval --thresholds <scratch>/strict.yaml; echo "exit $?"   # → 1
+#    and a run that cannot load its model is "could not run", never a floor verdict. The
+#    scratch index is set, so the exit 2 cannot come from a missing index instead
+mkdir -p <scratch>/empty-hf
+HF_HOME=<scratch>/empty-hf HF_HUB_OFFLINE=1 RAG_VECTOR_STORE_PATH=<scratch>/index \
+  uv run rag-eval retrieval; echo "exit $?"   # → 2, "retrieval could not run", with the traceback
+
+# 4. CI
+gh run list --limit 2
+#    → both jobs green on the branch. Re-run once: the eval-retrieval log should show a
+#      cache miss on the first run and a hit on the second.
+```
+
+## Review notes for the human
+
+- **The CI job is the first with network access.** Check three things:
+  - the action SHAs are pinned;
+  - the cache key is the model names, with a prefix restore key;
+  - `HF_HUB_OFFLINE=1` is set on the eval step, and the `check` job is unchanged.
+- **Hand-compute one item.** Take its retrieved pages from the table, and check the hit,
+  the rank and the recall against its golden record.
+
+## Discovered
+
+- **The baseline (2026-10-03): hit rate 0.800 (16 of 20), MRR 0.5875, recall 0.7167.**
+  The scratch index built for verification 2 and the real index built on 2026-10-02 give
+  identical results, question by question. That shows reproducibility on this host only;
+  the runner's CPU was verification 4's question, and the runner reproduced it exactly.
+- **The four misses are real retrieval misses, not partial repeats.** S2-2 says to read the
+  notes before calling a miss a retrieval failure, and none of these retrieved a page that
+  its notes name as a repeat:
+  - Three are GLIDER's opening pages: `glider-name` (p. 1, also p. 2), `glider-slm`
+    (p. 2) and `glider-training-data` (pp. 1–2). The retriever prefers the paper's later
+    pages (7, 8, 9, 4, 5). `glider-name` even retrieves p. 8, the trap its notes name.
+  - `glider-slm` is S0-6's own failure, now measured: "none of its five retrieved chunks
+    defined SLM". The model's invented expansion was at least partly a retrieval failure.
+  - `ohlbach-wrightson-mkrp` (p. 496) retrieves p. 500, which its notes do not name.
+- **Input for S2-4: what a reranker over 20 candidates can reach.** The same scratch index,
+  with a scratch config at k=20 (a diagnostic, not a config change), scores hit rate 0.95,
+  MRR 0.602 and recall 0.90.
+  - Three of the four misses have their page in the top 20, at ranks 10, 10 and 11.
+  - `glider-slm`'s p. 2 is not in the top 20 at all. No reranker over 20 candidates can
+    recover it; that takes a chunking, embedder or hybrid-retrieval change, each a later
+    and measured one.
+- **Input for S2-4: a copied config needs `--dataset` and `--thresholds`.** The eval files
+  are anchored to `eval/` beside the config file (ARCHITECTURE.md §2.3), as `paths` are. S2-4's
+  step 3 runs two scratch copies of `config.yaml`. Without those flags each exits 2 with
+  `cannot read the golden set <scratch>/eval/eval_dataset.jsonl` (seen here). Pass
+  `--dataset eval/eval_dataset.jsonl --thresholds eval/thresholds.yaml`, beside
+  `RAG_DATA_PATH`. The first review wrote them into S2-4's step 3. Both inputs are in the
+  STATUS.md backlog.
+
+## Deviation from plan
+
+- **The floors live in `evaluation/gate.py`.** The story names only `retrieval.py` and
+  `cli.py`, but ARCHITECTURE.md §2.2 gives the floors to `gate.py` ("freshness + floors"),
+  and the thresholds file is shared with tier 2. Tier 2's check runs in CI's model-free
+  job, so the floors cannot live in `retrieval.py`, which imports the chain and FAISS.
+  S2-5 adds the `generation:` floors and the freshness check to `gate.py`.
+  - `tests/test_architecture.py` asserts that importing `gate` loads none of ragas,
+    openai, torch, sentence-transformers or langchain_huggingface. S2-5's story lists
+    that test; it is added here because the module exists from here.
+- **The floors are rounded down to 3 decimals**: 0.75, 0.537 and 0.666. A floor of exactly
+  "baseline minus 0.05" could fail on floating-point rounding at the boundary. Rounding
+  loosens each floor by less than 0.001.
+- **The cache uses `actions/cache/restore` and `actions/cache/save`.** These come from the
+  same repository and SHA as `actions/cache`. The save runs right after the ingest step, not
+  at the end of the job. With the combined action, a first run that missed a floor would
+  save nothing, and verification 4's "miss, then hit" would fail on the re-run.
+- **The new job has `timeout-minutes: 20`.** Without it, a stalled download would run to
+  GitHub's 6-hour default.
+- **Smaller additions:**
+  - `--json` holds every question in golden-set order, for S2-4's question-by-question
+    comparison.
+  - Exit 2 also covers a `--json` file that cannot be written.
+  - Errors flush stdout first, so in a CI log the verdict comes after the table.
+  - The deprecation gate imports `rag_qa.evaluation.cli`, so its "every module" claim
+    stays true.
+- **First review (2026-10-03).**
+  - CI on push now runs for `main` only, plus every pull request. A story branch is tested
+    by its PR run, and the doubled run cost about 2.5 minutes of network time per push.
+    The comment records why `main`'s push matters: it writes the HF cache that PR runs
+    restore.
+  - S2-4's verification passes `--dataset` and `--thresholds` to its copied configs.
+  - README and ARCHITECTURE.md say "every pull request and every push to `main`".
+- **Second review (2026-10-04).**
+  - **Verified:**
+    - **Verification 4's cross-CPU question is answered.** The runner's fresh ingest and
+      this host's index give identical per-question tables: the same pages, in the same
+      order, for all 20 questions.
+    - MRR (0.5875) and recall (0.7167) were recomputed by hand from the CI table.
+    - Every metric rule has a test.
+  - **Why CI failed:** S2-1's mid-stream cancel test, not this story's code. It is a real
+    race in `stream_answer`. A sequence runs each chunk in its own task, so a cancel
+    arriving while a chunk is in flight left the model's stream open until the next
+    question. That was shown with the real `repl()` and a real SIGINT.
+    - On one core it failed 66 times in 300.
+    - It is fixed on `fix/s2-1-cancel-race` (patch from this review), which streams the
+      model itself: 0 in 300, plus deterministic tests.
+    - That fix lands first.
+  - **Changes here:**
+    - **A crash read as a missed floor.** With the model missing offline, `rag-eval
+      retrieval` died with a traceback and exit 1, and CI's comment read exit 1 as
+      "retrieval quality moved". Any error while retrieving now exits 2, with the
+      traceback (`test_an_error_while_retrieving_exits_2_with_its_traceback`). A negative
+      control was added to verification 3.
+    - **Ingest went online even on a cache hit.** Loading the fully cached embedder sent
+      huggingface.co 33 requests, and would have taken a newer upstream revision. On an
+      exact cache hit, ingest now runs with `HF_HUB_OFFLINE=1`. Offline, huggingface_hub
+      refuses all 9 of its lookups in-process (`OfflineModeIsEnabled`), and the model
+      loads from the cache.
+    - **The first review's trigger dropped tag runs.** With `branches` alone, GitHub runs
+      nothing for a tag push, so `v0.3` would have had no CI. The push trigger adds
+      `tags: ["v*"]`.
+    - "Every push" is corrected in `ci.yml`, `thresholds.yaml`, `retrieval.py`, `cli.py`,
+      ARCHITECTURE.md (§2.1) and STATUS.md (DEC-15), and in this story's title.
+- **Checked before the review commits (2026-10-04).** Two fixes went into them:
+  - S2-4's step 3 had put the flags in `EVAL="..."` and passed `$EVAL` unquoted. zsh,
+    this host's shell, does not word-split it, so both commands failed with
+    `unrecognized arguments` (reproduced). The flags are now spelled out.
+  - Verification 3's offline control did not set the index path, so without an index it
+    would exit 2 for the wrong reason. It now uses the scratch index.
+
+  The cancel-race patch was checked before it was applied: it applies cleanly to `main`,
+  and an independent re-measurement on one core gave 37 failures in 300 without it and 0
+  with it. A simulated merge showed no conflict with this branch's `STATUS.md` and
+  `ARCHITECTURE.md`.
+- **Verification 4 (CI), done.** All three are pull-request runs. The push run on
+  `eafdd02` was the red one: the race, as above.
+  - Run 37149287717 (`eafdd02`): the cache missed, ingest downloaded the embedder, and the
+    save step stored it under `hf-Linux-sentence-transformers--all-MiniLM-L6-v2`. The table
+    matched the local one exactly.
+  - Run 37161168026 (`5d04f1e`): an exact cache hit. Ingest ran with `HF_HUB_OFFLINE=1`, the
+    save was skipped, and the same table came out. No manual re-run was needed: PR #9's
+    cache is scoped to the PR, so its next run was the re-run.
+  - Run 37161736020 (`be52bce`), after `gh pr update-branch 9` brought in PR #10's race
+    fix: green. Both PRs were rebase-merged on 2026-10-04, #10 first.

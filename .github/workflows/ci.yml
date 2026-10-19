@@ -1,0 +1,181 @@
+# CI — ARCHITECTURE.md §1.5 and §2.5, DEC-11, DEC-15.
+#
+# Gates run cheapest first and all block. Each gate is added by the story that
+# makes it passable: ruff + pytest here (S1-2), coverage (S1-5), mypy (S1-6),
+# pip-audit (S1-8), the tier-1 retrieval eval (S2-3), the tier-2 check (S2-5b).
+#
+# The check job is hermetic by design: no Ollama, no model download, no network in
+# the suite. HF_HUB_OFFLINE is the tripwire for that: a test that tries to fetch an
+# embedding model fails loudly here instead of quietly downloading ~90 MB. The
+# eval-retrieval job is the one exception, and its comment says why.
+
+name: CI
+
+# push runs on main and on release tags only. A branch that has a PR is tested by the
+# pull_request run, so a push to it would repeat the same work: with eval-retrieval,
+# about 2.5 minutes of network time twice per push (S2-3 review). main's own push is
+# also what writes the HF model cache that PR runs restore: a cache written on a PR is
+# visible to that PR only. Open the PR to get CI on a story branch.
+#
+# tags is load-bearing: with branches alone, GitHub runs nothing for a tag push, and
+# each release is tagged with CI green on the tag itself (v0.2; S2-3's second review).
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      HF_HUB_OFFLINE: "1"
+      # Test on the same uv-managed CPython as development. .python-version says
+      # only "3.12", and uv would otherwise take the runner's system 3.12 (3.12.3
+      # in S1-2's run, ten patch releases behind).
+      UV_PYTHON_PREFERENCE: only-managed
+    steps:
+      # Actions pinned to full commit SHAs (supply chain, OWASP LLM05); the tag is
+      # in the comment. Bump both together.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.11.8"      # the uv this project is developed with (DEVELOPMENT.md)
+          enable-cache: true     # keyed on uv.lock
+          cache-python: true     # caches the managed CPython that UV_PYTHON_PREFERENCE selects
+
+      # --locked fails if uv.lock has drifted from pyproject.toml, so this step is
+      # also the lockfile check. CPU torch only (DEC-1 rule 2): no nvidia-* wheels.
+      - name: Install
+        run: uv sync --locked
+
+      # The torch variant is chosen by dependency groups (S1-7): `cpu` is a default
+      # group. If it is ever dropped, or an install reaches `--no-default-groups`,
+      # torch arrives from PyPI as the CUDA build with GBs of nvidia-* wheels, and
+      # silently. Fail here instead. `--no-sync` is load-bearing: a plain `uv run`
+      # re-syncs to the default groups first, which would repair the second case
+      # and then pass, so it checks what the Install step actually installed.
+      - name: CPU torch only (DEC-1 rule 2)
+        run: uv run --no-sync python -c "import sys, torch; print(torch.__version__); sys.exit(0 if torch.__version__.endswith('+cpu') else 1)"
+
+      - name: Lint
+        run: uv run ruff check
+
+      # Types (NFR-9, S1-6). Settings live in pyproject.toml's [tool.mypy];
+      # warn_unreachable there is ISS-12's only guard (code after a return).
+      - name: Types
+        run: uv run mypy
+
+      # Coverage gate (NFR-8, S1-5): the threshold and what is omitted live in
+      # pyproject.toml's [tool.coverage], so a local `pytest --cov` enforces the same.
+      - name: Test
+        run: uv run pytest --cov=rag_qa
+
+      # Dependency audit (OWASP LLM05, SRS §11, S1-8). Audits what the Install step
+      # installed, not uv.lock, which records both torch variants. A plain
+      # `pip-audit` skips torch: it looks up `2.14.0+cpu` on PyPI, finds no such
+      # release, and only warns. The CPU wheel is built from the same source release
+      # as PyPI's 2.14.0, so the local label is stripped and torch is audited
+      # under its public version. Only torch's label is rewritten, so any other local
+      # label stays visible to the audit. The project itself is excluded (not on PyPI).
+      # The freeze goes to a file and must be non-empty: GitHub's default shell has no
+      # pipefail, and pip-audit reports "no vulnerabilities" for an empty input.
+      - name: Audit
+        run: |
+          set -o pipefail
+          uv pip freeze --exclude-editable | sed 's/^\(torch==.*\)+cpu$/\1/' > "$RUNNER_TEMP/audit.txt"
+          test -s "$RUNNER_TEMP/audit.txt"
+          uv run --no-sync pip-audit --no-deps --disable-pip --progress-spinner off -r "$RUNNER_TEMP/audit.txt"
+
+      # Tier 2 of the quality bar (DEC-15, S2-5b): the committed run in eval/runs/ against
+      # eval/thresholds.yaml and this checkout. It needs no models, no Ollama and no eval
+      # extra, so it stays in this hermetic job. Exit 1: a floor is missed, or the run is
+      # stale, and the log names the re-run that fixes it (generate and score, or score
+      # only). Editing a hashed input (the prompt, the llm, retriever or reranker spec, the
+      # corpus, the splitter, the golden set, the judge's Modelfile) turns this red until
+      # tier 2 is run again. Exit 2: it could not run.
+      - name: Tier-2 check
+        run: uv run rag-eval check
+
+  # Tier 1 of the quality bar (DEC-15, S2-3): retrieval scored against the golden set
+  # (hit rate, MRR, recall), recomputed on every pull request and every push to main
+  # against eval/thresholds.yaml.
+  #
+  # The only job with network access (STATUS.md caveat 19). Scoring needs the real
+  # embedder's and the reranker's weights (~90 MB each), which the hermetic check job must
+  # never fetch. Only the ingest and warm-up steps may reach the network, and only on a
+  # cache miss: on an exact hit they run offline too (see the ingest step). The eval step
+  # always runs under HF_HUB_OFFLINE=1.
+  #
+  # Red here while check is green: read the eval step's exit. 1 means retrieval ran and
+  # missed a floor, so retrieval quality moved. 2 means it could not run (a model missing
+  # offline, an unreadable index), and the log holds the traceback.
+  eval-retrieval:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20  # a few minutes expected; a stalled download must not run for hours
+    env:
+      UV_PYTHON_PREFERENCE: only-managed  # the same CPython as the check job
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.11.8"
+          enable-cache: true
+          cache-python: true
+
+      - name: Install
+        run: uv sync --locked
+
+      # Keyed on the model names, not on config.yaml, so a prompt edit keeps the weights.
+      # The key names the models config.yaml uses, the embedder then the reranker: update
+      # it with them. When it changes, the prefix restore key brings back the old weights,
+      # and only the new model downloads.
+      - name: Restore the HF models
+        id: hf-models
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-sentence-transformers--all-MiniLM-L6-v2--cross-encoder--ms-marco-MiniLM-L-6-v2
+          restore-keys: hf-${{ runner.os }}-
+
+      # The real corpus into a scratch index; never a committed or cached one. This step
+      # downloads the embedder on a cache miss. On an exact hit it runs offline: online,
+      # loading even a fully cached model sends huggingface.co a request per file (33,
+      # measured in S2-3's second review), and would fetch a newer upstream revision of
+      # the model, which CI would then embed with and never cache. "0" is false to
+      # huggingface_hub.
+      - name: Ingest the corpus
+        env:
+          RAG_VECTOR_STORE_PATH: ${{ runner.temp }}/index
+          HF_HUB_OFFLINE: ${{ steps.hf-models.outputs.cache-hit == 'true' && '1' || '0' }}
+        run: uv run rag-ingest
+
+      # rag-ingest loads only the embedder, so the reranker's cross-encoder is fetched
+      # here (S2-4), before the save below and the offline eval step. It is built from
+      # config.yaml through build_reranker, not downloaded by name, so the cache holds
+      # exactly the files the eval step opens. Offline on an exact hit, as ingest is.
+      - name: Warm up the reranker
+        env:
+          HF_HUB_OFFLINE: ${{ steps.hf-models.outputs.cache-hit == 'true' && '1' || '0' }}
+        run: uv run python -c "from rag_qa.components import build_reranker; from rag_qa.config import load_config; print(build_reranker(load_config()))"
+
+      # Saved here, once ingest and the warm-up have filled it, rather than at the end of
+      # the job: a first run that misses a floor still caches the weights for the re-run.
+      - name: Save the HF models
+        if: steps.hf-models.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ steps.hf-models.outputs.cache-primary-key }}
+
+      - name: Retrieval eval (offline)
+        env:
+          HF_HUB_OFFLINE: "1"
+          RAG_VECTOR_STORE_PATH: ${{ runner.temp }}/index
+        run: uv run rag-eval retrieval

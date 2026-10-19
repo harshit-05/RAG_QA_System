@@ -1,0 +1,1319 @@
+{
+  "format": 1,
+  "kind": "answers",
+  "generated_at": "2026-10-11T07:23:58Z",
+  "limit": null,
+  "fingerprint": {
+    "query": "0bc9d46ef22754b4b6df6b00c4adccac0e9fefeb70ef566eb1ace1b06d74ea14",
+    "ingestion": "322aae02ed19390bed97e8241b496788e4f8e6ff3c3fdf9ae2f8ded4141629f9",
+    "corpus": "40604bdcadbbfee381875683f7ef63436fa433efcbe93c3bc081aa2debb4da3b",
+    "questions": "de0e88d96d2f75b0c49cc84e79c6c91c5d68d5fdd9d049539fcc93a5eb987392"
+  },
+  "generator": {
+    "ref": "components.llms.mistral_ollama",
+    "model": "mistral",
+    "digest": "6577803aa9a036369e481d648a2baebb381ebc6e897f2bb9a766a2aa7bfbc1cf"
+  },
+  "items": [
+    {
+      "id": "glider-purpose",
+      "question": "What is GLIDER and what does it evaluate?",
+      "answerable": true,
+      "answer": " GLIDER, as mentioned in the provided context, is an explainable and performant Small Language Model (SLM) introduced to judge interactions and decisions. It evaluates text inputs based on arbitrary user-defined criteria. The evaluation can result in 0-1, 1-3, or 1-5 Likert scale rankings, along with high-quality reasoning chains and text highlight spans for improved analysis of failures. The context also mentions that GLIDER supports fine-grained scoring, multilingual reasoning, and was trained on 685 domains and 183 criteria.",
+      "contexts": [
+        "evaluation metrics from 685 relevant domains of ap-\nplication to prove that Grading LLM Interactions\nand Decisions using Explainable Ranking can help\nimprove performance. Our resultant GLIDER\nmodel is a small (3.8B parameters), explainable\nand capable judge model that compares to perfor-\nmance of open models 17× its size and competes\nwith closed-source models like GPT-4o-mini and\nGPT-4o. GLIDER is capable of performing evalu-\nations on arbitrary inputs and producing 0-1, 1-3,\nand 1-5 Likert scale ranking along with high quality\nreasoning chains and text highlight spans for im-\nproved analysis of failures. Furthermore, we show\nthat multilingual capabilities of the base model are\nretained after monolingual training, proving that\nSLM judge models tend to forget lesser than their\nLLM counterparts as studied by Wang et al. (2024).\nWe open source our model to promote further re-\nsearch in this direction.\n2 Relevant Work\nOpen ended text evaluation has been a challenging",
+        "It contains a total of 2945 samples for these\ncategories with questions including coding,\nproblem solving and more that are essential\nfor a holistic evaluation of GLIDER.\n• Live Bench (White et al., 2024): Consider-\ning the potential of contamination or over-\noptimization of several of the datasets above,\nwe include the Live Bench instruction fol-\nlowing subset. This dataset is updated on\na monthly basis and contains multiple rule\nbased evaluation criteria for judging model\nresponses. These contain extract word match,\npresence of specific strings before paragraphs,\nand other easy-to-detect criteria. Hence, this\ndataset is beneficial for analyzing the multi-\nmetric instruction following capabilities of our\nmodel. We use the November 2024 release of\nthis dataset for our runs.\n• Multilingual Reward Bench (Gureja et al.,\n2024): This is a multilingual version of the",
+        "GLIDER:\nGrading LLM Interactions and Decisions using Explainable Ranking\nDarshan Deshpande1 Selvan Sunitha Ravi1 Sky CH-Wang1,2\nBartosz Mielczarek1 Anand Kannappan1 Rebecca Qian1\n1Patronus AI 2Columbia University\n{darshan, sunitha, bartek, anand, rebecca}@patronus.ai, skywang@cs.columbia.edu\nAbstract\nThe LLM-as-judge paradigm is increasingly\nbeing adopted for automated evaluation of\nmodel outputs. While LLM judges have shown\npromise on constrained evaluation tasks, closed\nsource LLMs display critical shortcomings\nwhen deployed in real world applications due to\nchallenges of fine grained metrics and explain-\nability, while task specific evaluation models\nlack cross-domain generalization. We intro-\nduce GLIDER, a powerful 3B evaluator LLM\nthat can score any text input and associated con-\ntext on arbitrary user defined criteria. GLIDER\nshows higher Pearson’s correlation than GPT-\n4o on FLASK and greatly outperforms prior\nevaluation models, achieving comparable per-",
+        "In this work, we fine-tune and align a phi-3.5-mini\nmodel to create GLIDER, an small, explainable and\nperformant SLM-as-judge model. We first create\nsynthetic data with randomized evaluation entity\nassociations, multi-metric samples and a large va-\nriety in domains and metrics. Through our results,\nwe show that GLIDER outperforms closed source\nmodels such as GPT-4o-mini and models 17× its\nsize. We show that our training setup retains mul-\ntilingual performance from the pretraining phase\nof the model and we experimentally prove that the\nthe addition of highlight spans not only improves\nperformance but also explainability of the judge.\nWe peform an exhaustive human evaluation study\non our data and model output quality to show high\ninter-annotator agreement in favor of GLIDER.",
+        "shows higher Pearson’s correlation than GPT-\n4o on FLASK and greatly outperforms prior\nevaluation models, achieving comparable per-\nformance to LLMs 17× its size. GLIDER sup-\nports fine-grained scoring, multilingual reason-\ning, span highlighting and was trained on 685\ndomains and 183 criteria. Extensive qualitative\nanalysis shows that GLIDER scores are highly\ncorrelated with human judgments, with 91.3%\nhuman agreement. We have open-sourced\nGLIDER to facilitate future research.1\n1 Introduction\nThe ever improving capabilities of Large Language\nModels (LLMs) have opened a wide variety of use\ncases for their applications such as tool use (Schick\net al., 2024; Qin et al., 2023), long context reason-\ning (Kuratov et al., 2024) and many more. With\nsuch a steep growth in the field, practitioners are\nstruggling to effectively evaluate LLMs on poten-\ntial downstream use cases (Gao et al., 2024).\nResearchers have been exploring automated eval-\nuation using LLMs as a substitute for human judg-"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "2412.14140v2.pdf, p. 2",
+          "source": "2412.14140v2.pdf",
+          "page": "2",
+          "score": 4.01779842376709
+        },
+        {
+          "n": 2,
+          "citation": "2412.14140v2.pdf, p. 5",
+          "source": "2412.14140v2.pdf",
+          "page": "5",
+          "score": 2.520846366882324
+        },
+        {
+          "n": 3,
+          "citation": "2412.14140v2.pdf, p. 1",
+          "source": "2412.14140v2.pdf",
+          "page": "1",
+          "score": 1.689058780670166
+        },
+        {
+          "n": 4,
+          "citation": "2412.14140v2.pdf, p. 8",
+          "source": "2412.14140v2.pdf",
+          "page": "8",
+          "score": 1.6870145797729492
+        },
+        {
+          "n": 5,
+          "citation": "2412.14140v2.pdf, p. 1",
+          "source": "2412.14140v2.pdf",
+          "page": "1",
+          "score": 1.3575693368911743
+        }
+      ],
+      "ttft_ms": 161667.71871299716,
+      "total_ms": 187905.29635599887
+    },
+    {
+      "id": "glider-name",
+      "question": "What does the name GLIDER stand for?",
+      "answerable": true,
+      "answer": " I could not find the answer to your question in the provided documents. The context does not mention what the acronym \"GLIDER\" stands for.",
+      "contexts": [
+        "Acknowledgements\nWe thank Douwe Kiela for his guidance and helpful\ndiscussions on GLIDER’s alignment and training\nprocess.\nLimitations\nWhile GLIDER is an explainability centric model,\nthere are instances where the model may produce\nincorrect highlight spans that point to the words or\nphrases in the prompt instead of the model output.\nThis behavior has been studied in the past by Chen\net al. (2023) and GLIDER has not been extensively\ntested for these cases. Moreover, the weaknesses of\nthe phi-3.5-mini-instruct model during pretraining\nmay have transferred to the GLIDER model. Fur-\nthermore, the robustness of GLIDER to perturbed\ndata or to confusing context is not tested. We leave\nthis robustness study to future work.\nEthics Statement\nWhile we have used Llama-3.1-70B for synthetic\ndata generation for training GLIDER, this selection\nmay have potentially lead to more biased training\ndata. We have tried our best to ensure equal skew\nin the distributions for safe and unsafe data but we",
+        "- B instructs cordiality\n[aggressive, helpful]\n- The Input contains an address\n\"213 W ABC\" which is PII\n[213 W ABC St]\n- The summary coherently represents\nthe details from the article...\n[discusses, life after\nthe revolution]\n1\n0\n5\nGLIDER\nPairwise ranking\nFlexible scale ranking\nFast guardrailing\nExplainable \nhighlight spans Score\nActionable reasoning chains\nFigure 1: GLIDER is capable of outputting high quality\nreasoning chains, scores and explainable highlight spans\nLLMs a default choice for open ended text evalua-\ntion in recent years (Zheng et al., 2023; Bavaresco\net al., 2024).\nHowever, the need for better evaluators becomes\ncrucial for cases where institutions cannot send\nprivate customer data over an external API call to\na closed LLM. Previous works (Son et al., 2024;\nKim et al., 2024b) show that open source LLMs\nstill fall short of closed-source enterprise LLMs\nfor generalizable evaluation tasks. While active ef-\nforts are being made to improve performance with",
+        "GLIDER:\nGrading LLM Interactions and Decisions using Explainable Ranking\nDarshan Deshpande1 Selvan Sunitha Ravi1 Sky CH-Wang1,2\nBartosz Mielczarek1 Anand Kannappan1 Rebecca Qian1\n1Patronus AI 2Columbia University\n{darshan, sunitha, bartek, anand, rebecca}@patronus.ai, skywang@cs.columbia.edu\nAbstract\nThe LLM-as-judge paradigm is increasingly\nbeing adopted for automated evaluation of\nmodel outputs. While LLM judges have shown\npromise on constrained evaluation tasks, closed\nsource LLMs display critical shortcomings\nwhen deployed in real world applications due to\nchallenges of fine grained metrics and explain-\nability, while task specific evaluation models\nlack cross-domain generalization. We intro-\nduce GLIDER, a powerful 3B evaluator LLM\nthat can score any text input and associated con-\ntext on arbitrary user defined criteria. GLIDER\nshows higher Pearson’s correlation than GPT-\n4o on FLASK and greatly outperforms prior\nevaluation models, achieving comparable per-",
+        "our research questions based on our results:\nRQ1: Can GLIDER compete with LLMs and ex-\nisting judge models? As observed in Table 1, our\nmodel achieves state of the art performance on the\nFLASK benchmark, beating GPT-4o while still per-\nforming close to models 17× its size on the Feed-\nback Collection dataset. Additionally, GLIDER is\nextremely beneficial for researchers working with\nsubjective metrics as shown by its strong perfor-\nmance on the Summeval benchmark where it out-\nperforms GPT-4o-mini. We observe that the model\nhas a strong grasp of text coherence and consis-\ntency where we see correlation scores of 0.462 and\n0.522 respectively against human evaluators, out-\nperforming models like Qwen-2.5-72B.\nAnalyzing the performance on pairwise ranking\ndatasets in Table 2, we observe that GLIDER not\nonly outperforms all existing open judge models,\nbut also compares to GPT-4o-mini with a difference\nof less than a single F1 score point. This proves",
+        "In this work, we fine-tune and align a phi-3.5-mini\nmodel to create GLIDER, an small, explainable and\nperformant SLM-as-judge model. We first create\nsynthetic data with randomized evaluation entity\nassociations, multi-metric samples and a large va-\nriety in domains and metrics. Through our results,\nwe show that GLIDER outperforms closed source\nmodels such as GPT-4o-mini and models 17× its\nsize. We show that our training setup retains mul-\ntilingual performance from the pretraining phase\nof the model and we experimentally prove that the\nthe addition of highlight spans not only improves\nperformance but also explainability of the judge.\nWe peform an exhaustive human evaluation study\non our data and model output quality to show high\ninter-annotator agreement in favor of GLIDER."
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "2412.14140v2.pdf, p. 9",
+          "source": "2412.14140v2.pdf",
+          "page": "9",
+          "score": -1.7223968505859375
+        },
+        {
+          "n": 2,
+          "citation": "2412.14140v2.pdf, p. 1",
+          "source": "2412.14140v2.pdf",
+          "page": "1",
+          "score": -2.5626697540283203
+        },
+        {
+          "n": 3,
+          "citation": "2412.14140v2.pdf, p. 1",
+          "source": "2412.14140v2.pdf",
+          "page": "1",
+          "score": -2.73431396484375
+        },
+        {
+          "n": 4,
+          "citation": "2412.14140v2.pdf, p. 6",
+          "source": "2412.14140v2.pdf",
+          "page": "6",
+          "score": -2.9851362705230713
+        },
+        {
+          "n": 5,
+          "citation": "2412.14140v2.pdf, p. 8",
+          "source": "2412.14140v2.pdf",
+          "page": "8",
+          "score": -2.9890213012695312
+        }
+      ],
+      "ttft_ms": 155990.7633570001,
+      "total_ms": 163862.1440829993
+    },
+    {
+      "id": "glider-slm",
+      "question": "In the GLIDER paper, what does SLM stand for?",
+      "answerable": true,
+      "answer": " In the provided context, SLM stands for \"Summarization as Judge Model\".",
+      "contexts": [
+        "In this work, we fine-tune and align a phi-3.5-mini\nmodel to create GLIDER, an small, explainable and\nperformant SLM-as-judge model. We first create\nsynthetic data with randomized evaluation entity\nassociations, multi-metric samples and a large va-\nriety in domains and metrics. Through our results,\nwe show that GLIDER outperforms closed source\nmodels such as GPT-4o-mini and models 17× its\nsize. We show that our training setup retains mul-\ntilingual performance from the pretraining phase\nof the model and we experimentally prove that the\nthe addition of highlight spans not only improves\nperformance but also explainability of the judge.\nWe peform an exhaustive human evaluation study\non our data and model output quality to show high\ninter-annotator agreement in favor of GLIDER.",
+        "- B instructs cordiality\n[aggressive, helpful]\n- The Input contains an address\n\"213 W ABC\" which is PII\n[213 W ABC St]\n- The summary coherently represents\nthe details from the article...\n[discusses, life after\nthe revolution]\n1\n0\n5\nGLIDER\nPairwise ranking\nFlexible scale ranking\nFast guardrailing\nExplainable \nhighlight spans Score\nActionable reasoning chains\nFigure 1: GLIDER is capable of outputting high quality\nreasoning chains, scores and explainable highlight spans\nLLMs a default choice for open ended text evalua-\ntion in recent years (Zheng et al., 2023; Bavaresco\net al., 2024).\nHowever, the need for better evaluators becomes\ncrucial for cases where institutions cannot send\nprivate customer data over an external API call to\na closed LLM. Previous works (Son et al., 2024;\nKim et al., 2024b) show that open source LLMs\nstill fall short of closed-source enterprise LLMs\nfor generalizable evaluation tasks. While active ef-\nforts are being made to improve performance with",
+        "shows higher Pearson’s correlation than GPT-\n4o on FLASK and greatly outperforms prior\nevaluation models, achieving comparable per-\nformance to LLMs 17× its size. GLIDER sup-\nports fine-grained scoring, multilingual reason-\ning, span highlighting and was trained on 685\ndomains and 183 criteria. Extensive qualitative\nanalysis shows that GLIDER scores are highly\ncorrelated with human judgments, with 91.3%\nhuman agreement. We have open-sourced\nGLIDER to facilitate future research.1\n1 Introduction\nThe ever improving capabilities of Large Language\nModels (LLMs) have opened a wide variety of use\ncases for their applications such as tool use (Schick\net al., 2024; Qin et al., 2023), long context reason-\ning (Kuratov et al., 2024) and many more. With\nsuch a steep growth in the field, practitioners are\nstruggling to effectively evaluate LLMs on poten-\ntial downstream use cases (Gao et al., 2024).\nResearchers have been exploring automated eval-\nuation using LLMs as a substitute for human judg-",
+        "GLIDER 3.8B 0.777 0.002 0.779 0.786 0.798 0.626 0.791 0.830 0.792 0.708 0.708 0.793 0.827 0.819 0.814 0.752 0.783 0.780 0.758 0.818 0.774 0.807\nTable 4: Pearson correlation scores between GLIDER\nand human judgment on the BigBench multilingual split\nModel ρ\nGPT-4o 0.583\nClaude-3.5-Sonnet 0.554\nGPT-4o-mini 0.138\nQwen-2.5-72B 0.506\nLlama-3.1-70B 0.450\nPhi-3.5-mini-instruct 0.290\nPrometheus-2-8x7B 0.481\nPrometheus-2-7B 0.313\nFlowAI Judge 0.410\nGLIDER 3.8B 0.545\neffective for SLM evaluators.\nRQ2: Can GLIDER perform effective multi-\nmetric evaluation? We specifically study this\nbehavior through the performance of GLIDER on\nthe LiveBench dataset. For this dataset, we ob-\nserve that GLIDER not only outperforms existing\njudge models with a score of 0.654, but also much\nlarger LLMs like GPT-4o-mini and Qwen-2.5-72B\nwith F1 scores of 0.481 and 0.485 respectively on\nmulti-instructional judgment criteria. This displays\nthat GLIDER is capable of understanding multiple\ncriteria effectively.",
+        "Acknowledgements\nWe thank Douwe Kiela for his guidance and helpful\ndiscussions on GLIDER’s alignment and training\nprocess.\nLimitations\nWhile GLIDER is an explainability centric model,\nthere are instances where the model may produce\nincorrect highlight spans that point to the words or\nphrases in the prompt instead of the model output.\nThis behavior has been studied in the past by Chen\net al. (2023) and GLIDER has not been extensively\ntested for these cases. Moreover, the weaknesses of\nthe phi-3.5-mini-instruct model during pretraining\nmay have transferred to the GLIDER model. Fur-\nthermore, the robustness of GLIDER to perturbed\ndata or to confusing context is not tested. We leave\nthis robustness study to future work.\nEthics Statement\nWhile we have used Llama-3.1-70B for synthetic\ndata generation for training GLIDER, this selection\nmay have potentially lead to more biased training\ndata. We have tried our best to ensure equal skew\nin the distributions for safe and unsafe data but we"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "2412.14140v2.pdf, p. 8",
+          "source": "2412.14140v2.pdf",
+          "page": "8",
+          "score": 0.5313341617584229
+        },
+        {
+          "n": 2,
+          "citation": "2412.14140v2.pdf, p. 1",
+          "source": "2412.14140v2.pdf",
+          "page": "1",
+          "score": -3.6498003005981445
+        },
+        {
+          "n": 3,
+          "citation": "2412.14140v2.pdf, p. 1",
+          "source": "2412.14140v2.pdf",
+          "page": "1",
+          "score": -3.6830086708068848
+        },
+        {
+          "n": 4,
+          "citation": "2412.14140v2.pdf, p. 7",
+          "source": "2412.14140v2.pdf",
+          "page": "7",
+          "score": -5.958639144897461
+        },
+        {
+          "n": 5,
+          "citation": "2412.14140v2.pdf, p. 9",
+          "source": "2412.14140v2.pdf",
+          "page": "9",
+          "score": -6.415005207061768
+        }
+      ],
+      "ttft_ms": 181716.62287099753,
+      "total_ms": 185390.92795800025
+    },
+    {
+      "id": "glider-training-data",
+      "question": "How many domains and how many evaluation criteria was GLIDER trained on?",
+      "answerable": true,
+      "answer": " Based on the provided context, GLIDER was trained on 685 domains and 183 criteria.",
+      "contexts": [
+        "shows higher Pearson’s correlation than GPT-\n4o on FLASK and greatly outperforms prior\nevaluation models, achieving comparable per-\nformance to LLMs 17× its size. GLIDER sup-\nports fine-grained scoring, multilingual reason-\ning, span highlighting and was trained on 685\ndomains and 183 criteria. Extensive qualitative\nanalysis shows that GLIDER scores are highly\ncorrelated with human judgments, with 91.3%\nhuman agreement. We have open-sourced\nGLIDER to facilitate future research.1\n1 Introduction\nThe ever improving capabilities of Large Language\nModels (LLMs) have opened a wide variety of use\ncases for their applications such as tool use (Schick\net al., 2024; Qin et al., 2023), long context reason-\ning (Kuratov et al., 2024) and many more. With\nsuch a steep growth in the field, practitioners are\nstruggling to effectively evaluate LLMs on poten-\ntial downstream use cases (Gao et al., 2024).\nResearchers have been exploring automated eval-\nuation using LLMs as a substitute for human judg-",
+        "(2023) but instead filtered and removed these in-\nstances from our dataset. The presence of very long\ncontext instances (> 8000 tokens) is not a strict re-\nquirement for GLIDER since we restrict the model\nmax length to 8192 tokens during training but we\nstrongly encourage future work in this direction.\nC.3 Open-source datasets and other\naugmentations\nTable 8 lists all external datasets used along with\nthe number of samples utilized from every dataset.\nSample sizes were selected with quality in mind in-\nstead of quantity and hence the sample distribution\nis varied across datasets.\nC.4 Human evaluation of GLIDER’s training\ndataset\nWe randomly sample 100 data points from our\ndataset to perform a human evaluation study on\nthe quality of samples. We recruit 3 expert annota-\ntors and ask them the following questions:\n1. Is the data clearly understandable and based\nin the domain provided? (Yes/No)\n2. Is the pass criteria appropriately structured?\n(Yes/No)",
+        "model to ensure improvements in both of these\nsectors.\n3 Dataset Generation\nWe use a mixture of synthetic datasets and openly\navailable datasets to train GLIDER. We first cre-\nate a detailed taxonomy of potential metrics that\nwe want to cover along with their definitions ( Ap-\npendix D). We create a similar taxonomy for the\ndomains that the model is expected to see, cov-\nering 685 unique domains like finance, medicine\nand technology to more creative domains like art,\nfashion and films. This is done to ensure generaliz-\nability in the GLIDER model. We use the Llama-\n3.1-70B model for the curation of the data points\nbecause of its strong instruction following capa-\nbilities and open license (Dubey et al., 2024). We\nadopt a four-stage generation and validation pro-\ncess to ensure the highest data quality possible.\nEvaluation text generation: To ensure that the\nmodel does not overfit to a single evaluation field\nlike user input or model output, we diversify",
+        "multi-instructional judgment criteria. This displays\nthat GLIDER is capable of understanding multiple\ncriteria effectively.\nRQ3: Can GLIDER trained on monolingual\ndata generalize to other languages? Referenc-\ning to Table 3, we can see that our GLIDER\nmodel outperforms Llama-3.1-70B on average per-\nformance. Along with this result, as backed by Ta-\nble 2, we can see that the model is able to retain\nits strong reasoning performance from its pretrain-\ning, achieving a 90% F1 score on the reasoning\nsubset of the Reward Bench in Table 3 and Ta-\nble 4. This proves that the single epoch training\nand alignment technique can mitigate the catas-\ntrophic forgetting of multilinguality and reasoning\nknowledge acquired during pretraining for small\nlanguage models like GLIDER. We encourage fu-\nture work to utilize this setup with larger models\nfor a fairer comparison of performance.\nRQ4: Do highlight spans improve the perfor-\nmance of GLIDER? As seen in Table 2, remov-",
+        "It contains a total of 2945 samples for these\ncategories with questions including coding,\nproblem solving and more that are essential\nfor a holistic evaluation of GLIDER.\n• Live Bench (White et al., 2024): Consider-\ning the potential of contamination or over-\noptimization of several of the datasets above,\nwe include the Live Bench instruction fol-\nlowing subset. This dataset is updated on\na monthly basis and contains multiple rule\nbased evaluation criteria for judging model\nresponses. These contain extract word match,\npresence of specific strings before paragraphs,\nand other easy-to-detect criteria. Hence, this\ndataset is beneficial for analyzing the multi-\nmetric instruction following capabilities of our\nmodel. We use the November 2024 release of\nthis dataset for our runs.\n• Multilingual Reward Bench (Gureja et al.,\n2024): This is a multilingual version of the"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "2412.14140v2.pdf, p. 1",
+          "source": "2412.14140v2.pdf",
+          "page": "1",
+          "score": 7.388579368591309
+        },
+        {
+          "n": 2,
+          "citation": "2412.14140v2.pdf, p. 12",
+          "source": "2412.14140v2.pdf",
+          "page": "12",
+          "score": 3.3484344482421875
+        },
+        {
+          "n": 3,
+          "citation": "2412.14140v2.pdf, p. 3",
+          "source": "2412.14140v2.pdf",
+          "page": "3",
+          "score": 2.6162478923797607
+        },
+        {
+          "n": 4,
+          "citation": "2412.14140v2.pdf, p. 7",
+          "source": "2412.14140v2.pdf",
+          "page": "7",
+          "score": 2.576974868774414
+        },
+        {
+          "n": 5,
+          "citation": "2412.14140v2.pdf, p. 5",
+          "source": "2412.14140v2.pdf",
+          "page": "5",
+          "score": 2.111658811569214
+        }
+      ],
+      "ttft_ms": 147930.10827699982,
+      "total_ms": 152828.04417300213
+    },
+    {
+      "id": "glider-flask-vs-gpt4o",
+      "question": "On the FLASK benchmark, how does GLIDER's Pearson correlation with human ratings compare with GPT-4o's?",
+      "answerable": true,
+      "answer": " On the FLASK benchmark, GLIDER's Pearson correlation with human ratings is higher than that of GPT-4o. Specifically, according to the context provided, GLIDER achieves a Pearson correlation score of 0.610, while GPT-4o scores 0.614.",
+      "contexts": [
+        "shows higher Pearson’s correlation than GPT-\n4o on FLASK and greatly outperforms prior\nevaluation models, achieving comparable per-\nformance to LLMs 17× its size. GLIDER sup-\nports fine-grained scoring, multilingual reason-\ning, span highlighting and was trained on 685\ndomains and 183 criteria. Extensive qualitative\nanalysis shows that GLIDER scores are highly\ncorrelated with human judgments, with 91.3%\nhuman agreement. We have open-sourced\nGLIDER to facilitate future research.1\n1 Introduction\nThe ever improving capabilities of Large Language\nModels (LLMs) have opened a wide variety of use\ncases for their applications such as tool use (Schick\net al., 2024; Qin et al., 2023), long context reason-\ning (Kuratov et al., 2024) and many more. With\nsuch a steep growth in the field, practitioners are\nstruggling to effectively evaluate LLMs on poten-\ntial downstream use cases (Gao et al., 2024).\nResearchers have been exploring automated eval-\nuation using LLMs as a substitute for human judg-",
+        "our research questions based on our results:\nRQ1: Can GLIDER compete with LLMs and ex-\nisting judge models? As observed in Table 1, our\nmodel achieves state of the art performance on the\nFLASK benchmark, beating GPT-4o while still per-\nforming close to models 17× its size on the Feed-\nback Collection dataset. Additionally, GLIDER is\nextremely beneficial for researchers working with\nsubjective metrics as shown by its strong perfor-\nmance on the Summeval benchmark where it out-\nperforms GPT-4o-mini. We observe that the model\nhas a strong grasp of text coherence and consis-\ntency where we see correlation scores of 0.462 and\n0.522 respectively against human evaluators, out-\nperforming models like Qwen-2.5-72B.\nAnalyzing the performance on pairwise ranking\ndatasets in Table 2, we observe that GLIDER not\nonly outperforms all existing open judge models,\nbut also compares to GPT-4o-mini with a difference\nof less than a single F1 score point. This proves",
+        "GLIDER 3.8B 0.777 0.002 0.779 0.786 0.798 0.626 0.791 0.830 0.792 0.708 0.708 0.793 0.827 0.819 0.814 0.752 0.783 0.780 0.758 0.818 0.774 0.807\nTable 4: Pearson correlation scores between GLIDER\nand human judgment on the BigBench multilingual split\nModel ρ\nGPT-4o 0.583\nClaude-3.5-Sonnet 0.554\nGPT-4o-mini 0.138\nQwen-2.5-72B 0.506\nLlama-3.1-70B 0.450\nPhi-3.5-mini-instruct 0.290\nPrometheus-2-8x7B 0.481\nPrometheus-2-7B 0.313\nFlowAI Judge 0.410\nGLIDER 3.8B 0.545\neffective for SLM evaluators.\nRQ2: Can GLIDER perform effective multi-\nmetric evaluation? We specifically study this\nbehavior through the performance of GLIDER on\nthe LiveBench dataset. For this dataset, we ob-\nserve that GLIDER not only outperforms existing\njudge models with a score of 0.654, but also much\nlarger LLMs like GPT-4o-mini and Qwen-2.5-72B\nwith F1 scores of 0.481 and 0.485 respectively on\nmulti-instructional judgment criteria. This displays\nthat GLIDER is capable of understanding multiple\ncriteria effectively.",
+        "Table 1: Pearson correlation for various models on ranking tasks against human ratings. ∗ indicates that the dataset\nis an in-domain test set for the model. Blue highlights indicate the best open-source model, bolded text indicates\nbest overall and underline indicates best open-source judge model\nModel BigGen Bench FLASK Feedback Bench Summeval Average\nRelevance Consistency Coherence Fluency\nGPT-4o 0.614 0.610 0.810 0.312 0.550 0.419 0.522 0.548\nGPT-4o-mini 0.231 0.565 0.803 0.431 0.425 0.423 0.283 0.452\nClaude-3.5-Sonnet 0.592 0.592 0.812 0.464 0.620 0.497 0.496 0.582\nLlama-3.1-70B 0.580 0.572 0.792 0.391 0.497 0.527 0.391 0.536\nQwen-2.5-72B 0.560 0.581 0.791 0.457 0.443 0.431 0.534 0.542\nPhi-3.5-mini-instruct 0.294 0.331 0.731 0.245 0.166 0.261 0.266 0.328\nPrometheus-2-8x7B 0.524 0.555 0.898 ∗ 0.287 0.320 0.328 0.293 0.458\nPrometheus-2-7B 0.392 0.545 0.882 ∗ 0.216 0.188 0.236 0.134 0.370\nFlowAI Judge 3.8B 0.460 0.400 0.787 0.286 0.358 0.351 0.309 0.422",
+        "for a fairer comparison of performance.\nRQ4: Do highlight spans improve the perfor-\nmance of GLIDER? As seen in Table 2, remov-\ning the highlight spans from the pairwise training\ndata leads to an overall drop of 0.05 pearson corre-\nlation between human and model judgments. The\nbiggest impact for the pairwise evaluation is seen\nfor the BigGen Bench which suggests that high-\nlighting important phrases before making the fi-\nnal decision is beneficial for data containing finer,\nmore instance-specific metrics. Parallely, for the\npointwise ranking task, we observe a drop of ap-\nproximately 2% in F1 score with the exclusion of\nhighlight spans. The largest performance degra-\ndation was seen on the LiveBench dataset which\nsuggests that multi-metric evaluations are benefit-\nted from the inclusion of highlights. The overall\nobservation in Table 1 and Table 2 suggests that\nthe impact of performance of the highlight spans\nis more prominent in the more subjective point-"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "2412.14140v2.pdf, p. 1",
+          "source": "2412.14140v2.pdf",
+          "page": "1",
+          "score": 6.214458465576172
+        },
+        {
+          "n": 2,
+          "citation": "2412.14140v2.pdf, p. 6",
+          "source": "2412.14140v2.pdf",
+          "page": "6",
+          "score": 4.8163018226623535
+        },
+        {
+          "n": 3,
+          "citation": "2412.14140v2.pdf, p. 7",
+          "source": "2412.14140v2.pdf",
+          "page": "7",
+          "score": 4.419426918029785
+        },
+        {
+          "n": 4,
+          "citation": "2412.14140v2.pdf, p. 5",
+          "source": "2412.14140v2.pdf",
+          "page": "5",
+          "score": 3.7083053588867188
+        },
+        {
+          "n": 5,
+          "citation": "2412.14140v2.pdf, p. 7",
+          "source": "2412.14140v2.pdf",
+          "page": "7",
+          "score": 1.7650139331817627
+        }
+      ],
+      "ttft_ms": 201120.7478230026,
+      "total_ms": 216888.88240800225
+    },
+    {
+      "id": "glider-human-study",
+      "question": "How did the GLIDER authors check the model's outputs with human annotators, and what agreement did that study reach?",
+      "answerable": true,
+      "answer": " The authors of the GLIDER model checked their model's outputs with 3 expert annotators in a human evaluation study. According to the provided context, the average agreement scores for each binary metric were 91%, 90%, and 91%. They also achieved an overall Krippendorff's alpha of 0.838, indicating high quality of annotations. More details about the human study can be found in subsection C.4.",
+      "contexts": [
+        "with 3 expert annotators. More details about the\nhuman study are provided in subsection C.4. As\nobserved in Table 6, the model outputs receive av-\nerage agreement scores of 91%, 90% and 91% for\neach of the binary metrics. We achieved an over-\nall Krippendorrf’s alpha (Krippendorff, 2018) of\n0.838 for the study displaying the high quality of\nannotations. A key observation from human an-",
+        "In this work, we fine-tune and align a phi-3.5-mini\nmodel to create GLIDER, an small, explainable and\nperformant SLM-as-judge model. We first create\nsynthetic data with randomized evaluation entity\nassociations, multi-metric samples and a large va-\nriety in domains and metrics. Through our results,\nwe show that GLIDER outperforms closed source\nmodels such as GPT-4o-mini and models 17× its\nsize. We show that our training setup retains mul-\ntilingual performance from the pretraining phase\nof the model and we experimentally prove that the\nthe addition of highlight spans not only improves\nperformance but also explainability of the judge.\nWe peform an exhaustive human evaluation study\non our data and model output quality to show high\ninter-annotator agreement in favor of GLIDER.",
+        "observation in Table 1 and Table 2 suggests that\nthe impact of performance of the highlight spans\nis more prominent in the more subjective point-\nwise ranking tasks as compared to pairwise ranking\nwhich suggests that the phrase extraction helps the\nmodel focus at certain aspects of the text before\nmaking the final scoring decision. This is inline\nwith the findings of (Li et al., 2024b) where per-\nformance of subjective, AI text detection improves\nwith explicit extraction of highlight spans.\n6 Qualitative Analysis\nIn this section, we study the quality of GLIDER’s\noutputs and discuss strengths and weaknesses of\nthe model.\nTo study the usefulness of the reasoning chains\nand highlight spans as well as the correctness of\nthe score, we sample a set of 100 data points from\nour test sets and perform a human evaluation study\nwith 3 expert annotators. More details about the\nhuman study are provided in subsection C.4. As\nobserved in Table 6, the model outputs receive av-",
+        "We use this data to study the generalizability\nof the fine grained metrics in the training data.\n2. Feedback Bench (Kim et al., 2023): con-\ntains a set of 1000 data points, that include\na set of 200 instance and situation specific in-\nstructions. This is the in-domain test set for\nthe Prometheus models (Kim et al., 2024b)\nand we include it to check the performance of\nGLIDER on these instance specific texts.\n3. Summeval (Fabbri et al., 2020): Contains\nsummaries generated using 16 models for 100\ndifferent source news articles. The dataset is\nannotated by 3 expert annotators. We aver-\nage these annotations and round them to the\nnearest integer score for our task. The Sum-\nmeval dataset helps us understand the human\nalignment of GLIDER through subjective met-\nrics like coherence, consistency, fluency and\nrelevance.\n4. BigGen Bench (Kim et al., 2024a): Contains\n765 instances crafted with a human-in-the-\nloop process spanning across 77 tasks. The\ndataset also contains a multilingual subset",
+        "shows higher Pearson’s correlation than GPT-\n4o on FLASK and greatly outperforms prior\nevaluation models, achieving comparable per-\nformance to LLMs 17× its size. GLIDER sup-\nports fine-grained scoring, multilingual reason-\ning, span highlighting and was trained on 685\ndomains and 183 criteria. Extensive qualitative\nanalysis shows that GLIDER scores are highly\ncorrelated with human judgments, with 91.3%\nhuman agreement. We have open-sourced\nGLIDER to facilitate future research.1\n1 Introduction\nThe ever improving capabilities of Large Language\nModels (LLMs) have opened a wide variety of use\ncases for their applications such as tool use (Schick\net al., 2024; Qin et al., 2023), long context reason-\ning (Kuratov et al., 2024) and many more. With\nsuch a steep growth in the field, practitioners are\nstruggling to effectively evaluate LLMs on poten-\ntial downstream use cases (Gao et al., 2024).\nResearchers have been exploring automated eval-\nuation using LLMs as a substitute for human judg-"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "2412.14140v2.pdf, p. 7",
+          "source": "2412.14140v2.pdf",
+          "page": "7",
+          "score": 3.2096171379089355
+        },
+        {
+          "n": 2,
+          "citation": "2412.14140v2.pdf, p. 8",
+          "source": "2412.14140v2.pdf",
+          "page": "8",
+          "score": 2.5033366680145264
+        },
+        {
+          "n": 3,
+          "citation": "2412.14140v2.pdf, p. 7",
+          "source": "2412.14140v2.pdf",
+          "page": "7",
+          "score": 1.3734455108642578
+        },
+        {
+          "n": 4,
+          "citation": "2412.14140v2.pdf, p. 4",
+          "source": "2412.14140v2.pdf",
+          "page": "4",
+          "score": 0.6206740140914917
+        },
+        {
+          "n": 5,
+          "citation": "2412.14140v2.pdf, p. 1",
+          "source": "2412.14140v2.pdf",
+          "page": "1",
+          "score": 0.38629022240638733
+        }
+      ],
+      "ttft_ms": 137285.9651910003,
+      "total_ms": 157713.05423000013
+    },
+    {
+      "id": "glider-data-filtering",
+      "question": "How many samples were removed when GLIDER's generated training data was cleaned, and what share of the generated data was that?",
+      "answerable": true,
+      "answer": " The context does not provide a specific number of samples removed during the cleaning process of GLIDER's generated training data. However, it is mentioned that a total of 18,258 samples were removed, which accounts for nearly 14.6% of the generated data.",
+      "contexts": [
+        "(2023) but instead filtered and removed these in-\nstances from our dataset. The presence of very long\ncontext instances (> 8000 tokens) is not a strict re-\nquirement for GLIDER since we restrict the model\nmax length to 8192 tokens during training but we\nstrongly encourage future work in this direction.\nC.3 Open-source datasets and other\naugmentations\nTable 8 lists all external datasets used along with\nthe number of samples utilized from every dataset.\nSample sizes were selected with quality in mind in-\nstead of quantity and hence the sample distribution\nis varied across datasets.\nC.4 Human evaluation of GLIDER’s training\ndataset\nWe randomly sample 100 data points from our\ndataset to perform a human evaluation study on\nthe quality of samples. We recruit 3 expert annota-\ntors and ask them the following questions:\n1. Is the data clearly understandable and based\nin the domain provided? (Yes/No)\n2. Is the pass criteria appropriately structured?\n(Yes/No)",
+        "It contains a total of 2945 samples for these\ncategories with questions including coding,\nproblem solving and more that are essential\nfor a holistic evaluation of GLIDER.\n• Live Bench (White et al., 2024): Consider-\ning the potential of contamination or over-\noptimization of several of the datasets above,\nwe include the Live Bench instruction fol-\nlowing subset. This dataset is updated on\na monthly basis and contains multiple rule\nbased evaluation criteria for judging model\nresponses. These contain extract word match,\npresence of specific strings before paragraphs,\nand other easy-to-detect criteria. Hence, this\ndataset is beneficial for analyzing the multi-\nmetric instruction following capabilities of our\nmodel. We use the November 2024 release of\nthis dataset for our runs.\n• Multilingual Reward Bench (Gureja et al.,\n2024): This is a multilingual version of the",
+        "We use this data to study the generalizability\nof the fine grained metrics in the training data.\n2. Feedback Bench (Kim et al., 2023): con-\ntains a set of 1000 data points, that include\na set of 200 instance and situation specific in-\nstructions. This is the in-domain test set for\nthe Prometheus models (Kim et al., 2024b)\nand we include it to check the performance of\nGLIDER on these instance specific texts.\n3. Summeval (Fabbri et al., 2020): Contains\nsummaries generated using 16 models for 100\ndifferent source news articles. The dataset is\nannotated by 3 expert annotators. We aver-\nage these annotations and round them to the\nnearest integer score for our task. The Sum-\nmeval dataset helps us understand the human\nalignment of GLIDER through subjective met-\nrics like coherence, consistency, fluency and\nrelevance.\n4. BigGen Bench (Kim et al., 2024a): Contains\n765 instances crafted with a human-in-the-\nloop process spanning across 77 tasks. The\ndataset also contains a multilingual subset",
+        "wise data generation is used for RLAIF alignment\ntraining phase later (Lee et al., 2024a; Wang et al.,\n2024) where we use the rejected samples to lower\ntheir probabilities and increase the probabilities of\nthe chosen samples. Before we generate highlight\nspans, we perform a sanity verification on the en-\ntire dataset by passing all generated sequence once\nagain through the Llama-3.1-70B model. The LLM\nis given a persona of an experienced data curator\nand verifier which helps it produce more direct and\naccurate responses, following Li et al. (2024a) who\nshow that LLMs are capable of providing high qual-\nity verifications. The model is then prompted to\nverify the correct and incorrect score and reason-\ning chains based on the generated data instance.\nAfter the automated evaluation, we manually scan\nthe data and remove instances that contain incor-\nrect rubrics, We remove a total of 18,258 samples\n(nearly 14.6% of the generated data) that contained",
+        "765 instances crafted with a human-in-the-\nloop process spanning across 77 tasks. The\ndataset also contains a multilingual subset\nwith text in 10 different languages which we\nuse to evaluate the generalization of GLIDER\nto other langauges from its pretraining."
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "2412.14140v2.pdf, p. 12",
+          "source": "2412.14140v2.pdf",
+          "page": "12",
+          "score": 2.8770883083343506
+        },
+        {
+          "n": 2,
+          "citation": "2412.14140v2.pdf, p. 5",
+          "source": "2412.14140v2.pdf",
+          "page": "5",
+          "score": -0.13719195127487183
+        },
+        {
+          "n": 3,
+          "citation": "2412.14140v2.pdf, p. 4",
+          "source": "2412.14140v2.pdf",
+          "page": "4",
+          "score": -0.28354841470718384
+        },
+        {
+          "n": 4,
+          "citation": "2412.14140v2.pdf, p. 3",
+          "source": "2412.14140v2.pdf",
+          "page": "3",
+          "score": -1.8524099588394165
+        },
+        {
+          "n": 5,
+          "citation": "2412.14140v2.pdf, p. 4",
+          "source": "2412.14140v2.pdf",
+          "page": "4",
+          "score": -2.0115365982055664
+        }
+      ],
+      "ttft_ms": 125539.44801100079,
+      "total_ms": 137175.1856310002
+    },
+    {
+      "id": "yolo-accuracy",
+      "question": "What accuracy does the YOLOv8 surveillance system report for object detection and for anomaly recognition?",
+      "answerable": true,
+      "answer": " The YOLOv8 surveillance system reports a 95.4% accuracy for object detection and a 92.7% accuracy for anomaly recognition, according to the provided context.",
+      "contexts": [
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n52 \nis further equipped with smart analytics, visual dashboards, \nand performance evaluation modules that assess model \naccuracy, precision, recall, and real -time responsiveness. \nExperimental results show that the system achieves 95.4% \naccuracy in object detection and 92.7% accuracy in anomaly \nrecognition while reducing false alerts through context -aware \nfiltering. Use cases span crowd control in public venues, \nindustrial compliance tracking, traffic surveillance, and law \nenforcement applications. By offering a scalable, cost -efficient, \nand autonomous monitoring solution, this AI -powered system \nrepresents a transformative step toward smart surveillance \nand intelligent urban infrastructure. \n \nINTRODUCTION \nIn today’s rapidly evolving world, urban expansion, increased population density, and \nheightened public activities have made security and safety a top priority for governments,",
+        "networks without requiring significant hardware upgrades..  \n \nRESULTS \nThe proposed AI -powered surveillance system was evaluated based on accuracy, efficiency, \nand real-time performance, leveraging YOLOv8 and anomaly detection models for enhanced \nsecurity monitoring. The object detection model achieved a high accuracy rate of 95.4% in \ncrowd detection and anomaly identification, significantly improving real -time surveillance \nefficiency. The anomaly detection framework effectively identified suspicious activities with",
+        "faster response times, and improved operational efficiency in crowd management, crime \nprevention, and workplace monitoring. \nKey findings from the system’s implementation include: \n• High Detection Accuracy – The YOLOv8 model achieved 95.4% accuracy in real -time \ncrowd detection and anomaly identification, ensuring precise monitoring. \n• Effective Anomaly Detection – The anomaly detection framework identified suspicious \nactivities with 92.7% accuracy, reducing false positives through context-aware filtering. \n• Optimized Computational Performance – The system reduced computational overhead \nby 30%, making it suitable for deployment on existing CCTV networks without extensive \nhardware upgrades. \n• Fast Response Time – The AI -driven surveillance system generated real -time alerts \nwithin 2 -3 seconds of detecting anomalies, allowing security personnel to take \nimmediate preventive action. \n• Scalability and Efficiency – The model successfully handled high -density surveillance",
+        "identifying trends, and making accurate predictions. For example, anomaly detection models \ntrained on vast datasets can differentiate between normal activities and potentially harmful \nbehavior, triggering alerts before incidents escalate. \nA key ML model used for object detection and activity recognition in surveillance \napplications is YOLOv8 (You Only Look Once). YOLOv8 is a state -of-the-art deep learning model \ndesigned for real -time object detection and tracking, making it highly suitable for crowd \nanalysis, crime detection, and work monitoring. By processing live CCTV footage, YOLOv8 can \nidentify the number of people in a specific area, track their movements, detect suspicious \nbehavior, and provide real -time notifications. The integration of convolutional neural networks \n(CNNs) and deep learning techniques further enhances detection accuracy, ensuring low false \npositives and high efficiency. \n \n3. Challenges in Traditional CCTV Monitoring",
+        "unauthorized access, and security threats, the proposed methodology integrates AI -driven \nbehavioral analysis and deep learning models. The system first processes real -time CCTV \nfootage using YOLOv8 for object detection, identifying humans, vehicles, and other relevant \nentities. Next, an LSTM -based anomaly detection model is trained on historical surveillance \ndata to recognize deviation patterns in movement, behavior, and interactions. The model \ncontinuously analyzes entry -exit points, restricted areas, and high -risk zones to detect \nloitering, unauthorized personnel, and abnormal activity sequences. Upon detecting an \nanomaly, the system triggers automated alerts, notifying security personnel through \ndashboards, mobile notifications, or alarm systems for immediate intervention. The \nframework is further optimized to reduce false positives by employing context-aware filtering \nand multi-modal data fusion, ensuring high detection accuracy with minimal false alerts. This"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 3",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "3",
+          "score": 8.096963882446289
+        },
+        {
+          "n": 2,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 8",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "8",
+          "score": 8.075940132141113
+        },
+        {
+          "n": 3,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 9",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "9",
+          "score": 7.9515380859375
+        },
+        {
+          "n": 4,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 4",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "4",
+          "score": 6.804161071777344
+        },
+        {
+          "n": 5,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 8",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "8",
+          "score": 6.587741374969482
+        }
+      ],
+      "ttft_ms": 126713.46989399899,
+      "total_ms": 134235.5897460002
+    },
+    {
+      "id": "yolo-response-overhead",
+      "question": "How quickly does the YOLOv8 surveillance system raise alerts, and by how much did its edge optimisation reduce computational overhead?",
+      "answerable": true,
+      "answer": " The YOLOv8 surveillance system generates real-time alerts within 2-3 seconds of detecting anomalies. Its edge optimization reduced computational overhead by 30%.",
+      "contexts": [
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n58 \nan accuracy of 92.7%, reducing false positives through context -aware filtering techniques. \nAdditionally, the system was optimized for low -power edge processing, reducing \ncomputational overhead by 30%, making it suitable for deployment on existing CCTV \nnetworks without requiring major hardware upgrades. The AI -driven surveillance system \ndemonstrated fast response times, generating real-time alerts within 2-3 seconds of detecting \nanomalies, enabling security personnel to take immediate preventive action. Furthermore, \nthe model proved to be highly scalable, efficiently handling high -density surveillance \nenvironments while ensuring optimal resource utilization. These results validate the \neffectiveness of the proposed AI -powered security framework, ensuring enhanced safety, \nfaster response times, and improved operational efficiency in crowd management, crime",
+        "faster response times, and improved operational efficiency in crowd management, crime \nprevention, and workplace monitoring. \nKey findings from the system’s implementation include: \n• High Detection Accuracy – The YOLOv8 model achieved 95.4% accuracy in real -time \ncrowd detection and anomaly identification, ensuring precise monitoring. \n• Effective Anomaly Detection – The anomaly detection framework identified suspicious \nactivities with 92.7% accuracy, reducing false positives through context-aware filtering. \n• Optimized Computational Performance – The system reduced computational overhead \nby 30%, making it suitable for deployment on existing CCTV networks without extensive \nhardware upgrades. \n• Fast Response Time – The AI -driven surveillance system generated real -time alerts \nwithin 2 -3 seconds of detecting anomalies, allowing security personnel to take \nimmediate preventive action. \n• Scalability and Efficiency – The model successfully handled high -density surveillance",
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n52 \nis further equipped with smart analytics, visual dashboards, \nand performance evaluation modules that assess model \naccuracy, precision, recall, and real -time responsiveness. \nExperimental results show that the system achieves 95.4% \naccuracy in object detection and 92.7% accuracy in anomaly \nrecognition while reducing false alerts through context -aware \nfiltering. Use cases span crowd control in public venues, \nindustrial compliance tracking, traffic surveillance, and law \nenforcement applications. By offering a scalable, cost -efficient, \nand autonomous monitoring solution, this AI -powered system \nrepresents a transformative step toward smart surveillance \nand intelligent urban infrastructure. \n \nINTRODUCTION \nIn today’s rapidly evolving world, urban expansion, increased population density, and \nheightened public activities have made security and safety a top priority for governments,",
+        "a significant technological leap. Modern AI -based surveillance systems offer active monitoring, \nbehavior interpretation, and automatic alert generation, making them far more efficient than \nconventional models. These systems can analyze vast amounts of video data in real time, \nidentify potential security threats, and significantly reduce the burden on human operators. By \nlearning from historical data and continuously adapting, ML models can recognize complex \npatterns, classify human activities, and detect anomalies that may indicate security breaches or \nhazardous situations. \nOne of the most powerful tools in modern visual AI systems is the YOLO (You Only Look \nOnce) object detection framework. Specifically, YOLOv8 has emerged as a cutting -edge solution \nfor real -time object detection and tracking due to its speed, accuracy, and ability to process \nhigh-resolution video streams. This model allows surveillance systems to not only identify and",
+        "high-resolution video streams. This model allows surveillance systems to not only identify and \ncount people but also track their movement across frames and detect behaviors that deviate \nfrom predefined norms. When integrated into a surveillance ecosystem, YOLOv8 can enhance \nsituational awareness and facilitate timely interventions by generating instant alerts when \nabnormal or suspicious activity is detected.In addition to real -time monitoring, the proposed \nsystem provides robust capabilities in crowd management, which is especially critical in high -\ndensity environments such as railway stations, shopping malls, stadiums, and religious \ngatherings. Overcrowding in such areas can lead to severe consequences including stampedes, \npanic, and violence. An AI -powered system can dynamically assess crowd density, forecast \nmovement trends, and help authorities take preventive measures to maintain order and safety."
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 9",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "9",
+          "score": 5.656281471252441
+        },
+        {
+          "n": 2,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 9",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "9",
+          "score": 4.742392539978027
+        },
+        {
+          "n": 3,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 3",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "3",
+          "score": 0.9235694408416748
+        },
+        {
+          "n": 4,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 3",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "3",
+          "score": 0.19801212847232819
+        },
+        {
+          "n": 5,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 3",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "3",
+          "score": -0.027300924062728882
+        }
+      ],
+      "ttft_ms": 132817.4073629998,
+      "total_ms": 140224.23630300182
+    },
+    {
+      "id": "yolo-acronym",
+      "question": "What does YOLO stand for in the surveillance paper?",
+      "answerable": true,
+      "answer": " In the provided context, YOLO stands for \"You Only Look Once\".",
+      "contexts": [
+        "Additionally, the application of YOLO -based object detection demonstrates high accuracy in \nreal-time surveillance and monitoring scenarios, making it a viable solution for crowd \nmanagement, crime prevention, and automated security analysis. \nFurthermore, the training performance of the YOLOv8 model, as evidenced by \ndecreasing loss values and increasing precision and recall metrics, confirms the efficiency of \nthe approach. The system’s adaptability and accuracy make it a robust framework for \nhandling real-world applications requiring secure data processing and intelligent monitoring. \nFuture enhancements may include further optimization of the encryption-decryption process, \nintegration with cloud-based frameworks for scalability, and expansion to diverse application \ndomains such as smart cities and automated law enforcement systems.",
+        "a significant technological leap. Modern AI -based surveillance systems offer active monitoring, \nbehavior interpretation, and automatic alert generation, making them far more efficient than \nconventional models. These systems can analyze vast amounts of video data in real time, \nidentify potential security threats, and significantly reduce the burden on human operators. By \nlearning from historical data and continuously adapting, ML models can recognize complex \npatterns, classify human activities, and detect anomalies that may indicate security breaches or \nhazardous situations. \nOne of the most powerful tools in modern visual AI systems is the YOLO (You Only Look \nOnce) object detection framework. Specifically, YOLOv8 has emerged as a cutting -edge solution \nfor real -time object detection and tracking due to its speed, accuracy, and ability to process \nhigh-resolution video streams. This model allows surveillance systems to not only identify and",
+        "Requires large datasets \nfor accuracy \nAlam et al. (2021) AI-powered firearm \ndetection using YOLOv4 \nHigh accuracy in \ndetecting concealed \nweapons \nSensitive to occlusions \nand background noise \nPatel et al. (2022) Anomaly detection in \nhigh-security areas \nEffective in identifying \nunauthorized access \nLimited scalability for \nlarge surveillance \nnetworks \nGupta et al. (2021) AI-based workplace \nmonitoring for \ncompliance \nTracks safety violations \nand alerts supervisors \nRaises privacy concerns \nMartinez et al. (2022) Smart manufacturing \nsurveillance using YOLO \nImproves workplace \nsafety adherence by 30% \nHigh dependency on \nreal-time processing \nLi et al. (2023) Video analytics for \nproductivity tracking \nIdentifies inefficiencies \nin industrial settings \nRequires continuous \ndata collection \nProposed Approach \n(2024) \nYOLOv8 for multi -\nfunctional surveillance \nReal-time detection, low \ncomputational cost, and \nimproved privacy \nRequires optimization \nfor diverse environments",
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n56 \n1. System Architecture \n \nFig 1. Real time Video Based Survellience System \n \nThe AI & ML -based CCTV surveillance system architecture for enhancing public safety consists \nof several interconnected components. The process begins with video acquisition, where CCTV \ncameras continuously capture real -time footage from various locations. This raw video data is \nthen passed through the pre -processing module, where noise reduction, image enhancement, \nand frame extraction take place to improve clarity and focus on relevant objects.Next, the AI -\nbased object detection and tracking module utilizes deep learning models such as YOLO or \nFaster R-CNN to detect and track individuals, vehicles, or other significant entities in the video \nfeed. The detected objects are then analyzed by an event recognition and anomaly detection",
+        "has significantly improved real -time monitoring, crowd detection, and crime prevention. \nTraditional CCTV -based security systems have long been used for crime detection, traffic \nmonitoring, and workplace supervision; however, their effectiveness has been limited by \nmanual monitoring constraints and slow response times. Recent advancements in deep \nlearning, computer vision, and neural networks have enabled automated, intelligent \nsurveillance systems capable of detecting threats, recognizing patterns, and predicting security \nrisks before they escalate.Several studies have explored the implementation of AI -powered \nobject detection models such as YOLO (You Only Look Once), Faster R -CNN, and SSD (Single \nShot MultiBox Detector) to enhance CCTV-based surveillance. These models provide high-speed, \nreal-time object recognition capabilities and have been widely adopted in public safety, \nindustrial monitoring, and retail security applications. The effectiveness of such models is"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 10",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "10",
+          "score": 2.7057557106018066
+        },
+        {
+          "n": 2,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 3",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "3",
+          "score": 2.5784237384796143
+        },
+        {
+          "n": 3,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 6",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "6",
+          "score": 2.1130833625793457
+        },
+        {
+          "n": 4,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 7",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "7",
+          "score": -0.07375792413949966
+        },
+        {
+          "n": 5,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 5",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "5",
+          "score": -0.13455261290073395
+        }
+      ],
+      "ttft_ms": 136031.09077000045,
+      "total_ms": 138944.8549680019
+    },
+    {
+      "id": "yolo-objectives",
+      "question": "What are the three core objectives of the proposed YOLOv8 surveillance framework?",
+      "answerable": true,
+      "answer": " The three core objectives of the proposed YOLOv8 surveillance framework are:\n1) Real-time crowd monitoring and management,\n2) Crime and anomaly detection with predictive alerts, and\n3) Workplace safety.",
+      "contexts": [
+        "movement trends, and help authorities take preventive measures to maintain order and safety. \nMoreover, workplace safety is another domain where intelligent surveillance plays a vital \nrole. Monitoring employee compliance with safety protocols, detecting risky behaviors, and \nidentifying unauthorized access can prevent accidents and improve operational efficiency. AI -\nbased surveillance can ensure that safety equipment is being used appropriately and that access \nrestrictions are enforced. \nThis paper presents a comprehensive AI -powered surveillance system that enhances the \ncapabilities of existing CCTV networks by incorporating YOLOv8 for object detection, deep \nlearning models for anomaly detection, and smart analytics for actionable insights. The \nproposed framework focuses on three core objectives: (1) Real -time crowd monitoring and \nmanagement, (2) Crime and anomaly detection with predictive alerts, and (3) Workplace safety",
+        "of known persons. The entire architecture is supported by cloud and edge computing, allowing \nefficient data processing with minimal latency. \n \nThe proposed system integrates YOLOv8-based object detection, anomaly detection models, and \nAI-driven analytics to enhance security and operational efficiency. The specific research \nobjectives include: \n• To develop an AI -powered surveillance system using YOLOv8 and deep learning for real -\ntime crowd monitoring, crime prevention, and work compliance tracking using existing \nCCTV networks. \n• To implement an anomaly detection framework that identifies suspicious activities, \nunauthorized access, and security threats while minimizing false positives and improving \nresponse times.",
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n57 \nThese objectives focus on accuracy, efficiency, security, accessibility, and performance \nevaluation \n \n2. Proposed Methodology for Research Objective1 \nTo develop an AI -powered surveillance system using YOLOv8 and deep learning for real -time \ncrowd monitoring, crime prevention, and work compliance tracking, the proposed \nmethodology follows a structured approach. First, existing CCTV footage is processed using \npre-trained YOLOv8 models, enabling real -time object detection and people counting. The \nsystem identifies crowd density, movement patterns, and unusual activities, helping \nauthorities take proactive measures. Next, deep learning -based anomaly detection algorithms \nanalyze behavioral patterns to detect suspicious movements, loitering, and potential security \nthreats. The model is trained on large -scale surveillance datasets, ensuring high accuracy in",
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n58 \nan accuracy of 92.7%, reducing false positives through context -aware filtering techniques. \nAdditionally, the system was optimized for low -power edge processing, reducing \ncomputational overhead by 30%, making it suitable for deployment on existing CCTV \nnetworks without requiring major hardware upgrades. The AI -driven surveillance system \ndemonstrated fast response times, generating real-time alerts within 2-3 seconds of detecting \nanomalies, enabling security personnel to take immediate preventive action. Furthermore, \nthe model proved to be highly scalable, efficiently handling high -density surveillance \nenvironments while ensuring optimal resource utilization. These results validate the \neffectiveness of the proposed AI -powered security framework, ensuring enhanced safety, \nfaster response times, and improved operational efficiency in crowd management, crime",
+        "faster response times, and improved operational efficiency in crowd management, crime \nprevention, and workplace monitoring. \nKey findings from the system’s implementation include: \n• High Detection Accuracy – The YOLOv8 model achieved 95.4% accuracy in real -time \ncrowd detection and anomaly identification, ensuring precise monitoring. \n• Effective Anomaly Detection – The anomaly detection framework identified suspicious \nactivities with 92.7% accuracy, reducing false positives through context-aware filtering. \n• Optimized Computational Performance – The system reduced computational overhead \nby 30%, making it suitable for deployment on existing CCTV networks without extensive \nhardware upgrades. \n• Fast Response Time – The AI -driven surveillance system generated real -time alerts \nwithin 2 -3 seconds of detecting anomalies, allowing security personnel to take \nimmediate preventive action. \n• Scalability and Efficiency – The model successfully handled high -density surveillance"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 3",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "3",
+          "score": 8.015951156616211
+        },
+        {
+          "n": 2,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 7",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "7",
+          "score": 7.260270118713379
+        },
+        {
+          "n": 3,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 8",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "8",
+          "score": 6.729831695556641
+        },
+        {
+          "n": 4,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 9",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "9",
+          "score": 4.497391700744629
+        },
+        {
+          "n": 5,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 9",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "9",
+          "score": 4.431568145751953
+        }
+      ],
+      "ttft_ms": 123971.80465899874,
+      "total_ms": 133256.92711599913
+    },
+    {
+      "id": "yolo-anomaly-model",
+      "question": "What kind of model does the surveillance system train to detect anomalies, and how does it keep false positives down?",
+      "answerable": true,
+      "answer": " The surveillance system trains an LSTM (Long Short-Term Memory) based anomaly detection model to recognize deviation patterns in movement, behavior, and interactions. To keep false positives down, the system employs context-aware filtering and multi-modal data fusion techniques.",
+      "contexts": [
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n58 \nan accuracy of 92.7%, reducing false positives through context -aware filtering techniques. \nAdditionally, the system was optimized for low -power edge processing, reducing \ncomputational overhead by 30%, making it suitable for deployment on existing CCTV \nnetworks without requiring major hardware upgrades. The AI -driven surveillance system \ndemonstrated fast response times, generating real-time alerts within 2-3 seconds of detecting \nanomalies, enabling security personnel to take immediate preventive action. Furthermore, \nthe model proved to be highly scalable, efficiently handling high -density surveillance \nenvironments while ensuring optimal resource utilization. These results validate the \neffectiveness of the proposed AI -powered security framework, ensuring enhanced safety, \nfaster response times, and improved operational efficiency in crowd management, crime",
+        "faster response times, and improved operational efficiency in crowd management, crime \nprevention, and workplace monitoring. \nKey findings from the system’s implementation include: \n• High Detection Accuracy – The YOLOv8 model achieved 95.4% accuracy in real -time \ncrowd detection and anomaly identification, ensuring precise monitoring. \n• Effective Anomaly Detection – The anomaly detection framework identified suspicious \nactivities with 92.7% accuracy, reducing false positives through context-aware filtering. \n• Optimized Computational Performance – The system reduced computational overhead \nby 30%, making it suitable for deployment on existing CCTV networks without extensive \nhardware upgrades. \n• Fast Response Time – The AI -driven surveillance system generated real -time alerts \nwithin 2 -3 seconds of detecting anomalies, allowing security personnel to take \nimmediate preventive action. \n• Scalability and Efficiency – The model successfully handled high -density surveillance",
+        "unauthorized access, and security threats, the proposed methodology integrates AI -driven \nbehavioral analysis and deep learning models. The system first processes real -time CCTV \nfootage using YOLOv8 for object detection, identifying humans, vehicles, and other relevant \nentities. Next, an LSTM -based anomaly detection model is trained on historical surveillance \ndata to recognize deviation patterns in movement, behavior, and interactions. The model \ncontinuously analyzes entry -exit points, restricted areas, and high -risk zones to detect \nloitering, unauthorized personnel, and abnormal activity sequences. Upon detecting an \nanomaly, the system triggers automated alerts, notifying security personnel through \ndashboards, mobile notifications, or alarm systems for immediate intervention. The \nframework is further optimized to reduce false positives by employing context-aware filtering \nand multi-modal data fusion, ensuring high detection accuracy with minimal false alerts. This",
+        "a significant technological leap. Modern AI -based surveillance systems offer active monitoring, \nbehavior interpretation, and automatic alert generation, making them far more efficient than \nconventional models. These systems can analyze vast amounts of video data in real time, \nidentify potential security threats, and significantly reduce the burden on human operators. By \nlearning from historical data and continuously adapting, ML models can recognize complex \npatterns, classify human activities, and detect anomalies that may indicate security breaches or \nhazardous situations. \nOne of the most powerful tools in modern visual AI systems is the YOLO (You Only Look \nOnce) object detection framework. Specifically, YOLOv8 has emerged as a cutting -edge solution \nfor real -time object detection and tracking due to its speed, accuracy, and ability to process \nhigh-resolution video streams. This model allows surveillance systems to not only identify and",
+        "identifying trends, and making accurate predictions. For example, anomaly detection models \ntrained on vast datasets can differentiate between normal activities and potentially harmful \nbehavior, triggering alerts before incidents escalate. \nA key ML model used for object detection and activity recognition in surveillance \napplications is YOLOv8 (You Only Look Once). YOLOv8 is a state -of-the-art deep learning model \ndesigned for real -time object detection and tracking, making it highly suitable for crowd \nanalysis, crime detection, and work monitoring. By processing live CCTV footage, YOLOv8 can \nidentify the number of people in a specific area, track their movements, detect suspicious \nbehavior, and provide real -time notifications. The integration of convolutional neural networks \n(CNNs) and deep learning techniques further enhances detection accuracy, ensuring low false \npositives and high efficiency. \n \n3. Challenges in Traditional CCTV Monitoring"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 9",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "9",
+          "score": 4.691981315612793
+        },
+        {
+          "n": 2,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 9",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "9",
+          "score": 4.161466598510742
+        },
+        {
+          "n": 3,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 8",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "8",
+          "score": 3.7943427562713623
+        },
+        {
+          "n": 4,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 3",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "3",
+          "score": 2.823953628540039
+        },
+        {
+          "n": 5,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 4",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "4",
+          "score": 2.5856637954711914
+        }
+      ],
+      "ttft_ms": 132551.2882160001,
+      "total_ms": 143737.16177900133
+    },
+    {
+      "id": "yolo-alert-pipeline",
+      "question": "In the surveillance system's architecture, what happens after the event recognition and anomaly detection stage raises an alert?",
+      "answerable": true,
+      "answer": " After the event recognition and anomaly detection stage raises an alert in the surveillance system's architecture, the alert is forwarded to a decision-making and alert system. This system classifies the severity of the event and triggers real-time notifications to security personnel or law enforcement agencies. Additionally, the system includes an automated response module that can activate alarms, lock doors, or send emergency messages based on the detected threat level.",
+      "contexts": [
+        "feed. The detected objects are then analyzed by an event recognition and anomaly detection \nsystem, which employs machine learning algorithms to identify unusual behavior, unauthorized \naccess, or suspicious activities. These alerts are then forwarded to a decision -making and alert \nsystem, which classifies the severity of the event and triggers real -time notifications to security \npersonnel or law enforcement agencies.Additionally, the system includes an automated \nresponse module that can activate alarms, lock doors, or send emergency messages based on \nthe detected threat level. The data storage and logging system ensures all video footage and \nanalytics results are securely stored for future analysis, while facial recognition and identity \nverification modules further enhance security by cross -checking individuals against a database \nof known persons. The entire architecture is supported by cloud and edge computing, allowing \nefficient data processing with minimal latency.",
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n56 \n1. System Architecture \n \nFig 1. Real time Video Based Survellience System \n \nThe AI & ML -based CCTV surveillance system architecture for enhancing public safety consists \nof several interconnected components. The process begins with video acquisition, where CCTV \ncameras continuously capture real -time footage from various locations. This raw video data is \nthen passed through the pre -processing module, where noise reduction, image enhancement, \nand frame extraction take place to improve clarity and focus on relevant objects.Next, the AI -\nbased object detection and tracking module utilizes deep learning models such as YOLO or \nFaster R-CNN to detect and track individuals, vehicles, or other significant entities in the video \nfeed. The detected objects are then analyzed by an event recognition and anomaly detection",
+        "unauthorized access, and security threats, the proposed methodology integrates AI -driven \nbehavioral analysis and deep learning models. The system first processes real -time CCTV \nfootage using YOLOv8 for object detection, identifying humans, vehicles, and other relevant \nentities. Next, an LSTM -based anomaly detection model is trained on historical surveillance \ndata to recognize deviation patterns in movement, behavior, and interactions. The model \ncontinuously analyzes entry -exit points, restricted areas, and high -risk zones to detect \nloitering, unauthorized personnel, and abnormal activity sequences. Upon detecting an \nanomaly, the system triggers automated alerts, notifying security personnel through \ndashboards, mobile notifications, or alarm systems for immediate intervention. The \nframework is further optimized to reduce false positives by employing context-aware filtering \nand multi-modal data fusion, ensuring high detection accuracy with minimal false alerts. This",
+        "threats. The model is trained on large -scale surveillance datasets, ensuring high accuracy in \ncrowd estimation and anomaly recognition. Additionally, automated alerts and notifications \nare integrated into the system, allowing security personnel to receive real -time updates when \ncrowd levels exceed predefined thresholds or unusual behavior is detected. The entire \nframework is optimized for low -latency processing, making it suitable for deployment on \nexisting CCTV networks without requiring extensive hardware upgrades. This methodology \nensures efficient, real -time crowd surveillance with minimal computational overhead, \nenhancing public safety and operational security.. \n \n3. Proposed Methodology for Research Objective2 \nTo implement an anomaly detection framework for identifying suspicious activities, \nunauthorized access, and security threats, the proposed methodology integrates AI -driven",
+        "industrial monitoring, and retail security applications. The effectiveness of such models is \nfurther enhanced when combined with behavioral analysis, facial recognition, and anomaly \ndetection techniques.. \nThe integration of AI and ML in surveillance systems has significantly improved crowd \nmonitoring, crime prevention, and workplace security. Traditional CCTV surveillance relied \nheavily on manual observation, making it prone to human errors and slow response times. With \nadvancements in deep learning and computer vision, modern AI-based surveillance systems can \nnow automatically detect, classify, and track objects in real -time, improving security and \noperational efficiency. Research stu dies have implemented YOLO -based object detection, \nconvolutional neural networks (CNNs), and anomaly detection models to enhance real -time \nsurveillance, automate alerts, and reduce human intervention. AI -driven systems are"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 7",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "7",
+          "score": 3.949026584625244
+        },
+        {
+          "n": 2,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 7",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "7",
+          "score": 1.0604196786880493
+        },
+        {
+          "n": 3,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 8",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "8",
+          "score": 0.27038082480430603
+        },
+        {
+          "n": 4,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 8",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "8",
+          "score": 0.2177760750055313
+        },
+        {
+          "n": 5,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 5",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "5",
+          "score": -0.822862446308136
+        }
+      ],
+      "ttft_ms": 125885.59160300065,
+      "total_ms": 143411.13167300136
+    },
+    {
+      "id": "cade7-venue",
+      "question": "Where and when was the Seventh International Conference on Automated Deduction held, and how many papers did its program committee select?",
+      "answerable": true,
+      "answer": " The Seventh International Conference on Automated Deduction was held in Napa, California in 1984. The program committee selected 27 papers for presentation at the conference.",
+      "contexts": [
+        "iii\nFOREWORD\nThe Seventh International Conference on Automated Deduction was held\nMay 14-16, 19S4, in Napa, California . The conference is the primary forum for reporting\nresearch in all aspects of automated deduction , including the design , implementation,\nand appli cations of theor em-proving systems , knowledge representation and retrieval ,\nprogram verification , logic programming, formal specification , program synthesis , and\nrelated areas .\nThe presented papers include 27 selected by the program committee, an invited\nkeynote addr ess by Jorg Siekmann, and an invited banquet address by Patrick Suppes.\nContributions were present ed by authors from Canada , France, Spain , the United Kingdom ,\nthe United States , and West Germany .\nThe first conference in this series was held a decade earlier in Argonne, Illinois.\nFollowing the Argonne conference were meetings in Oberwolfach, West Germany (1976),\nCambridge , Massachusetts (1977), Austin, Texas (1979), Les Arcs, France (19S0), and",
+        "Editorial Board\nD. Barstow W. Brauer P. Brinch Hansen D. Gries D. Luckham\nC. Moler A. Pnueli G. SeegmOlier J. Stoer N. Wirth\nEditor\nA. E. Shostak\nSRI International\n333 Ravenswood Avenue\nMenlo Park, CA 94025\nU.S.A.\nLibrary of Congress Cataloging in Publication Data\nInternational Conference on Automated Deduction\n(7th: 1984 : Napa, Calif.)\nSeventh International Conference on Automated\nDeduction.\n(Lecture notes in computer science ; 170)\n1. Automatic theorem proving-Congresses.\n2. Logic, Symbolic and mathematical-Congresses.\nI. Shostak, Robert. II. Title.\nIII. 7th International Conference on Automated\nDeduction. IV. Series.\nQA76.9.A96158 1984 511.3 84-5441\nCR Subject Classification (1982): 1.1, J.2.\n© 1984 by Springer-Verlag New York Inc.\nAll rights reserved. No part of this book may be translated or\nreproduced in any form without written permission from Springer-Verlag,\n175 Fifth Avenue, New York, NY 10010, U.S.A.\nPermission to photocopy for internal or personal use, or the internal or",
+        "7th InternationalConference\non AutomatedDeduction",
+        "413\n[7] G. Gentzen, Investigations into Logical Deductions . In The CollectedPap ersa/Gerhard\nGentzen, M. E.Szabo, Ed.,North -Holland Publishing Co., Amsterdam, 1969, pp. 68-131.\n[8] J. Herbrand, LogicalWritings,Harvard University Press. 1972.\n[9] Dale A. Miller, Proofsin HigherOrderLogic, Ph.D. Th., Carnegie-Mellon University,\nAugust 1983.\n[10] Dale A. Miller, ExpansionTree Proofsand TheirConversion to Natural DeductionProofs.\n7th Conference on Automated Deduction, Napa, May 1984.\n[II] Frank Pfenning . Conversions between Analytic and Non-anal ytic Proofs. Tech. Report,\nCarnegie-Mellon University, 1984. (to appear)\n[12] J. A. Robinson, A machine-orientedlogicbasedon theresolutionprinciple, Journal of the\nAssociation for Computing Machinery 12 (1965), 23-41.\n[13] R. M. Smullyan, First-OrderLogic. Springer-Verlag, Berlin, 1968.\n[14] R. Statman, LowerBoundson Herbrand'sTheorem, Proceedings of the American\nMathematical Society 75 (1979),104'107.",
+        "2. E. Lusk, William McCune. and R. Overbeek, \"Logic Machine Architecture: inference mechan­\nisms,\" pp. 85-108 in Proceedings of the Sixth Conference on Automa.ted Deduction,\nSpringer-Verlag Lecture Notes in Computer Science. Vol, 138. ed. D. W. Loveland.Sprmger­\nVerlag. New York O.\n3. E. Lusk and R. Overbeek, \"Data structures and control architecture for the implementation\nof theorem-proving programs,\" in Proceetiinqs of the F'ifth Conference on Automated\nDeduction. Springer- verlag Lecture Notes in Computer Science. Vol. 87, ed. Robert Kowalski\nand Wolfgang Bibel. O.\n4. E. Lusk, William McCune. and R. Overbeck, \"Logic machine architecture: kernel functions.\"\npp. 70-84 in Proceedings of the Sixth Conference on Automated Deduction. Springer-Verlag\nLecture Notes in Computer Science. Vol. 138, ad. D. W. Loveland.Sprtnger-Verlag. New York\n(1962)."
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. iii",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "iii",
+          "score": 8.384172439575195
+        },
+        {
+          "n": 2,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. ii",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "ii",
+          "score": 3.563577890396118
+        },
+        {
+          "n": 3,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. vii",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "vii",
+          "score": -0.0016933418810367584
+        },
+        {
+          "n": 4,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 413",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "413",
+          "score": -1.1366403102874756
+        },
+        {
+          "n": 5,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 51",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "51",
+          "score": -2.999248743057251
+        }
+      ],
+      "ttft_ms": 151240.6185280015,
+      "total_ms": 159138.4631300025
+    },
+    {
+      "id": "siekmann-unification-hierarchy",
+      "question": "In Siekmann's survey 'Universal Unification', when is an equational theory called unitary, finitary, infinitary, or of type zero?",
+      "answerable": true,
+      "answer": " In Siekmann's survey 'Universal Unification', an equational theory is called:\n- Unitary if it has only one element in the set of most general unifiers (Wur) and always exists.\n- Finitary if the set of all E-unifiers (WUE) always exists and is finite.\n- Infinitary if the set of most general unifiers (Wur) always exists and there exists a pair of terms such that WUE is infinite for this pair.\n- Of type zero otherwise, which means it does not fall into any of the above categories.",
+      "contexts": [
+        "UNIVERSAL UNIFICATION\nJorg H. Siekmann\nUniversitat Kaiserslautern\nFB Informatik\nPostfach 3049\nD-6750 Kaiserslautern\nUberhaupt hat der Fortschritt\ndas an sich. daB er viel groBer\nausschaut. als er wirklich ist.\nJ.N. Nestroy, 1859\nABSTRACT: This article surveys what is presently known about first\norder unification theory.\nCONTENTS\nO.\nI.\nII.\nINTRODUCTION\nEARLY HISTORY AND APPLICATIONS\nA FORMAL FRAMEWORK\n1. Unification from an Algebraic Point of View\n2. Unification from a Logical Point of View\n2.1 Equational Logic\n2.2 Computational Logic\n3. Universal Unification\nIII. RESULTS\n1. Special Equational Theories\n2. The General Theory\n2.1 Classes of Equational Theories\n2.2 Universal Unification Algorithms\nIV. OUTLOOK AND OPEN PROBLEMS\nV. BIBLIOGRAPHY",
+        "called Diophantine equations) is the unification problem in arithmetic. Livesey,\nSiekmann, Szabo and Unvericht [79] have proved that Associative-Distributive\nunification is undecidable, and thus that the undecidability of Hilbert's tenth\nproblem [Matiyasevich 70, Davis 73] does not rely on a specific property of\nintegers.\nWe denote by UE the set of all E-unifiers of M and N:\nUE (M,N) == !aES I aM== eN].\nE\nAxiomatic equational theories are semi-decidable, and UK is always recur­\nsively enumerable, but of course we are mostly interested in a generating set of",
+        "that have been obtained for special theories T.\nThe central notion ]JULT induces the following fundamental classes of\nequational theories based on the cardinality of ]JULT:\n(i) A theory T is unitary if\none element. The class of\n(ii) A theory T is finitary if\neXists and is finite.\nThe class of such theories is ~w (type w).\n(iii) A theory T is infinitary if Vs,t ]JULT(S,t) exists and there exists\n<p ~ q>T such that ]JULT(p,q) is infinite.\nThe class of such theories is ~oo (type 00).\n(iv) A theory T is of type zero if it is not in one of the above classes\nThe class of these theories is ~o'\n(v ) A theory is unification-re levant if it is not of type zero. The class\nof these theories is 1r .\nSeveral examples for unitary, finitary and infinitary theories as well\nas type zero theories are discussed in 111.1. A matching problem\n<s~t>T consists of a pair of terms and a theory TeGt= . A substitution\nv€E is a T-matcher (or one-way-unifier) if vs t. MET is the set of",
+        "Holland, (1970)\nPaterson M.S. and Wegman M.N. Linear Unification. J. of Computer and Sys­\ntems Sciences 16, pp. 158-167. (1978)\nPeterson G.E. and Stickel M.E.. Complete Sets of Reduction for Equational\nTheories with Complete Unification Algorithms. JACM 28,2pp 233-264. (19Bl)\nPlotkin G. Building-in Equational Theories. Machine Intelligence 7, pp. 73-90.\n(1972)\nRaulefs P., Siekmann J., Szabo P., Unvericb.t E. A Short Survey on the State of\nthe Art in Matching and Unification Problems. Sigsam Bulletin 1979, Vol. 13.\n(1979)\nReynolds John C. GEDANKEN- A Simple Typeless Language Based on the Princi­\nple of Completeness and the Reference Concept. CACM 13,5, pp. 308-319. (May\n1970)\nRobinson J.A.. A Machine Oriented Logic Based on the Resolution Principle.\nJACM 12, pp. 32-41. (1965)\nRobinson G.A.. and Wos L.T. Paramodulation and Theorem Proving in First-order\nTheories with Equality. Machine intelligence 4, American Elsevier, pp. 135-150.\n(1969)",
+        "4\nJust as traditional equation solving drew its impetus from its numerous\napplications (the - for those times - complicated division of legacies\nin Babylonian times and the application in physics in more modern times),\nunification theory derives its impetus from its numerous applications\nin computer science, artificial intelligence and in particular in the\nfield of computational logic.\nCentral to unification theory are the notion of a set of most general\nunifiers wur (traditionally: the set of base vectors spanning the solu­\ntion space) and the hierarchy of unification problems based on wur (see\npart II for an exact definition of this hierarchy):\n(i)\n(ii)\n(iii)\n(iv)\na theory T is unitary if Wur always exists and has at most one\nelement;\na theory T is finitary if WUE always exists and is finite;\na theory T is infinitary if Wur always exists and there exists\na pair of terms such that WUE is infinite for this pair;\na theory T is of type zero otherwise."
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 1",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "1",
+          "score": 2.0192089080810547
+        },
+        {
+          "n": 2,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 195",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "195",
+          "score": 1.14225172996521
+        },
+        {
+          "n": 3,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 17",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "17",
+          "score": 0.27171260118484497
+        },
+        {
+          "n": 4,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 208",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "208",
+          "score": 0.2272186279296875
+        },
+        {
+          "n": 5,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 4",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "4",
+          "score": -0.07363912463188171
+        }
+      ],
+      "ttft_ms": 161521.44364700143,
+      "total_ms": 186942.63869399947
+    },
+    {
+      "id": "lusk-overbeek-itp",
+      "question": "In Lusk and Overbeek's paper 'A Portable Environment for Research in Automated Reasoning', what is ITP, what is it built with, and how widely had it been distributed?",
+      "answerable": true,
+      "answer": " In Lusk and Overbeek's paper 'A Portable Environment for Research in Automated Reasoning', ITP (Interactive Theorem Prover) is described as an interactive system that provides convenient access to and control of the many inference mechanisms of Logic Machine Architecture (LMA). ITP is built with LMA, which has been substantially enhanced since the last report on its status. The paper does not provide information about the distribution of ITP.",
+      "contexts": [
+        "43\nA Portable Environment for Research\nin Automated Reasoning\nEwi:n.g L. Iiusk\nRoss A Ouerbeek\nMathematics and Computer Science Division\nArgonne National Laboratory\nArgonne, Illinois 60439\nABSTRACT\nThe Interactive Theorem Prover (ITP), an environment that supports research into\nthe theory and application of automated reasoning, is described . ITP is an interac­\ntive system providing convenient access to and control of the many inference\nmechanisms of Logic Machine Architecture (LMA), described elsewhere. LMA itself\nhas been substantially enhanced since the last report on its status, and we\ndescribe here some of the enhancements, particularly the addition of a tightly­\ncoupled logic programming component, which provides an integration of the\ntheorem-proving and logic programming approaches to problems represented in\nthe predicate calculus.\n1. Introduction\nIn [2] and [4] the authors defined a layered software architecture called Logic Machine",
+        "44\nthese interactions.\nIn the following sections, we describe the research environment provided by IT?, describe in\ndetail the integrated Prolog component, and discuss the issues raised by combining disparate\nsystems POSSflSSing reasoning capabilities. ,'\\fe conclude with a report on the current status of\nthe porting/distribution subproject, and describe our plans for LMA in two widely differing com­\nputational environments: microcomputer systems and supercomputers.\n2. ITP Facilities\nITP has been designed to provide a rich, powerful. and friendly environment for research in\nautomated reasoning. It offers a large number of features and options to control their use, so\nthat a wide variety of experiments can be conducted. ITP is also easily extendible, so that new\nfeatures inspired by experiments can be added smoothly to the system.\n2.1. Absence of Limits\nITP inherits from LMA the freedom from system-imposed limits on the number of clauses",
+        "2. E. Lusk, William McCune. and R. Overbeek, \"Logic Machine Architecture: inference mechan­\nisms,\" pp. 85-108 in Proceedings of the Sixth Conference on Automa.ted Deduction,\nSpringer-Verlag Lecture Notes in Computer Science. Vol, 138. ed. D. W. Loveland.Sprmger­\nVerlag. New York O.\n3. E. Lusk and R. Overbeek, \"Data structures and control architecture for the implementation\nof theorem-proving programs,\" in Proceetiinqs of the F'ifth Conference on Automated\nDeduction. Springer- verlag Lecture Notes in Computer Science. Vol. 87, ed. Robert Kowalski\nand Wolfgang Bibel. O.\n4. E. Lusk, William McCune. and R. Overbeck, \"Logic machine architecture: kernel functions.\"\npp. 70-84 in Proceedings of the Sixth Conference on Automated Deduction. Springer-Verlag\nLecture Notes in Computer Science. Vol. 138, ad. D. W. Loveland.Sprtnger-Verlag. New York\n(1962).",
+        "52\n5. Ewing L. Lusk and Ross A. Overbeek, \"An LMA-based theorem prover,\" Al\\JL-B2-75, Argonne\nNational Laboratory (December, 1982).\n6. Ewing L. Lusk and Ross A. Overbeek, \"Logic Machine Architecture inference mechanisms ­\nlayer 2 user reference manual,\" A-lIlL-82-B4, Argonne National Laboratory (December, 1982).\n7, J. McCharen, R. Overbeek, and L. Wos, \"Complexity and related enhancements for\nautomated theorem-proving programs,\" Computers and Mathematics with Applications\n2pp. 1-16 (1976).\nB. S. Winker and L. Wos, \"Procedure implementation through demodulation and related\ntricks,\" pp. 109-131 in Proceedings of the Sixth Conference on Automa.ted Deduction,\nSpringer-Verla.g Lecture Notes in Computer Science, Vol. 138, ed. D. W. Loveland.Springer­\nVerlag, New York (1982).\n9. L. Wos, G. Robinson, D. Carson, and 1. Shalla, \"The concept of demodulation in theorem\nproving,\" Journal of the ACM 14 pp. 698-704 (1967).",
+        "place at the literal rather than clause level, permitting close cooperation during an attempt to\nsatisfy a Prolog goal or to compute a resolvent.\nThe Prolog subsystem is the first step in the creation of an integrated environment in which\ntheorem-proving systems may interact with other \"intelligent\" systems, such as symbol­\nmanipulation packages like MACSYMA and logic programming systems like Prolog. ITP provides\nto the researcher in automated reasoning an integrated, uniform environment for exploring\nThis work was partially supported by the Applied Mathematical Sciences Research Program\n(KC-04-02) of the Office of Energy Research of the U.S. Department of Energy WIder Contract\nW-31-100-Eng-36, and also by National Science Foundation grant MCS62-07496."
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 43",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "43",
+          "score": 4.774598598480225
+        },
+        {
+          "n": 2,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 44",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "44",
+          "score": 1.9195468425750732
+        },
+        {
+          "n": 3,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 51",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "51",
+          "score": -0.17028507590293884
+        },
+        {
+          "n": 4,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 52",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "52",
+          "score": -0.5462646484375
+        },
+        {
+          "n": 5,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 43",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "43",
+          "score": -0.8006277680397034
+        }
+      ],
+      "ttft_ms": 148328.74838200223,
+      "total_ms": 167651.10674099924
+    },
+    {
+      "id": "ketonen-ekl",
+      "question": "According to Ketonen's paper on EKL, how large is the EKL proof checker, what language is it written in, and where does it run?",
+      "answerable": true,
+      "answer": " The EKL proof checker consists of about 10000 lines of code, written in MACLISP. It runs at SAIL (a KL10-based system at the Stanford Computer Science Department).",
+      "contexts": [
+        "65\nEKL-A Mathematically Oriented Proof Checker\nJussi Ketonen\nStanford University\nAbstract\nEKL is an interactive theorem-proving system currently under development at the Stanford\nArtificial Intelligence Laboratory.\nA version of EKL transportable to all TOPS-20 systems has been used for simple program\nverification tasks by students taking CS206, a LISP programmming course at Stanford.\nThe EKL project began in 1981 and has grown into a large and robust theorem-proving\nsystem within a relatively short span of time. It currently runs at SAIL (a KL10-based system\nat the Stanford Computer Science Department), comprising about 10000 lines of code written\nin MACLISP.\nWe describe some of the features of the language of EKL, the underlying rewriting system,\nand the algorithms used for high order unification. A simple example is given to show the\nactual operation of EKL.\nResearch supported by NSF grant MCS-82-06565 and ARPA contract N00039-82-C-0250.\n1. Introduction",
+        "67\nburden of control is taken by the rewriting machinery used within the LISP environment.\nComplex formulas need not be given to EKL in a LISP format: All EKL commands accept\nformulas presented as atoms which are then exploded and parsed into an internal form for\nfurther processing.\nOur current library of EKL proofs consists of facts about LISP functions (APPEND,\nREVERSE, MAPCAR, NTH, SIZE, MEMBER, LENGTH, SAMEFRINGE, and various per­\nmutation functions on lists), elementary arithmetic, and combinatorial set theory. For ex­\nample, we have been able to produce an elegant and eminently readable proof of Ramsey's\ntheorem in under 50 lines. The shortest computer-checked proof previously known is due to\n[Bulnes 1979] who proved it in about 400 lines. In addition, we are going through theorems in\nLandau's Grundlagen in order to make a comparative study of EKL and AUTOMATH proofs\n[Jutting 1976] of the same theorems.",
+        "termination of the corresponding program) was proved using a high order inductive schema for\nnatural numbers. A simpler example-the definition of APPEND---will be given later.\nEKL is specifically designed to manipulate proofs and to handle several proofs at the same\ntime. A proof in EKL consists of lines. Each line in a proof is a result of a command. A state in\nEKL consists of the currently active proof and the currently active context. A context is simply\na of list declarations for atoms giving their syntactic meaning. Declarations are generated\nusing the DECL function or automatically through the EKL default declaration mechanism.\nAssociated with each line is its context and dependencies, If a line contains a formula, then its\ncontext is the set of all declarations needed to make sense of that formula. The current context",
+        "79\nJu t tin g , L. S., A t ranslatio n of Landau 's \"Grundlagcn\" in AUTO'\\ '!1-1Tll, Eindho ven University\nof Technology, Dept . of Math., 1976.\nK eton en , J., W eening , J ., EKL -An interactive proof checker, Users' Reference Manual, 40\npp., Sta nford University, 1983.\nKeton en , J. , W eenin g , J ., Th e Language of an Interactive P roof Checke r, 34 pp ., Stanford\nUniversity , CS Report STAN-CS-83-992, 1983.\nK eton en, J. , W eyhrau ch , R ., A semi decision pro cedure for predica te calculu s, 16 pp ., to\nappear in the Journ al of Theo retical Compute r Science 1984.\nKrei sel, G. , Neglecte d Possibilities of Pr ocessing Asserti ons and Prools Mechanically : Choice\nof Pr oblem s an d Data, in University-Level Computer -Assisted Inst ructi on at Stanf ord: 196 8­\n1980, edite d by Patri ck Suppes, llvI SSS, Stanf ord, 1981.\nLusk , E.L, McCune, W.W, Overb eck, R.A., Logic Machin e Arc hitect ure: Kernel func­",
+        "Landau's Grundlagen in order to make a comparative study of EKL and AUTOMATH proofs\n[Jutting 1976] of the same theorems.\nSimple facts about LISP functions can usually be presented as one-line applications of the\ninduction schema. This represents both the strength of the rewriting system and its lack of\nspecialisation in any mathematical subfield. We do not have any built-in induction heuristics\n(or indeed, any heuristics at all) as in [Boyer and Moore 1979AJ, since this would tend to violate\nthe generality of EKL as a system of formal manipulation. One has to specify the instances\nof induction used unless the high order unification mechanism of EKL can be exploited for the\nsame purposes.\nOne of the most recent proofs on LISP programs involved SAMEFRINGE, a function\ndefined by a complicated recursion involving the size of S-expressions. Its existence (i.e., the\ntermination of the corresponding program) was proved using a high order inductive schema for"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 65",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "65",
+          "score": 4.512444972991943
+        },
+        {
+          "n": 2,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 67",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "67",
+          "score": -0.22416596114635468
+        },
+        {
+          "n": 3,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 67",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "67",
+          "score": -2.749134063720703
+        },
+        {
+          "n": 4,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 79",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "79",
+          "score": -2.9998984336853027
+        },
+        {
+          "n": 5,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 67",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "67",
+          "score": -3.466259479522705
+        }
+      ],
+      "ttft_ms": 157431.5204079976,
+      "total_ms": 166987.81165900073
+    },
+    {
+      "id": "stickel-ring-commutativity",
+      "question": "What theorem did Stickel prove with the Knuth-Bendix method, who had posed it as a challenge, and who produced the only earlier automated proof?",
+      "answerable": true,
+      "answer": " Stickel proved the theorem that x^3 = x implies ring commutativity using the Knuth-Bendix method. The theorem was posed as a challenge by W.W. Bledsoe in a 1977 article. The only earlier automated proof of this theorem was by Robert Veroff using the Argonne National Laboratory - Northern Illinois University theorem-proving system.",
+      "contexts": [
+        "248\nA CASE STUDY OF THEOREM PROVING BY THE KNUTH-BENDIX METHOD:\nDISCOVERING THAT x3 = X IMPLIES RING COMMUTATIVITY\nMark E. Stickel\nArtificial Intelligence Center\nSRI International\nMenlo Park, California 94025\nAbstract\nAn automatic procedure was used to discover the fact that x3 = x implies ring commutativity.\nThe proof of this theorem was posed as a challenge problem by W.W. Bledsoe in a 19n article.\nThe only previous automated proof was by Robert Veroff using the Argonne National Laboratory\n- Northern Illinois University theorem-proving system. The technique used to prove this theorem\nwas the Knuth-Bendix completion method with associative and/or commutative unification. This\nwas applied to a set of reductions consisting of a complete set of reductions for free rings plus the\nreduction x X x X x -> x and resulted in the purely forward-reasoning derivation of x X y =y X x.\nAn important extension to this methodology, which made solution of the x3 = x ring problem",
+        "v\nTuesday Aforning\nAssociative-Commutative Unification\nFrancois Fages (France) . . 194\nA Linear Time Algorithm for a Sub case of Second-Order Instantiation\nDonald Simon (USA) 209\nA New Equational Unification Method: A Generalisation of\nMartelli-Montanari's Algorithm\nClaude Kirchner (France) . . . . . 224\nA Case Study of Theorem Proving by the Knuth-Bendix Method\nDiscovering that x3 = z Implies Ring Commutativity\nMark E. Stickel (USA) . . . . . . . . . . . . . . . . . . . . . . . . . . . 248\nA Narrowing Procedure for Theories with Constructors\nL. Fribourg (France) . . . . . . . . . . . . . . . . . . . . . . . . . . . . 259\nA General Inductive Completion Algorithm\nand Application to Abstract Data Types\nHelene Kirchner (France) . . . . . . . . . . . . . . . . . . . . . . . . . . 282\nTuesday Evening\nThe Next Generation of Interactive Theorem Provers (Banquet Address)\nPatrick Suppes (USA) 303\nVVednesday Alorning\nThe Linked Inference Principle, IT: The User's Viewpoint",
+        "couragement by these people was very important to me in writing this paper.\nReferences\n[1] Bledsoe, W.W. Non-resolution theorem proving. Artificial Intelligence 9, 1 (August 1977),\n1-35.\n[2] Comer, S.D. Elementary properties of structures of sections. Boldin de la Sociedad\nMatematica Mexicana 19 (1974), 78-85.\n[3] Huet, G. A complete proof of the correctness of the Knuth-Bendix completion algorithm.\nJournal of Computer and SY8tem Sciences 23, 1 (August 1981), 11-2!.",
+        "Proc. Fourth Workshop on Automated Deduction, 53-59 (1979)\n[4] FAGES F.\net application\npremier ordre.\nCurie, Juin 1983.\n[3] CHANG C.L.\ntheorem proving.\nand LEE R.C. : Symbolic logic and mechanical\nAcademic Press, New-York (1973)\nFormes canoniques dans les algebres booleennes,\na la demonstration automatique en logique du\nThese de 3me cycle, Universite Pierre et Marie\n[5] HSIANG J. and DERSHOWITZ N. : Rewrite methods for clausal\nand non-clausal theorem proving. ICALP 83, Spain.(1983).\n[6] HUET G. : A complete proof of correctness of the\nKNUTH-BENDIX completion algorithm. INRIA, Rapport de recherche\nNo 25, Juillet 1980.\n[7] HUET G., OPPEN D.C., Equations and rewrite rules: a survey,\nTechnical Report CSL-ll,SRI International, Jan.1980.\n[8] HULLOT J.M., Canonical form and unification.\nFifth Conference on Automated Deduction, Les Arcs.\nProc. of the\n(July 1980).\n[9] JOUANNAUD J.P., KIRCHNER C. and KIRCHNER H. : Incremental\nunification in equational theories. Proc. of the 21th Allerton",
+        "produced by the resolution algorithm is associated with the rule:\np(x) & P(f(f(f( •••(x)}})} -> p(x)\nproduced by the Knuth and Bendix algorithm.\nActually, the major problem with the Knuth and Bendix\nalgorithm is the orientation of rules; for example if we run the\nKnuth and Bendix algorithm with S = axiomatization of equality,\nwe generate at once non-orientable critical pairs such as:\n«x=y)&(x=z) , {x=y}&(y=z}>. Furthermore, with the techniques\navailable now, we cannot put this rule into the set of equations,\nbecause we do not have a unification algorithm for this kind of\nequation.\n4-2-3: Knuth-Bendix algorithm as a refutational proof technique\nTheorem 4.2 can be particularized for unsatisfiable\nspecifications as follows:\nTheorem 4.3:\nLet S be a set of quantifier-free formulas.\nS is unsatisfiable iff the Knuth and Bendix completion algorithm\ngenerates one of the following rules (x being a boolean\nvariable):\nX -> TRUE X -> FALSE\nFALSE -> TRUE TRUE -> FALSE"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 248",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "248",
+          "score": 7.626777648925781
+        },
+        {
+          "n": 2,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. v",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "v",
+          "score": 2.1594221591949463
+        },
+        {
+          "n": 3,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 255",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "255",
+          "score": 0.1929432600736618
+        },
+        {
+          "n": 4,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 354",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "354",
+          "score": 0.07764160633087158
+        },
+        {
+          "n": 5,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 346",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "346",
+          "score": -0.8738712072372437
+        }
+      ],
+      "ttft_ms": 169480.7305989998,
+      "total_ms": 186096.94293899884
+    },
+    {
+      "id": "wos-linked-inference",
+      "question": "In 'The Linked Inference Principle, II: The User's Viewpoint', which inference rule do Wos, Veroff, Smith and McCune focus on, and what do linked inference rules let a reasoning program do?",
+      "answerable": true,
+      "answer": " In 'The Linked Inference Principle, II: The User's Viewpoint', Wos, Veroff, Smith, and McCune focus on linked UR-resolution. Linked inference rules allow an automated reasoning program to draw conclusions in one step that typically require many steps when standard (unlinked) inference rules are used.",
+      "contexts": [
+        "316\nThe Linked Inference Principle, II:\nThe User's Viewpoint*\n1. Wos\nMathematics and Computer Science Division\nArgonne National laboratory\n9700 South Cass Avenue\nArgonne, IL 60439\nR. Veroff\nDepartment of Computer Science\nUniversity of New Mexico\nAlbuquerque, NM 87131\nB. Smith\nMathematics and Computer Science Division\nArgonne National laboratory\n9700 South Cass Avenue\nArgonne, IL 60439\nand\nW. McCune\nDepartment of Electrical Engineering and Computer Science\nNorthwestern University\nEvanston, IL 60201\n1. Introduction\nIn the field of automated reasoning, the search continues for useful\nrepresentations of information, for powerful inference rules, for effective\ncanonicalization procedures, and for intelligent strategies. The practical\nobjective of this search is, of course, to produce ever more powerful automated\nreasoning programs. In this paper, we show how the power of such programs can be\nsharply increased by employing inference rules called linked inference rules. In",
+        "Patrick Suppes (USA) 303\nVVednesday Alorning\nThe Linked Inference Principle, IT: The User's Viewpoint\nL. Wos, R. Veroff,B. Smith, and W. McCune (USA) . . . . . . . . 316\nA New Interpretation of the Resolution Principle\nEtienn e Paul (France) 333\nUsing Examples, Case Analysis, and Dependency Graphs in Theorem Proving\nDavid A. Plaisted (USA) . . . . . . . . . . . . . . . . . . . . . . . . . . 356",
+        "sharply increased by employing inference rules called linked inference rules. In\nparticular, we focus on linked UR-resolution, a generalization of standard UR­\nresolution [2), and discuss ongoing experiments that permit comparison of the two\ninference rules. The intention is to present the results of those experiments at\nthe Seventh Conference on Automated Deduction. Much of the treatment of linked\ninference rules given in this paper is from the user's viewpoint, with certain\nabstract considerations reserved for Section 3.\n*This work was supported in part by the Applied Mathematical Sciences Research\nProgram (KC-04-Q2) of the Office of Energy Research of the U.S. Department of Energy\nunder Contract W-3l-l09-Eng-38 (Argonne National laboratory, Argonne, IL 60439).",
+        "are taken from the world of\nBy selecting from the first of\n317\nEmployment of linked inference rules enables an automated reasoning program to\ndraw conclusions in one step that typically require many steps when standard\n(unlinked) inference rules are used. Each of the linked inference rules is obtained\nby applying the \"linked inference principle\", a principle of reasoning that is fully\ndeveloped in [8]. Application of the linked inference principle yields generaliza­\ntions of a number of well-known inference rules--for example, binary resolution, UR­\nresolution, hyperresolution, and paramodulation. The larger steps permitted by the\nuse of various linked inference rules are made possible by substituting semantic\ncriteria for syntactic criteria. In particular, the usual clause boundaries that\ndefine certain well-known inference rules are replaced by criteria defined in terms\nof the meaning of the predicates and functions being employed. For example, consid­",
+        "reasoning program to take much larger steps than standard UR-resolution does. By\nemploying this inference rule, the user is usually free to choose a natural\nrepresentation for presenting a problem in clause form. In particular, while\nstandard inference rules often force you to choose between expanding the set of\nsupport and adding binary resolution to the inference rules being used, linked\ninference rules often avoid both undesirable choices.\nWe have described certain experiments to test the position that employment of\nlinked inference increases the effectiveness of automated reasoning programs. In\naddition, we have included other illustrations (carried out ~ hand) to aid in\nunderstanding how the linked inference principle works. The experiments and\nillustrations focus on problems from the world of puzzles, circuit design, and\nproving properties of computer programs. We intend to present the results of those\nexperiments at the Seventh Cbnference on Automated Deduction."
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 316",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "316",
+          "score": 6.131717681884766
+        },
+        {
+          "n": 2,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. v",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "v",
+          "score": 5.339301586151123
+        },
+        {
+          "n": 3,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 316",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "316",
+          "score": 3.5040392875671387
+        },
+        {
+          "n": 4,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 317",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "317",
+          "score": 2.8772404193878174
+        },
+        {
+          "n": 5,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 331",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "331",
+          "score": 2.8450422286987305
+        }
+      ],
+      "ttft_ms": 124241.29279000044,
+      "total_ms": 137935.96174100094
+    },
+    {
+      "id": "ohlbach-wrightson-mkrp",
+      "question": "Which relevance-logic problem did Ohlbach and Wrightson solve with an automated theorem prover, and what is MKRP?",
+      "answerable": true,
+      "answer": " The relevance-logic problem that Ohlbach and Wrightson solved with an automated theorem prover is the \"converse of contraction\". MKRP stands for Markgraf Karl Refutation Procedure, a resolution based theorem prover under development at the Universities of Karlsruhe and Kaiserslautern.",
+      "contexts": [
+        "496\nSolving a Problem in Relevance Logic\nwith an Automated Theorem Prover\nHans-Jurgen Ohlbach\nInstitut fUr Informatik I\nUniversity of Kaiserslautern\nPostfach 3049\nD-675 Kaiserslautern\nAbstract\nGraham Wrightson\nVictoria University\nDep. of Computer Science\nPrivate Bag\nWellington, New Zealand\nA new challenging problem for automated theorem provers (ATP) is\npresented. It is from the field of relevance logic and is known as\n\"converse of contraction\". We firstly give some background information\nabout relevance logic and the problem itself and then discuss a proof\nfor the theorem which has been found by the Markgraf Karl Refutation\nProcedure (MKRP), a resolution based theorem prover, under development\nat the Universities of Karlsruhe and Kaiserslautern.\nFor solving this problem we implemented a new method to control the\napplication of \"generator clauses\" like Exy => Ef(x)f(y). An\nuncontrolled appl ica tion of such clauses produces arbitrarily deeply",
+        "the related systems, I.e. it is a special purpose ATP. Dr. Bob Meyer\nat ANU is one of the very few specialists in relevance logic and he\nwas able to solve the problem by hand using semantic tableaux. An\nordinary resolution proof, which is much more complicated than a\nproof-theoretical solution, however, was not known so far.\nThe real difficulty and hence the significance for resolution based\ntheorem provers (and for human logicians) is due to the enormous\nsearch space which is generated by the postulate p3:\n¥abcdx Rabx & Rxcd => jy Racy & Rybd\nUsing the symmetry of R (L2) and p2: ¥x Rxxx with this axiom one can\ndeduce from each clause of the form Rabc ei@! new clauses to which d2\ncan immediately be applied again. A rough estimate yields a total of\nseveral million clauses which have to be generated before solving (1)\nusing a straightforward search strategy.\nIII. Solution of the Problem by the MKR-Procedure tKMR §l1\nWe need the following axioms and lemmas for the axiomization of",
+        "43\nA Portable Environment for Research\nin Automated Reasoning\nEwi:n.g L. Iiusk\nRoss A Ouerbeek\nMathematics and Computer Science Division\nArgonne National Laboratory\nArgonne, Illinois 60439\nABSTRACT\nThe Interactive Theorem Prover (ITP), an environment that supports research into\nthe theory and application of automated reasoning, is described . ITP is an interac­\ntive system providing convenient access to and control of the many inference\nmechanisms of Logic Machine Architecture (LMA), described elsewhere. LMA itself\nhas been substantially enhanced since the last report on its status, and we\ndescribe here some of the enhancements, particularly the addition of a tightly­\ncoupled logic programming component, which provides an integration of the\ntheorem-proving and logic programming approaches to problems represented in\nthe predicate calculus.\n1. Introduction\nIn [2] and [4] the authors defined a layered software architecture called Logic Machine",
+        "52\n5. Ewing L. Lusk and Ross A. Overbeek, \"An LMA-based theorem prover,\" Al\\JL-B2-75, Argonne\nNational Laboratory (December, 1982).\n6. Ewing L. Lusk and Ross A. Overbeek, \"Logic Machine Architecture inference mechanisms ­\nlayer 2 user reference manual,\" A-lIlL-82-B4, Argonne National Laboratory (December, 1982).\n7, J. McCharen, R. Overbeek, and L. Wos, \"Complexity and related enhancements for\nautomated theorem-proving programs,\" Computers and Mathematics with Applications\n2pp. 1-16 (1976).\nB. S. Winker and L. Wos, \"Procedure implementation through demodulation and related\ntricks,\" pp. 109-131 in Proceedings of the Sixth Conference on Automa.ted Deduction,\nSpringer-Verla.g Lecture Notes in Computer Science, Vol. 138, ed. D. W. Loveland.Springer­\nVerlag, New York (1982).\n9. L. Wos, G. Robinson, D. Carson, and 1. Shalla, \"The concept of demodulation in theorem\nproving,\" Journal of the ACM 14 pp. 698-704 (1967).",
+        "matics. Their application to computing related areas such as formal semantics\n(Hoa,Plo), data type specification (Gut), and program development (Cos,Nor)\nemphasizes the importance of understanding the notion of derivation and the\nstrategies available for constructing proofs. Traditionally, these concerns\nhave fallen in the realm of automated theorem proving (Ble,Boy,Coh,Gor), but\nthe emphasis in this mechanized world often falls upon the number ot difficulty\nof the theorems proved, rather than the style in which they are proved. Further,\nthe boundaries between kind of logical system (natural deduction versus axio­\nmatic), problem area of interest (first order logic, group theory, set theory,\netc.), and the proof discovery strategy are often poorly delineated. If the\ntheorem proving art is to be advanced and its most elegant ideas applied to new\nproblem areas such as program development, the distinctions between these"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 496",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "496",
+          "score": 7.808955192565918
+        },
+        {
+          "n": 2,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 500",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "500",
+          "score": 0.5568071603775024
+        },
+        {
+          "n": 3,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 43",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "43",
+          "score": -1.6356396675109863
+        },
+        {
+          "n": 4,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 52",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "52",
+          "score": -1.6652467250823975
+        },
+        {
+          "n": 5,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 445",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "445",
+          "score": -1.9813997745513916
+        }
+      ],
+      "ttft_ms": 153185.1135350007,
+      "total_ms": 167154.218175001
+    },
+    {
+      "id": "unanswerable-yolo-dataset",
+      "question": "Which public dataset was the YOLOv8 surveillance model trained on?",
+      "answerable": false,
+      "answer": " I could not find information about which specific public dataset the YOLOv8 surveillance model was trained on in the provided context.",
+      "contexts": [
+        "identifying trends, and making accurate predictions. For example, anomaly detection models \ntrained on vast datasets can differentiate between normal activities and potentially harmful \nbehavior, triggering alerts before incidents escalate. \nA key ML model used for object detection and activity recognition in surveillance \napplications is YOLOv8 (You Only Look Once). YOLOv8 is a state -of-the-art deep learning model \ndesigned for real -time object detection and tracking, making it highly suitable for crowd \nanalysis, crime detection, and work monitoring. By processing live CCTV footage, YOLOv8 can \nidentify the number of people in a specific area, track their movements, detect suspicious \nbehavior, and provide real -time notifications. The integration of convolutional neural networks \n(CNNs) and deep learning techniques further enhances detection accuracy, ensuring low false \npositives and high efficiency. \n \n3. Challenges in Traditional CCTV Monitoring",
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n57 \nThese objectives focus on accuracy, efficiency, security, accessibility, and performance \nevaluation \n \n2. Proposed Methodology for Research Objective1 \nTo develop an AI -powered surveillance system using YOLOv8 and deep learning for real -time \ncrowd monitoring, crime prevention, and work compliance tracking, the proposed \nmethodology follows a structured approach. First, existing CCTV footage is processed using \npre-trained YOLOv8 models, enabling real -time object detection and people counting. The \nsystem identifies crowd density, movement patterns, and unusual activities, helping \nauthorities take proactive measures. Next, deep learning -based anomaly detection algorithms \nanalyze behavioral patterns to detect suspicious movements, loitering, and potential security \nthreats. The model is trained on large -scale surveillance datasets, ensuring high accuracy in",
+        "Additionally, the application of YOLO -based object detection demonstrates high accuracy in \nreal-time surveillance and monitoring scenarios, making it a viable solution for crowd \nmanagement, crime prevention, and automated security analysis. \nFurthermore, the training performance of the YOLOv8 model, as evidenced by \ndecreasing loss values and increasing precision and recall metrics, confirms the efficiency of \nthe approach. The system’s adaptability and accuracy make it a robust framework for \nhandling real-world applications requiring secure data processing and intelligent monitoring. \nFuture enhancements may include further optimization of the encryption-decryption process, \nintegration with cloud-based frameworks for scalability, and expansion to diverse application \ndomains such as smart cities and automated law enforcement systems.",
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n59 \nThe implementation of such object detection systems enhances situational awareness by \nallowing authorities to monitor crowd density, detect anomalies, and identify potential \nthreats. It is particularly beneficial for crime prevention, as suspicious activities can be \nflagged in real time. Additionally, this approach is valuable in workplace monitoring, such as \nconstruction sites and industrial zones, where tracking human movement ensures safety \ncompliance. Moreover, in traffic and event management, the system helps in optimizing \npedestrian movement and reducing congestion, making it a key technology in smart city \nsurveillance and urban planning. \n \n \nFig 3. Training Graph \nFigure2 shows  multiple training graphs for the YOLOv8 model, illustrating its learning \nprogress over several epochs. The graphs primarily represent loss functions, precision, recall,",
+        "research introduces a comprehensive AI and ML -based \nsurveillance framework designed to enhance public safety, \ncrime prevention, and workplace monitoring using existing \nCCTV infrastructure. Leveraging the state -of-the-art YOLOv8 \nobject detection model, the system enables accurate real -time \ndetection, tracking, and classification of individuals and \nactivities in live video feeds. It automatically monitors crowd \ndensity, detects suspicious behavior through behavioral \nanalysis and anomaly detection algorithms, and generates \ntimely alerts to aid rapid intervention by security personnel. \nThe integration of deep learning techniques, such as \nconvolutional neural networks and LSTM -based sequence \nmodels, ensures precise identification of deviations from \nnormal behavior in both public and restricted zones. A \nsignificant emphasis is placed on minimizing false positives \nand computational overhead, making the system suitable for"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 4",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "4",
+          "score": 5.521091461181641
+        },
+        {
+          "n": 2,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 8",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "8",
+          "score": 4.835843086242676
+        },
+        {
+          "n": 3,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 10",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "10",
+          "score": 3.832672357559204
+        },
+        {
+          "n": 4,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 10",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "10",
+          "score": 3.207733631134033
+        },
+        {
+          "n": 5,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 2",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "2",
+          "score": 3.197719097137451
+        }
+      ],
+      "ttft_ms": 130845.87113599991,
+      "total_ms": 135665.57622800246
+    },
+    {
+      "id": "unanswerable-yolo-gpus",
+      "question": "Which GPUs were used to train the YOLOv8 surveillance model?",
+      "answerable": false,
+      "answer": " I could not find the answer in the provided documents. The context does mention that the YOLOv8 model is a deep learning model, but it does not specify which specific GPUs were used for its training.",
+      "contexts": [
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n59 \nThe implementation of such object detection systems enhances situational awareness by \nallowing authorities to monitor crowd density, detect anomalies, and identify potential \nthreats. It is particularly beneficial for crime prevention, as suspicious activities can be \nflagged in real time. Additionally, this approach is valuable in workplace monitoring, such as \nconstruction sites and industrial zones, where tracking human movement ensures safety \ncompliance. Moreover, in traffic and event management, the system helps in optimizing \npedestrian movement and reducing congestion, making it a key technology in smart city \nsurveillance and urban planning. \n \n \nFig 3. Training Graph \nFigure2 shows  multiple training graphs for the YOLOv8 model, illustrating its learning \nprogress over several epochs. The graphs primarily represent loss functions, precision, recall,",
+        "Additionally, the application of YOLO -based object detection demonstrates high accuracy in \nreal-time surveillance and monitoring scenarios, making it a viable solution for crowd \nmanagement, crime prevention, and automated security analysis. \nFurthermore, the training performance of the YOLOv8 model, as evidenced by \ndecreasing loss values and increasing precision and recall metrics, confirms the efficiency of \nthe approach. The system’s adaptability and accuracy make it a robust framework for \nhandling real-world applications requiring secure data processing and intelligent monitoring. \nFuture enhancements may include further optimization of the encryption-decryption process, \nintegration with cloud-based frameworks for scalability, and expansion to diverse application \ndomains such as smart cities and automated law enforcement systems.",
+        "identifying trends, and making accurate predictions. For example, anomaly detection models \ntrained on vast datasets can differentiate between normal activities and potentially harmful \nbehavior, triggering alerts before incidents escalate. \nA key ML model used for object detection and activity recognition in surveillance \napplications is YOLOv8 (You Only Look Once). YOLOv8 is a state -of-the-art deep learning model \ndesigned for real -time object detection and tracking, making it highly suitable for crowd \nanalysis, crime detection, and work monitoring. By processing live CCTV footage, YOLOv8 can \nidentify the number of people in a specific area, track their movements, detect suspicious \nbehavior, and provide real -time notifications. The integration of convolutional neural networks \n(CNNs) and deep learning techniques further enhances detection accuracy, ensuring low false \npositives and high efficiency. \n \n3. Challenges in Traditional CCTV Monitoring",
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n57 \nThese objectives focus on accuracy, efficiency, security, accessibility, and performance \nevaluation \n \n2. Proposed Methodology for Research Objective1 \nTo develop an AI -powered surveillance system using YOLOv8 and deep learning for real -time \ncrowd monitoring, crime prevention, and work compliance tracking, the proposed \nmethodology follows a structured approach. First, existing CCTV footage is processed using \npre-trained YOLOv8 models, enabling real -time object detection and people counting. The \nsystem identifies crowd density, movement patterns, and unusual activities, helping \nauthorities take proactive measures. Next, deep learning -based anomaly detection algorithms \nanalyze behavioral patterns to detect suspicious movements, loitering, and potential security \nthreats. The model is trained on large -scale surveillance datasets, ensuring high accuracy in",
+        "Smart Surveillance Systems Using YOLOv8: A Scalable Approach for Crowd and Threat Detection \n58 \nan accuracy of 92.7%, reducing false positives through context -aware filtering techniques. \nAdditionally, the system was optimized for low -power edge processing, reducing \ncomputational overhead by 30%, making it suitable for deployment on existing CCTV \nnetworks without requiring major hardware upgrades. The AI -driven surveillance system \ndemonstrated fast response times, generating real-time alerts within 2-3 seconds of detecting \nanomalies, enabling security personnel to take immediate preventive action. Furthermore, \nthe model proved to be highly scalable, efficiently handling high -density surveillance \nenvironments while ensuring optimal resource utilization. These results validate the \neffectiveness of the proposed AI -powered security framework, ensuring enhanced safety, \nfaster response times, and improved operational efficiency in crowd management, crime"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 10",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "10",
+          "score": 2.348045825958252
+        },
+        {
+          "n": 2,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 10",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "10",
+          "score": 2.315786361694336
+        },
+        {
+          "n": 3,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 4",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "4",
+          "score": 2.280139446258545
+        },
+        {
+          "n": 4,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 8",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "8",
+          "score": 1.7748379707336426
+        },
+        {
+          "n": 5,
+          "citation": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf, p. 9",
+          "source": "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf",
+          "page": "9",
+          "score": 1.5303657054901123
+        }
+      ],
+      "ttft_ms": 129426.53493699981,
+      "total_ms": 137818.99455299936
+    },
+    {
+      "id": "unanswerable-glider-mmlu",
+      "question": "What score does GLIDER achieve on the MMLU benchmark?",
+      "answerable": false,
+      "answer": " I could not find the answer to your question in the provided documents as there is no mention of the MMLU benchmark in the context.",
+      "contexts": [
+        "our research questions based on our results:\nRQ1: Can GLIDER compete with LLMs and ex-\nisting judge models? As observed in Table 1, our\nmodel achieves state of the art performance on the\nFLASK benchmark, beating GPT-4o while still per-\nforming close to models 17× its size on the Feed-\nback Collection dataset. Additionally, GLIDER is\nextremely beneficial for researchers working with\nsubjective metrics as shown by its strong perfor-\nmance on the Summeval benchmark where it out-\nperforms GPT-4o-mini. We observe that the model\nhas a strong grasp of text coherence and consis-\ntency where we see correlation scores of 0.462 and\n0.522 respectively against human evaluators, out-\nperforming models like Qwen-2.5-72B.\nAnalyzing the performance on pairwise ranking\ndatasets in Table 2, we observe that GLIDER not\nonly outperforms all existing open judge models,\nbut also compares to GPT-4o-mini with a difference\nof less than a single F1 score point. This proves",
+        "multi-instructional judgment criteria. This displays\nthat GLIDER is capable of understanding multiple\ncriteria effectively.\nRQ3: Can GLIDER trained on monolingual\ndata generalize to other languages? Referenc-\ning to Table 3, we can see that our GLIDER\nmodel outperforms Llama-3.1-70B on average per-\nformance. Along with this result, as backed by Ta-\nble 2, we can see that the model is able to retain\nits strong reasoning performance from its pretrain-\ning, achieving a 90% F1 score on the reasoning\nsubset of the Reward Bench in Table 3 and Ta-\nble 4. This proves that the single epoch training\nand alignment technique can mitigate the catas-\ntrophic forgetting of multilinguality and reasoning\nknowledge acquired during pretraining for small\nlanguage models like GLIDER. We encourage fu-\nture work to utilize this setup with larger models\nfor a fairer comparison of performance.\nRQ4: Do highlight spans improve the perfor-\nmance of GLIDER? As seen in Table 2, remov-",
+        "GLIDER 3.8B 0.777 0.002 0.779 0.786 0.798 0.626 0.791 0.830 0.792 0.708 0.708 0.793 0.827 0.819 0.814 0.752 0.783 0.780 0.758 0.818 0.774 0.807\nTable 4: Pearson correlation scores between GLIDER\nand human judgment on the BigBench multilingual split\nModel ρ\nGPT-4o 0.583\nClaude-3.5-Sonnet 0.554\nGPT-4o-mini 0.138\nQwen-2.5-72B 0.506\nLlama-3.1-70B 0.450\nPhi-3.5-mini-instruct 0.290\nPrometheus-2-8x7B 0.481\nPrometheus-2-7B 0.313\nFlowAI Judge 0.410\nGLIDER 3.8B 0.545\neffective for SLM evaluators.\nRQ2: Can GLIDER perform effective multi-\nmetric evaluation? We specifically study this\nbehavior through the performance of GLIDER on\nthe LiveBench dataset. For this dataset, we ob-\nserve that GLIDER not only outperforms existing\njudge models with a score of 0.654, but also much\nlarger LLMs like GPT-4o-mini and Qwen-2.5-72B\nwith F1 scores of 0.481 and 0.485 respectively on\nmulti-instructional judgment criteria. This displays\nthat GLIDER is capable of understanding multiple\ncriteria effectively.",
+        "shows higher Pearson’s correlation than GPT-\n4o on FLASK and greatly outperforms prior\nevaluation models, achieving comparable per-\nformance to LLMs 17× its size. GLIDER sup-\nports fine-grained scoring, multilingual reason-\ning, span highlighting and was trained on 685\ndomains and 183 criteria. Extensive qualitative\nanalysis shows that GLIDER scores are highly\ncorrelated with human judgments, with 91.3%\nhuman agreement. We have open-sourced\nGLIDER to facilitate future research.1\n1 Introduction\nThe ever improving capabilities of Large Language\nModels (LLMs) have opened a wide variety of use\ncases for their applications such as tool use (Schick\net al., 2024; Qin et al., 2023), long context reason-\ning (Kuratov et al., 2024) and many more. With\nsuch a steep growth in the field, practitioners are\nstruggling to effectively evaluate LLMs on poten-\ntial downstream use cases (Gao et al., 2024).\nResearchers have been exploring automated eval-\nuation using LLMs as a substitute for human judg-",
+        "Prometheus-2-7B 0.392 0.545 0.882 ∗ 0.216 0.188 0.236 0.134 0.370\nFlowAI Judge 3.8B 0.460 0.400 0.787 0.286 0.358 0.351 0.309 0.422\nGLIDER 3.8B (w/o highlights) 0.490 0.570 0.759 0.367 0.418 0.433 0.321 0.480\nGLIDER 3.8B 0.604\n± 0.005\n0.615\n± 0.01\n0.774\n± 0.01\n0.398\n± 0.02\n0.522\n± 0.01\n0.462\n± 0.01\n0.365\n± 0.03 0.534\nTable 2: Performance (F1 score) comparison of models on pairwise ranking datasets. Blue highlights indicate the\nbest open-source model, bolded text indicates best overall and underline indicates best open-source judge model.\nPrometheus models do not support binary rating required for LiveBench. 3\nModel Live Bench HH Eval MT Bench Reward Bench Average\nIF Harm Help Hon Chat Chat-Hard Safe. Reason. Avg\nGPT-4o 0.661 0.983 0.898 0.831 0.813 0.950 0.697 0.861 0.893 0.850 0.843\nGPT-4o-mini 0.481 0.948 0.863 0.812 0.786 0.943 0.566 0.802 0.859 0.793 0.784\nClaude-3.5-Sonnet 0.632 0.944 0.915 0.868 0.807 0.618 0.827 0.898 0.821 0.849 0.814"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "2412.14140v2.pdf, p. 6",
+          "source": "2412.14140v2.pdf",
+          "page": "6",
+          "score": 6.6637725830078125
+        },
+        {
+          "n": 2,
+          "citation": "2412.14140v2.pdf, p. 7",
+          "source": "2412.14140v2.pdf",
+          "page": "7",
+          "score": 4.666579246520996
+        },
+        {
+          "n": 3,
+          "citation": "2412.14140v2.pdf, p. 7",
+          "source": "2412.14140v2.pdf",
+          "page": "7",
+          "score": 3.34426212310791
+        },
+        {
+          "n": 4,
+          "citation": "2412.14140v2.pdf, p. 1",
+          "source": "2412.14140v2.pdf",
+          "page": "1",
+          "score": 3.2199454307556152
+        },
+        {
+          "n": 5,
+          "citation": "2412.14140v2.pdf, p. 5",
+          "source": "2412.14140v2.pdf",
+          "page": "5",
+          "score": 2.05540132522583
+        }
+      ],
+      "ttft_ms": 226747.760025999,
+      "total_ms": 233127.6676000016
+    },
+    {
+      "id": "unanswerable-cade8-venue",
+      "question": "Where was the 8th International Conference on Automated Deduction held?",
+      "answerable": false,
+      "answer": " I could not find information about the location of the 8th International Conference on Automated Deduction in the provided documents.",
+      "contexts": [
+        "iii\nFOREWORD\nThe Seventh International Conference on Automated Deduction was held\nMay 14-16, 19S4, in Napa, California . The conference is the primary forum for reporting\nresearch in all aspects of automated deduction , including the design , implementation,\nand appli cations of theor em-proving systems , knowledge representation and retrieval ,\nprogram verification , logic programming, formal specification , program synthesis , and\nrelated areas .\nThe presented papers include 27 selected by the program committee, an invited\nkeynote addr ess by Jorg Siekmann, and an invited banquet address by Patrick Suppes.\nContributions were present ed by authors from Canada , France, Spain , the United Kingdom ,\nthe United States , and West Germany .\nThe first conference in this series was held a decade earlier in Argonne, Illinois.\nFollowing the Argonne conference were meetings in Oberwolfach, West Germany (1976),\nCambridge , Massachusetts (1977), Austin, Texas (1979), Les Arcs, France (19S0), and",
+        "Editorial Board\nD. Barstow W. Brauer P. Brinch Hansen D. Gries D. Luckham\nC. Moler A. Pnueli G. SeegmOlier J. Stoer N. Wirth\nEditor\nA. E. Shostak\nSRI International\n333 Ravenswood Avenue\nMenlo Park, CA 94025\nU.S.A.\nLibrary of Congress Cataloging in Publication Data\nInternational Conference on Automated Deduction\n(7th: 1984 : Napa, Calif.)\nSeventh International Conference on Automated\nDeduction.\n(Lecture notes in computer science ; 170)\n1. Automatic theorem proving-Congresses.\n2. Logic, Symbolic and mathematical-Congresses.\nI. Shostak, Robert. II. Title.\nIII. 7th International Conference on Automated\nDeduction. IV. Series.\nQA76.9.A96158 1984 511.3 84-5441\nCR Subject Classification (1982): 1.1, J.2.\n© 1984 by Springer-Verlag New York Inc.\nAll rights reserved. No part of this book may be translated or\nreproduced in any form without written permission from Springer-Verlag,\n175 Fifth Avenue, New York, NY 10010, U.S.A.\nPermission to photocopy for internal or personal use, or the internal or",
+        "7th InternationalConference\non AutomatedDeduction",
+        "413\n[7] G. Gentzen, Investigations into Logical Deductions . In The CollectedPap ersa/Gerhard\nGentzen, M. E.Szabo, Ed.,North -Holland Publishing Co., Amsterdam, 1969, pp. 68-131.\n[8] J. Herbrand, LogicalWritings,Harvard University Press. 1972.\n[9] Dale A. Miller, Proofsin HigherOrderLogic, Ph.D. Th., Carnegie-Mellon University,\nAugust 1983.\n[10] Dale A. Miller, ExpansionTree Proofsand TheirConversion to Natural DeductionProofs.\n7th Conference on Automated Deduction, Napa, May 1984.\n[II] Frank Pfenning . Conversions between Analytic and Non-anal ytic Proofs. Tech. Report,\nCarnegie-Mellon University, 1984. (to appear)\n[12] J. A. Robinson, A machine-orientedlogicbasedon theresolutionprinciple, Journal of the\nAssociation for Computing Machinery 12 (1965), 23-41.\n[13] R. M. Smullyan, First-OrderLogic. Springer-Verlag, Berlin, 1968.\n[14] R. Statman, LowerBoundson Herbrand'sTheorem, Proceedings of the American\nMathematical Society 75 (1979),104'107.",
+        "2. E. Lusk, William McCune. and R. Overbeek, \"Logic Machine Architecture: inference mechan­\nisms,\" pp. 85-108 in Proceedings of the Sixth Conference on Automa.ted Deduction,\nSpringer-Verlag Lecture Notes in Computer Science. Vol, 138. ed. D. W. Loveland.Sprmger­\nVerlag. New York O.\n3. E. Lusk and R. Overbeek, \"Data structures and control architecture for the implementation\nof theorem-proving programs,\" in Proceetiinqs of the F'ifth Conference on Automated\nDeduction. Springer- verlag Lecture Notes in Computer Science. Vol. 87, ed. Robert Kowalski\nand Wolfgang Bibel. O.\n4. E. Lusk, William McCune. and R. Overbeck, \"Logic machine architecture: kernel functions.\"\npp. 70-84 in Proceedings of the Sixth Conference on Automated Deduction. Springer-Verlag\nLecture Notes in Computer Science. Vol. 138, ad. D. W. Loveland.Sprtnger-Verlag. New York\n(1962)."
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. iii",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "iii",
+          "score": 8.863645553588867
+        },
+        {
+          "n": 2,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. ii",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "ii",
+          "score": 5.453057289123535
+        },
+        {
+          "n": 3,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. vii",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "vii",
+          "score": 2.6133575439453125
+        },
+        {
+          "n": 4,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 413",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "413",
+          "score": 0.1797637939453125
+        },
+        {
+          "n": 5,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 51",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "51",
+          "score": -0.6875066757202148
+        }
+      ],
+      "ttft_ms": 154345.5030969999,
+      "total_ms": 159651.467271
+    },
+    {
+      "id": "unanswerable-capital-australia",
+      "question": "What is the capital of Australia?",
+      "answerable": false,
+      "answer": " I could not find the answer to the question \"What is the capital of Australia\" in the provided documents.",
+      "contexts": [
+        "TID + A9 = > RI\nRI + A9 = > R2\nR2 + A9 => R3\nR 3 + A9 = > R4\nR3 + A8 = > R5\nRI + A8 => R6\nTID + A8 => R 7\nTI D + A7 => R8\nRI + A 7 => R9\nA5 + R9 = > RIO:\nRIO + H8 => RII :\nA3 + A2 => R12 :\nRl2 + RI I => R 13 :\nA6 + R l3 = > R14:\nRl4 + R 7 => R1 5 :\nH l 5+ R 6 => R 16 :\nR3 + A 7 => H17:\nR2 + A 7 => R18:\nA4 + A 2 => R19:\nRI9 + Rll => R20:\nA4 + R20 => R2I:\nR21 + RIB = > R 22 :\nA3 + R22 => R23:\nR23 + Rl7 => R 24 :\nA6 + R24 = > R25:\nR25 + R16 => R26:\nR26 + R 5 => R27:\nR2 + A 8 =) R28 :\nA3 + R20 = > R29:\nR29 + R18 = ) R30:\nA6 + R30 = > R 31 :\nR31 + R7 => R32:\nR 32 + R2B = > R33:\nA 4 + R22 = > R34:\nR34 + RI7 => R35:\nA6 + R35 = ) R36 :\nR36 + R33 => R37 :\nR37 + R27 = ) R 38:\nR4 + R38 =) R39:\n502\n- T(+ ( A +(A +(B B») a')\n- T ( >( A +(B B» c )\n- T( +(B B) e)\n- 'f eB g)\nT(B f )\nT(B b )\nT( +( A +(B B» a )\nR(O a a ')\nR(a ' b c)\nR(a b c) OR - R( O a a ')\nR(a b c)\nR(a b h ) O R - R(a b c )\nR( a b h)\nT( +( B B) h) O R - T(A b) OR -T ( +(A +(B B» a)\nT(+(B B) h) OR -T(A b )\nT(+(B B) h )\nR(e f g)",
+        "Claude-3.5-Sonnet 0.632 0.944 0.915 0.868 0.807 0.618 0.827 0.898 0.821 0.849 0.814\nLlama-3.1-70B 0.651 0.913 0.898 0.898 0.802 0.577 0.800 0.877 0.802 0.826 0.802\nQwen-2.5-72B 0.485 0.965 0.915 0.847 0.798 0.949 0.612 0.839 0.888 0.822 0.810\nPhi-3.5-mini-instruct 0.344 0.775 0.745 0.672 0.223 0.844 0.451 0.717 0.759 0.693 0.614\nPrometheus-2-8x7B - 0.966 0.848 0.820 0.551 0.930 0.471 0.835 0.774 0.753 -\nPrometheus-2-7B - 0.793 0.728 0.771 0.504 0.855 0.491 0.771 0.765 0.720 -\nFlowAI Judge 3.8B 0.592 0.896 0.779 0.734 0.549 0.895 0.572 0.786 0.657 0.728 0.719\nGLIDER 3.8B (w/o highlights) 0.542 0.946 0.829 0.783 0.577 0.835 0.577 0.797 0.904 0.778 0.754\nGLIDER 3.8B 0.654\n± 0.04\n0.946\n± 0.003\n0.830\n± 0.005\n0.778\n± 0.002\n0.628\n± 0.06\n0.876\n± 0.005\n0.575\n± 0.002\n0.797\n± 0.01\n0.888\n± 0.01\n0.784\n± 0.006 0.776\nPreference datasets\n• HH Eval (Askell et al., 2021): This dataset\ncontains 58 preference pairs for harmfulness,\n59 pairs for helpfulness, and 61 pairs for hon-",
+        "A8 A9 TID RI R2 R3 R5 R6 R7 A 7 R8 R9 A 5 RI O RI I A2 A3 RI2 Rl3 A6\nR14 R I5 R16 Rl 7 RIB A4 R19 R20 R2I R22 R23 R24 R25 R26 R27 R28\nR 29 R30 R31 R32 R33 R34 R35 R36 R37 R38 R4 R39 .\nEND O F PR O O F: 28- MAR-8 3 20:13 : 37",
+        "positively (negatively) if the path from the root of Q to N contains an even (odd)\nnumber of nodes labeled with \"\"'. We shall agree that the root of Q occurs positively\nin Q. If a node N in Q is labeled with a formula of the form ITB, then we say that\nN is universal (existential) if it occurs positively (negatively) in Q. A terminal node\nwhich is not labeled with a formula of the form ITB is called a neutral node. A universal",
+        "intensionally as well as extensionally.\n(19, lemma a,lS/18) A, F in c\nclosed\n0,0,0)\n(2,lemma b,l)\n(3,lemma b,l)\n(4,lemma b,l)\n(S,lemma b,4)\n(6,lemma b,4)\n(7,lemma b,4)\n(8,d2,2/S)\n(9,p3,8)\n00,p4,9)\n(11, p2 ,0)\n02 ,d2, 10/11)\n03,p3,12)\n(14.d2,13)\nOS.d2,13)\n(16.L2,14)\n(17, lemma a,\n(A + (A + B» + (A + B). F in 0\nROab\nA + (A + B), T in a\nA + B , F in b\nRbcd\nA, T in c\nB, F in d\nR20 acd\nR20 cad\nRead\nRcccR2ccad\nR2cacd\nRcax\nRxed\nRacx\n------------~3/16) A, F in c 08, lemma a, 3/16) A + B, T in xclosed I\n-------- I------(20, lemma a,15/l8) B, T in d\nclosed\nII. ~ Problem\nThe problem we have dealt with is known as \"converse of contraction\":\n0) (A + (B -> B)} + (A'\" (A -> (B .., B»)\nand is given in [AB 75 J on page 96 as being a theorem of T.. a\nSUbsystem of RL.\nNow notice that\n(I) I ~ RL (A -> B) + A + (A + B)"
+      ],
+      "sources": [
+        {
+          "n": 1,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 502",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "502",
+          "score": -10.760231971740723
+        },
+        {
+          "n": 2,
+          "citation": "2412.14140v2.pdf, p. 5",
+          "source": "2412.14140v2.pdf",
+          "page": "5",
+          "score": -10.945732116699219
+        },
+        {
+          "n": 3,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 502",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "502",
+          "score": -11.027007102966309
+        },
+        {
+          "n": 4,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 380",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "380",
+          "score": -11.074714660644531
+        },
+        {
+          "n": 5,
+          "citation": "7thInternationalConferenceonAutomatedDeduction.pdf, p. 499",
+          "source": "7thInternationalConferenceonAutomatedDeduction.pdf",
+          "page": "499",
+          "score": -11.159950256347656
+        }
+      ],
+      "ttft_ms": 269185.9205389992,
+      "total_ms": 274203.8901009982
+    }
+  ]
+}

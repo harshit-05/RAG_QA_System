@@ -1,0 +1,46 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# NOTE: .python-version is committed on purpose (pins the uv interpreter).
+
+# --- Project artifacts ---
+# FAISS index, rebuilt by `rag-ingest`
+vectorstore/
+# scratch copies; never a source of truth
+temp/
+# data files no configured loader can read; kept on disk, never tracked
+corpus/*.parquet
+# datasets fetched by scripts/fetch_dataset.py (binary; outside corpus/ on purpose)
+downloads/
+# RAGAs run artifacts (Phase 2)
+eval_output/
+# a tier-2 run's checkpoint, until the run file it leads to is written (S2-5b)
+*.partial.jsonl
+# machine-specific overrides (SRS §8.3)
+config.local.yaml
+.env
+
+# --- Backups, media ---
+*.save
+*.bak
+*.orig
+*.webm
+*.mp4
+
+# --- OS / editor litter ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/

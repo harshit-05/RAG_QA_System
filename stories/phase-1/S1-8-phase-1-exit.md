@@ -1,0 +1,195 @@
+# S1-8: Phase 1 exit — audit gate, doc hygiene, release 0.2.0
+
+| | |
+| --- | --- |
+| **Status** | Done 2026-10-02 (PR #6; tag `v0.2` on `db75439`) |
+| **Closes** | — (phase exit; SRS §12 Phase 1) |
+| **Depends on** | S1-6, S1-7 |
+| **Plan-first** | no |
+
+## Goal
+
+Close Phase 1: add the dependency-audit gate, bring the documentation back in
+line with what the code actually is, and cut the release. Exit criterion
+(SRS §12): **CI is green and would have caught every Phase-0 bug** — the first
+half is the workflow, the second half is `tests/test_config_regressions.py` from
+S1-5. Exit ⇒ version 0.2.0, tag `v0.2`.
+
+## Scope
+
+- **`pip-audit`** added to CI as a blocking step (OWASP LLM05, SRS §11). If it
+  flags something unfixable within this story, record the advisory ID and the
+  reason in Discovered rather than silencing the gate quietly.
+- **Doc hygiene** — all of the following are currently misleading:
+  - `DEVELOPMENT.md`: says `gh` is **NOT** authenticated (it has been since
+    2026-09-24, as `harshit-05`); omits `docs/ADR.md` from the read-list; the
+    GPU policy needs the clause that the CUDA torch variant (S1-7) exists for
+    Colab/Kaggle, not for this host; environment facts are dated 2026-08-01 and
+    should carry the re-verification date.
+  - `stories/STATUS.md`: pre-flight caveats 1 and 5 describe a pre-S0-1 state
+    that no longer exists; add the Phase 1 stories to `## Done` (Phase 0 was
+    added there in the Phase 1 architecture pass) and the Phase 1 caveats
+    learned on the way.
+  - `README.md`: the config shape changed in S1-3 (`pipeline.ingestion.loaders`),
+    `--config`/`--help` exist (S1-4), tests and CI exist, and the GPU sync command (S1-7)
+    needs its line.
+  - `docs/ARCHITECTURE.md`: mark Phase 1 confirmed-and-delivered; note any place
+    the delivery differed from §1.1–§1.7.
+  - `docs/ADR.md`: add ADR entries for the decisions that generalize — the
+    Pydantic `_target_` alias trap, the allowlist at the import funnel, and
+    the own-loaders step of the DEC-5 exit. Index them, do not renumber.
+- **Release**: version `0.2.0.dev0` → `0.2.0` in **both** `pyproject.toml` and
+  `src/rag_qa/__init__.py` (each hardcodes it); commit; `git tag -a v0.2`;
+  push both. Per the release mapping in STATUS.md, the final story of a phase
+  does this.
+- Reconcile the STATUS.md backlog: every Phase 1 line either closed by a story or
+  re-deferred with a phase and a reason.
+
+## Out of scope
+
+- Trivy, the container build and the Dockerfile (Phase 3).
+- Any Phase 2 work — the FastAPI shape, the reranker, the manifest, RAGAs.
+- Rewriting Phase 0 sections of ARCHITECTURE.md. Phase 0 is history; annotate,
+  don't revise.
+
+## Verification
+
+```bash
+# 1. the full gate, locally and in CI
+uv run ruff check src tests && uv run mypy src/rag_qa
+uv run pytest --cov=rag_qa --cov-fail-under=80 -q
+uv run pip-audit 2>&1 | tail -5
+gh run list --limit 1                 # → success on main
+
+# 2. the exit criterion, stated literally
+uv run pytest tests/test_config_regressions.py -v    # every Phase-0 bug, caught
+
+# 3. a fresh clone still runs end to end (the v0.1 criterion must not regress)
+#    (use the exact sync command README documents — plain `uv sync` unless S1-7
+#    chose option (b); and confirm the fresh env has no nvidia-* packages)
+git clone . <scratch>/fresh && cd <scratch>/fresh && uv sync
+uv pip list | grep -icE 'nvidia'      # → 0
+uv run rag-ingest && echo "What is this corpus about?" | uv run rag-query
+
+# 4. docs tell the truth
+grep -n "gh auth\|ADR.md\|cuda" DEVELOPMENT.md
+grep -rno "\](\([^)]*\.md\)[^)]*)" docs/ stories/ DEVELOPMENT.md README.md   # no dangling links
+
+# 5. release
+grep '^version' pyproject.toml        # → 0.2.0
+grep __version__ src/rag_qa/__init__.py   # → "0.2.0"
+git tag -l | grep v0.2
+```
+
+## Review notes for the human
+
+Verification step 3 is the one that matters most: Phase 1 touched the config
+shape, the loaders and the dependency extras, so the *Phase 0* exit criterion is
+the thing most likely to have silently regressed. Then read `DEVELOPMENT.md` as a
+fresh session would — it is auto-loaded into every future session, so a stale
+line there is worse than a stale line anywhere else in the repo (ADR-012's
+reasoning: a rule you have to remember is a rule that gets forgotten).
+
+## Discovered
+
+- **A plain `pip-audit` never audits torch.** It looks `2.14.0+cpu` up on PyPI,
+  finds no such release, and only lists it under "skipped", with exit 0. The
+  verification's literal `uv run pip-audit` therefore passes while saying nothing
+  about the package with the most CVEs in the tree. CI's Audit step writes
+  `uv pip freeze --exclude-editable`, with torch's `+cpu` label stripped, to a
+  file, checks that the file is non-empty, and runs
+  `pip-audit --no-deps --disable-pip -r` on it (the pipe into `/dev/stdin` was
+  replaced at the first review; see Deviation). The CPU wheel is the same
+  source release as PyPI's 2.14.0, so the same advisories apply. Negative
+  controls: `requests==2.19.0` fails it (3 PYSEC advisories), and so does
+  `torch==2.5.1` (4). No advisory is open against the real environment.
+- **Two ADR index anchors were broken since they were written** (ADR-010 and
+  ADR-015): GitHub keeps the underscores of `_target_` in heading slugs. Fixed,
+  and all 18 `.md` links in docs/, stories/, DEVELOPMENT.md and README.md were checked
+  with a GitHub-style slugger.
+- **`src/rag_qa/__init__.py`'s module list** was missing `loaders` and
+  `components` (S1-3). Fixed with the version bump.
+- **Two rows of the issue map** in `tests/test_config_regressions.py` still
+  pointed forward ("pip-audit → S1-8", "mypy → S1-6"). Both now name the CI
+  step that guards them.
+- **The exit criterion, read literally against that map:** of the 21 Appendix A
+  issues, 14 have a CI guard: 01, 02, 03 (partly), 04, 05, 06, 07, 08, 09, 11,
+  12, 13, 17 and 19. ISS-21's REPL half has one too. The rest cannot be CI
+  checks:
+  - ISS-10 is structural;
+  - ISS-14 and ISS-15 are missing features (Phase 2);
+  - ISS-16 is a documented invariant;
+  - ISS-20 is the README.
+
+  Two are real gaps, both stated in the map rather than hidden:
+  - ISS-03's bare model string passes load, because leaf kwargs are open. It is
+    owned by Phase 2's reranker story.
+  - ISS-18 is a standalone script that CI does not run. It was fixed and checked
+    by hand in S1-4.
+
+  "Would have caught every Phase-0 bug" holds for every bug that code or config
+  could reintroduce.
+
+## Deviation from plan
+
+- **Fresh-clone step:** `git clone .` would clone the committed `main`, not this
+  story's uncommitted tree. The scratch "clone" was therefore built from
+  `git ls-files` with working-tree contents. That is the same file set, since the
+  story adds no untracked files. Results:
+  - `uv sync`, 0 `nvidia-*` packages, torch `2.14.0+cpu`, version 0.2.0;
+  - `rag-ingest`: 561 pages, 1,708 chunks (the `v0.1` count), 0 failed, exit 0,
+    2:01;
+  - the query, with the shipped `mistral` config unmodified (7.6 GB available
+    after the maintainer freed RAM): exit 0, 7:06 including model load.
+- **First-review follow-up (2026-10-02):** the Audit step could pass while auditing
+  nothing. GitHub's default shell has no `pipefail`, and `pip-audit` on an empty
+  input prints "No known vulnerabilities found" and exits 0 (reproduced). The step
+  now sets `pipefail`, writes the freeze to a file and asserts it is non-empty.
+  Controls: real environment exit 0; a failing `uv pip freeze` exit 1. The label
+  rewrite is narrowed to `torch==…+cpu`, so another local label (`requests==2.19.0+local`)
+  stays visible. README's command matches, and DEVELOPMENT.md's `langchain_classic`
+  line now says the reranker entry and allowlist still name it until Phase 2.
+  Second review (2026-10-02): README's local audit line now carries CI's guards
+  (`pipefail` and a non-empty check, in a subshell), plus `--python .venv`, because
+  without a `.venv` a bare `uv pip freeze` froze uv's managed 3.12 and passed. The
+  tag instruction now says to tag `main` after the rebase-merge. The Phase 3 Docker
+  rule moved from "Now" into the backlog. ADR-021 says about 60 lines (58 in
+  `loaders.py`).
+  Not adopted: a scheduled audit or `--ignore-vuln` policy for advisories with no
+  fix (a live lookup can redden unrelated PRs) → backlog.
+- **The Audit step is not a plain `pip-audit`** (see Discovered). The story's
+  literal command was run as well, and it reports torch as skipped.
+- **Additions:** the trust-boundary doc lines owed from S1-2's review
+  (`registry.py` docstring, ARCHITECTURE.md §1.8, README); pre-flight caveats
+  9–14 (Phase 1 lessons); ADR-015 marked superseded by ADR-020.
+- **Run after the merge (2026-10-02):** `gh run list` shows success for the
+  PR (#6), the push to `main` and the `v0.2` tag. CI's Audit log prints "No known
+  vulnerabilities found" with no skipped table, so torch was audited.
+  `v0.2` is annotated and pushed, on `db75439` = `origin/main`, with version
+  0.2.0 in both files at the tag. All six commits carry `Refs:` trailers.
+- **PR #6's title is the branch name** ("chore/s1 8 phase 1 exit"):
+  `gh pr create --fill` falls back to it when a branch has several commits.
+  From S1-8 on, recipes pass `--title` explicitly.
+
+## Manual test of the released `v0.2` (2026-10-02)
+
+Run against a scratch clone of the tag, never the real index (its timestamps
+were checked unchanged afterwards). CI is hermetic, so this covers what it
+fakes: the real Ollama, the real embedder and a real terminal.
+
+| # | Check | Result |
+| --- | --- | --- |
+| 1 | `--help` on both commands | Pass: exit 0 in ~0.5 s, exit codes shown, no work started |
+| 2 | Bad configs: typo, bad reference, `os.system` target, empty, missing file | Pass: one-line reason, exit 2, no traceback |
+| 3 | Corrupt PDF + unreadable folder | Pass: both named, good files indexed, exit 1, "rebuilt without them". New: pypdf's warnings leak above the banner |
+| 4 | Nested folders, `.TXT`, `.xyz`, symlink, hidden and lock files | Pass: all as designed and reported |
+| 5 | `rag-query` with no index | Pass: "no index … Run rag-ingest", exit 2 |
+| 6 | `--config` run from `/`; relative `RAG_VECTOR_STORE_PATH` | Pass: config paths anchor to the config file, env paths to the cwd |
+| 7 | Grounding, phi3: YOLOv8, GLIDER, capital of Australia | YOLOv8 correct and deterministic; refusal correct; GLIDER unfaithful (known, generation side) |
+| 8 | Ollama stopped and restarted mid-session | Pass: three errors survived, recovered after the restart |
+| 9 | Ctrl-C at the prompt / while loading / mid-answer | Prompt: pass. Loading: traceback (known). Mid-answer: interrupts display, but blocks ~43 s until Ollama finishes (new) |
+
+New findings went to the board (STATUS.md backlog): no `readline` at the prompt,
+pypdf warning noise, and Ctrl-C not cancelling generation, which is an input to
+the Phase 2 architecture pass. None needs a `v0.2.1`: nothing produces a wrong
+result, and each has a workaround.

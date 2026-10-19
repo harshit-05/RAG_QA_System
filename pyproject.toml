@@ -1,0 +1,154 @@
+[project]
+name = "rag-qa-system"
+version = "0.3.0"
+description = "Config-driven local RAG question-answering engine built on LangChain, FAISS and Ollama."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+authors = [{ name = "Harshit Deswal", email = "harshit.deswal@ilmfy.io" }]
+
+# Import surface is fixed by DEC-1 rule 1 (ARCHITECTURE.md §0.1): application code
+# imports only these packages. The `langchain` meta-package is deliberately absent,
+# and `langchain-classic` is never imported even though it arrives transitively.
+dependencies = [
+    "langchain-core>=1,<2",
+    "langchain-community>=0.4,<0.5",
+    "langchain-text-splitters>=1,<2",
+    "langchain-ollama>=1,<2",
+    "langchain-huggingface>=1,<2",
+    "faiss-cpu>=1.15",
+    "sentence-transformers>=5",
+    "pypdf>=6",
+    "docx2txt>=0.9",
+    "pyyaml>=6",
+    "pydantic>=2.11",
+    "pydantic-settings>=2.10",
+    "fastapi>=0.135",
+    "uvicorn>=0.32.1",
+    "requests>=2.34.2",   # scripts/fetch_dataset.py; declared, not left transitive (S2-8)
+]
+
+[project.scripts]
+rag-ingest = "rag_qa.ingest:main"
+rag-query = "rag_qa.cli:main"
+rag-eval = "rag_qa.evaluation.cli:main"
+rag-serve = "rag_qa.api.server:main"
+
+[project.optional-dependencies]
+# Tier 2 of the quality bar (FR-7, DEC-15): `rag-eval score`, run offline, never in CI.
+# rag_qa.evaluation.ragas_scoring imports openai and instructor itself, so they are
+# declared rather than left to arrive through ragas.
+eval = [
+    "ragas>=0.4",
+    "openai>=1",
+    "instructor>=1.17",
+]
+
+[dependency-groups]
+# Torch comes in two mutually exclusive variants (S1-7, DEC-12). `cpu` is a default
+# group, so a plain `uv sync` / `uv run` installs CPU torch exactly as before. The
+# CUDA variant is for a GPU host (Colab/Kaggle bulk re-embedding), never this one:
+#     uv sync --no-group cpu --group cuda
+# and from then on `uv run --no-sync ...` (or UV_NO_SYNC=1): a plain `uv run`
+# re-syncs to the default groups and swaps CPU torch back in.
+# Never `uv sync --no-default-groups`: with no variant selected, torch arrives from
+# PyPI through sentence-transformers, which is the CUDA build plus ~15 nvidia-*
+# wheels (GBs), silently. `pip install .` / `uv pip install .` ignore groups and
+# hit the same trap. CI fails the build if the installed torch is not +cpu.
+cpu = ["torch>=2.6"]
+cuda = ["torch>=2.6"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.16",
+    "mypy>=1.17",
+    "pytest-cov>=7.1.0",
+    "pip-audit>=2.10.1",   # CI's Audit step (S1-8); see ci.yml for why it reads a freeze
+    "types-pyyaml>=6.0.12.20260906",   # types the YAML boundary in config.py (S2-1)
+    "httpx>=0.28.1",
+]
+
+# This host is CPU-only (no NVIDIA GPU). `explicit = true` is load-bearing on BOTH
+# torch indexes: as a general index, download.pytorch.org also serves stale
+# langchain-community releases and uv silently resolves the whole stack down to
+# LangChain 0.3.x. Scoped to torch, each yields only its torch variant. See DEC-1
+# rule 2.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+# CUDA 13.0: the only CUDA index that carries torch 2.14 (cu128 stops at 2.11).
+# Its wheels need an NVIDIA driver new enough for CUDA 13.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+# Groups, not extras: extras have no default, so a plain `uv sync` would select
+# neither variant and install CUDA torch from PyPI. Checked in S1-7's spike.
+[tool.uv]
+default-groups = ["dev", "cpu"]
+conflicts = [[{ group = "cpu" }, { group = "cuda" }]]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", group = "cpu" },
+    { index = "pytorch-cu130", group = "cuda" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# Lint (NFR-9, S1-6). Ruff 0.16's *default* rule set is broad (~790 rules: F, B,
+# UP, SIM, RUF, PL*, PERF, ...), so this extends it rather than replacing it with
+# a narrower explicit list, which would quietly weaken the gate. The one addition
+# is E501, without which line-length would be a number nothing checks.
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["E501"]
+
+# Types (NFR-9, ISS-19). Every function in src/rag_qa carries annotations, and
+# code after a return is an error: warn_unreachable is ISS-12's only guard
+# (ruff 0.16 has no unreachable-code rule, even in preview). Tests are linted by
+# ruff but not type-checked; fixtures are not worth annotating.
+[tool.mypy]
+files = ["src/rag_qa"]
+disallow_untyped_defs = true
+warn_unreachable = true
+warn_unused_ignores = true
+
+# Only the imports that have no stubs are treated as Any. A global
+# ignore_missing_imports would also hide a misspelled rag_qa import.
+[[tool.mypy.overrides]]
+module = ["docx2txt"]
+ignore_missing_imports = true
+
+# The optional eval extra, imported only by rag_qa.evaluation.ragas_scoring. CI never
+# installs it, while a scoring machine does, so mypy is told to treat it as Any either
+# way: otherwise the two would type-check differently, and warn_unused_ignores would
+# fail one of them.
+[[tool.mypy.overrides]]
+module = ["ragas", "ragas.*", "openai", "openai.*", "instructor", "instructor.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+# Coverage gate (NFR-8, S1-5). 80% is the SRS figure, deliberately not higher: a
+# higher bar invites tests written for the number rather than the behaviour.
+[tool.coverage.run]
+source = ["rag_qa"]
+# ragas_scoring.py needs the optional eval extra and Ollama, which CI has neither of
+# (DEC-15). Its pure helpers are still tested; its ragas wiring runs only in a real score.
+omit = ["*/rag_qa/evaluation/ragas_scoring.py"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rag_qa"]

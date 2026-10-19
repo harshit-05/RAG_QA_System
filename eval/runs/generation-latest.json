@@ -1,0 +1,373 @@
+{
+  "format": 1,
+  "kind": "generation",
+  "generated_at": "2026-10-11T07:23:58Z",
+  "scored_at": "2026-10-11T09:52:24Z",
+  "limit": null,
+  "answers": "a11e3ddd47043688a98567e81e93ef92e8394bf3e0095df07def16991f27b774",
+  "fingerprint": {
+    "query": "0bc9d46ef22754b4b6df6b00c4adccac0e9fefeb70ef566eb1ace1b06d74ea14",
+    "ingestion": "322aae02ed19390bed97e8241b496788e4f8e6ff3c3fdf9ae2f8ded4141629f9",
+    "corpus": "40604bdcadbbfee381875683f7ef63436fa433efcbe93c3bc081aa2debb4da3b",
+    "questions": "de0e88d96d2f75b0c49cc84e79c6c91c5d68d5fdd9d049539fcc93a5eb987392",
+    "references": "4aa10f387e0ab8d73d0dd178d03b7a8c7b8efce2c23447aa57de15fe0b33eb8b",
+    "judge": "adadf568659cb7c8d93166996f6861fedb1f0e55136516ce43887c58d1278290"
+  },
+  "generator": {
+    "ref": "components.llms.mistral_ollama",
+    "model": "mistral",
+    "digest": "6577803aa9a036369e481d648a2baebb381ebc6e897f2bb9a766a2aa7bfbc1cf"
+  },
+  "judge": {
+    "model": "rag-judge",
+    "digest": "d85f8193c353d6a64e8303e62976e4c608e83bf49213ab7a81941ab0f0b3a744",
+    "base": "gemma2:9b",
+    "base_digest": "ff02c3702f322b9e075e9568332d96c0a7028002f1a5a056e0a6784320a4db0b",
+    "num_ctx": 8192,
+    "served_context": 8192,
+    "max_prompt_tokens": 3620,
+    "max_completion_tokens": 513,
+    "mode": "json",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2"
+  },
+  "versions": {
+    "ragas": "0.4.3",
+    "instructor": "1.17.0",
+    "openai": "3.3.0"
+  },
+  "failures": {
+    "faithfulness": {
+      "parse": 0,
+      "truncated": 0,
+      "no_score": 0,
+      "retried": 0
+    },
+    "answer_relevancy": {
+      "parse": 0,
+      "truncated": 0,
+      "no_score": 0,
+      "retried": 0
+    },
+    "context_precision": {
+      "parse": 0,
+      "truncated": 0,
+      "no_score": 0,
+      "retried": 0
+    },
+    "context_recall": {
+      "parse": 0,
+      "truncated": 0,
+      "no_score": 0,
+      "retried": 0
+    }
+  },
+  "aggregate": {
+    "faithfulness": 0.9083333333333334,
+    "answer_relevancy": 0.7186485362545938,
+    "context_precision": 0.9202777777508588,
+    "context_recall": 1.0,
+    "decline_rate": 0.6
+  },
+  "items": [
+    {
+      "id": "glider-purpose",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.8276593219333618,
+        "context_precision": 0.99999999998,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "glider-name",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 0.0,
+        "answer_relevancy": 0.0,
+        "context_precision": 0.99999999998,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "glider-slm",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.7520932434117488,
+        "context_precision": 0.999999999975,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "glider-training-data",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.7854435459049826,
+        "context_precision": 0.999999999975,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "glider-flask-vs-gpt4o",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.9155453066447897,
+        "context_precision": 0.999999999975,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "glider-human-study",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.6701392392000295,
+        "context_precision": 0.99999999998,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "glider-data-filtering",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 0.6666666666666666,
+        "answer_relevancy": 0.0,
+        "context_precision": 0.7499999999625,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "yolo-accuracy",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.9597699353286574,
+        "context_precision": 0.99999999998,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "yolo-response-overhead",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.8208815998431015,
+        "context_precision": 0.8666666666377778,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "yolo-acronym",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.8002139113109088,
+        "context_precision": 0.99999999998,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "yolo-objectives",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 1.0000000000000002,
+        "context_precision": 0.99999999998,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "yolo-anomaly-model",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 0.75,
+        "answer_relevancy": 0.9056424714229127,
+        "context_precision": 0.99999999998,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "yolo-alert-pipeline",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.8278409370228432,
+        "context_precision": 0.8055555555287036,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "cade7-venue",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.9444083283572979,
+        "context_precision": 0.9166666666361111,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "siekmann-unification-hierarchy",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.7660212873970318,
+        "context_precision": 0.36666666664833336,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "lusk-overbeek-itp",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 0.75,
+        "answer_relevancy": 0.0,
+        "context_precision": 0.94999999997625,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "ketonen-ekl",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.8069773191915282,
+        "context_precision": 0.7499999999625,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "stickel-ring-commutativity",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.9493819350705917,
+        "context_precision": 0.99999999995,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "wos-linked-inference",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.8700196114952911,
+        "context_precision": 0.99999999998,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "ohlbach-wrightson-mkrp",
+      "answerable": true,
+      "scores": {
+        "faithfulness": 1.0,
+        "answer_relevancy": 0.770932731556798,
+        "context_precision": 0.99999999995,
+        "context_recall": 1.0
+      },
+      "failures": {},
+      "declined": null,
+      "leaked": []
+    },
+    {
+      "id": "unanswerable-yolo-dataset",
+      "answerable": false,
+      "scores": {},
+      "failures": {},
+      "declined": false,
+      "leaked": []
+    },
+    {
+      "id": "unanswerable-yolo-gpus",
+      "answerable": false,
+      "scores": {},
+      "failures": {},
+      "declined": true,
+      "leaked": []
+    },
+    {
+      "id": "unanswerable-glider-mmlu",
+      "answerable": false,
+      "scores": {},
+      "failures": {},
+      "declined": true,
+      "leaked": []
+    },
+    {
+      "id": "unanswerable-cade8-venue",
+      "answerable": false,
+      "scores": {},
+      "failures": {},
+      "declined": false,
+      "leaked": []
+    },
+    {
+      "id": "unanswerable-capital-australia",
+      "answerable": false,
+      "scores": {},
+      "failures": {},
+      "declined": true,
+      "leaked": []
+    }
+  ]
+}

@@ -1,0 +1,109 @@
+"""Environment overrides, read through pydantic-settings.
+
+The only reader of the ``RAG_*`` environment variables (ARCHITECTURE.md §1.2). An
+empty variable counts as unset, so ``RAG_DATA_PATH= rag-ingest`` means "use the config
+file's value", as it always has.
+
+Two groups: :class:`EnvSettings`, the overrides every command reads, and
+:class:`ServerSettings`, the ``RAG_API_*`` settings only ``rag-serve`` reads (DEC-18).
+``config.yaml`` stays about the pipeline.
+"""
+
+import ipaddress
+
+from pydantic import Field, SecretStr, ValidationError, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: Selects which config file to load.
+ENV_CONFIG = "RAG_CONFIG"
+#: Overrides ``paths.data`` (the document corpus).
+ENV_DATA_PATH = "RAG_DATA_PATH"
+#: Overrides ``paths.vector_store`` (the index directory).
+ENV_VECTOR_STORE_PATH = "RAG_VECTOR_STORE_PATH"
+
+#: Each ``paths`` key, and the variable that overrides it.
+PATH_ENV_VARS = {
+    "data": ENV_DATA_PATH,
+    "vector_store": ENV_VECTOR_STORE_PATH,
+}
+
+
+class EnvSettings(BaseSettings):
+    """The ``RAG_*`` overrides as they are *now*.
+
+    Instantiated on every :func:`rag_qa.config.load_config` call, never at import, so
+    a long-lived process and a test's ``monkeypatch`` both see the current environment.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="RAG_", env_ignore_empty=True, frozen=True)
+
+    config: str | None = None
+    data_path: str | None = None
+    vector_store_path: str | None = None
+
+    def path_overrides(self) -> dict[str, str | None]:
+        """Each ``paths`` key mapped to its override, ``None`` when unset."""
+        return {"data": self.data_path, "vector_store": self.vector_store_path}
+
+
+#: The prefix of the HTTP server's settings: ``RAG_API_TOKEN``, ``RAG_API_MAX_CONCURRENT``,
+#: ``RAG_API_HOST``, ``RAG_API_PORT``.
+ENV_API_PREFIX = "RAG_API_"
+
+
+class ServerSettings(BaseSettings):
+    """The HTTP server's settings (DEC-18), from the environment only.
+
+    ``token`` unset means no authentication, which ``rag-serve`` allows on a loopback host
+    only. ``max_concurrent`` is how many answers stream at once; a CPU host generates one at
+    a time. ``host`` and ``port`` are the defaults ``rag-serve --host/--port`` override.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix=ENV_API_PREFIX, env_ignore_empty=True, frozen=True
+    )
+
+    token: SecretStr | None = None
+    max_concurrent: int = Field(default=1, ge=1)
+    host: str = Field(default="127.0.0.1", min_length=1)
+    port: int = Field(default=8000, ge=1, le=65535)
+
+    @field_validator("token")
+    @classmethod
+    def check_token(cls, token: SecretStr | None) -> SecretStr | None:
+        """Visible ASCII with no spaces: what a client can send in a header, compared as
+        bytes. A token pasted with a stray space or a non-ASCII letter would otherwise
+        never match, and look like a broken server."""
+        if token is not None:
+            value = token.get_secret_value()
+            if not all("!" <= char <= "~" for char in value):
+                raise ValueError(
+                    "must be visible ASCII characters with no spaces (for example the output "
+                    "of `openssl rand -hex 32`)"
+                )
+        return token
+
+
+def is_loopback(host: str) -> bool:
+    """Whether ``host``, a name or an address with no port, is this machine itself.
+
+    ``localhost`` and every loopback address (``127.0.0.0/8``, ``::1``). Any other name is
+    not, even one that resolves to loopback today: without a token, the server must never
+    listen on, or answer to, a name someone else's DNS controls (DEC-18).
+    """
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def describe_settings_error(error: ValidationError) -> str:
+    """One ``RAG_API_<NAME>: problem`` line per error, never echoing a value: the token's
+    own value must not reach a terminal or a log."""
+    lines = []
+    for detail in error.errors():
+        name = ENV_API_PREFIX + "_".join(str(part) for part in detail["loc"]).upper()
+        lines.append(f"{name}: {detail['msg'].removeprefix('Value error, ')}")
+    return "\n".join(lines)
