@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done (2026-10-19), pending the merge: PR #20, with follow-up commits for both rounds of the second review. CI was green on `24c5780` (run 39283008142, both jobs). `a2b7d38` went red in Audit (run 39294075683) on aiohttp advisories published between the two runs; round 2's first commit bumps aiohttp. Check the PR's head before the merge. Verification 1–7 are run and shown below. Merge it with a merge commit. |
+| **Status** | Done (2026-10-19), pending the merge: PR #20, with follow-up commits for both rounds of the second review. CI was green on `24c5780` (run 39283008142, both jobs). `a2b7d38` went red in Audit (run 39294075683) on aiohttp advisories published between the two runs; round 2's first commit bumps aiohttp, and the head, `5ab1dee`, is green (run 39375380128, both jobs). Verification 1–7 are run and shown below. Merge it with a merge commit. |
 | **Closes** | DEC-3, DEC-19; NFR-4 (upsert in the store); SRS §11 (an interrupted ingestion never leaves the store half-written) |
 | **Depends on** | S3-1 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
