@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from conftest import REAL_CONFIG, REPO_ROOT, MakeConfig
 
-from rag_qa.config import ConfigError, load_config
+from rag_qa.config import ConfigError, check_imports, load_config
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_STATE_PATH, ENV_VECTOR_STORE_PATH
 
@@ -22,6 +22,34 @@ def test_real_config_loads_and_every_reference_resolves(monkeypatch: pytest.Monk
     for ref in (ingestion.splitter, ingestion.embedder, query.llm, config.pipeline.vector_store):
         assert config.component(ref).target
     assert config.retriever(query.retriever).kwargs()
+    # S3-4: SRS §7.1's declared limit, above the largest corpus file (25.4 MB); and no
+    # per-extension splitter, so every file is chunked as before.
+    assert ingestion.max_file_mb == 50
+    assert ingestion.splitters == {}
+
+
+def test_without_the_s3_4_keys_there_is_no_limit_and_one_splitter(make_config: MakeConfig) -> None:
+    def older(c: dict[str, Any]) -> None:
+        c["pipeline"]["ingestion"].pop("splitters")
+        c["pipeline"]["ingestion"].pop("max_file_mb")
+
+    ingestion = load_config(make_config(older)).pipeline.ingestion
+    assert (ingestion.splitters, ingestion.max_file_mb) == ({}, None)
+    assert ingestion.splitter_for(".md") == ingestion.splitter
+
+
+def test_a_per_extension_splitter_is_a_checked_reference(make_config: MakeConfig) -> None:
+    def markdown(c: dict[str, Any]) -> None:
+        c["pipeline"]["ingestion"]["splitters"] = {".md": "components.splitters.markdown"}
+
+    config = load_config(make_config(markdown))
+    ingestion = config.pipeline.ingestion
+    assert ingestion.splitter_for(".md") == "components.splitters.markdown"
+    assert ingestion.splitter_for(".pdf") == ingestion.splitter
+    # Listed with every other reference in use, so a check of them all imports it too.
+    references = config.references()
+    assert references["pipeline.ingestion.splitters['.md']"] == "components.splitters.markdown"
+    check_imports(config, ["components.splitters.markdown"])  # MarkdownTextSplitter is there
 
 
 # --- malformed configs: each one a small edit of the real file ----------------------
@@ -159,6 +187,62 @@ MALFORMED = [
         lambda c: c["pipeline"]["ingestion"].pop("loaders"),
         ["pipeline.ingestion.loaders: required key is missing"],
         id="no loader map",
+    ),
+    # --- S3-4: per-extension splitters and a maximum file size ---
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"]["splitters"].update(
+            {"md": "components.splitters.markdown"}
+        ),
+        ["pipeline.ingestion:", "splitters: extension keys 'md'", "can never match"],
+        id="splitter extension key without its dot",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"]["splitters"].update(
+            {".rst": "components.splitters.markdown"}
+        ),
+        ["splitters: '.rst' has no loader", "pipeline.ingestion.loaders", "never be used"],
+        id="a splitter for an extension no loader reads",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"]["splitters"].update(
+            {".md": "components.splitters.markdwn"}
+        ),
+        ["pipeline.ingestion.splitters['.md']", "no entry 'markdwn'", "did you mean 'markdown'"],
+        id="splitter reference typo",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"]["splitters"].update({".md": "components.loaders.txt"}),
+        [
+            "pipeline.ingestion.splitters['.md']",
+            "points into components.loaders",
+            "components.splitters",
+        ],
+        id="splitter map pointing at the wrong kind",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"].update(max_file_mb=0),
+        ["pipeline.ingestion.max_file_mb", "greater than 0"],
+        id="a zero file size limit",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"].update(max_file_mb=-5),
+        ["pipeline.ingestion.max_file_mb", "greater than 0"],
+        id="a negative file size limit",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"].update(max_file_mb=True),
+        ["pipeline.ingestion.max_file_mb", "valid number"],
+        id="a boolean file size limit (not read as 1)",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"].update(max_file_mb="50"),
+        ["pipeline.ingestion.max_file_mb", "valid number"],
+        id="a quoted file size limit",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"]["ingestion"].update(max_file_mb=float("inf")),
+        ["pipeline.ingestion.max_file_mb", "finite number"],
+        id="an infinite file size limit",
     ),
 ]
 

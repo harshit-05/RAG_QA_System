@@ -22,6 +22,17 @@ components:
       _target_: langchain_text_splitters.RecursiveCharacterTextSplitter
       chunk_size: 1000
       chunk_overlap: 150
+    # Splits at Markdown headings, code fences and rules before paragraphs. Used by no
+    # file type by default: name it in pipeline.ingestion.splitters below, for example
+    # ".md": components.splitters.markdown.
+    # is_separator_regex is needed: its heading and rule separators are patterns
+    # ("\n#{1,6} "), and langchain-text-splitters 1.1.2 leaves it off, so without it they
+    # are matched literally and never split at a real heading.
+    markdown:
+      _target_: langchain_text_splitters.MarkdownTextSplitter
+      chunk_size: 1000
+      chunk_overlap: 150
+      is_separator_regex: true
 
   embedders:
     # Model and device are two independent axes, so each entry names both.
@@ -168,7 +179,18 @@ pipeline:
       ".docx": components.loaders.docx
       ".txt": components.loaders.txt
       ".md": components.loaders.txt
+    # How every file is cut into chunks, unless `splitters` names another for its
+    # extension. Each key there must also be in `loaders`, for example:
+    #   splitters:
+    #     ".md": components.splitters.markdown
+    # Edit either, and the next rag-ingest re-embeds the files the edit changes, and only
+    # those: each document records the splitter that chunked it.
     splitter: components.splitters.english_recursive
+    splitters: {}
+    # The largest file rag-ingest reads, in MB (1 MB = 1,000,000 bytes). A larger file is
+    # skipped and reported, with its size; one indexed earlier is removed, as a deleted
+    # file is. Leave the line out for no limit. The largest corpus file is 25.4 MB.
+    max_file_mb: 50
     # Swap this line to change embedding model or device, then re-run
     # `rag-ingest`: a new model rebuilds the index in full, a new device keeps it.
     #   components.embedders.minilm_cuda              GPU: the CUDA variant (see note 2 above)

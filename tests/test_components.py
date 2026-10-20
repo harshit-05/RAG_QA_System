@@ -104,6 +104,39 @@ def test_build_splitter_uses_the_configured_splitter(make_config: MakeConfig) ->
         assert 100 < shared <= 150
 
 
+def markdown_for_md(c: dict) -> None:
+    c["pipeline"]["ingestion"]["splitters"] = {".md": "components.splitters.markdown"}
+
+
+@pytest.mark.parametrize(
+    ("extension", "expected"),
+    [
+        (".md", "MarkdownTextSplitter"),  # its own (S3-4)
+        (".pdf", "RecursiveCharacterTextSplitter"),  # the default
+        (None, "RecursiveCharacterTextSplitter"),  # no extension: the default
+    ],
+)
+def test_build_splitter_follows_the_per_extension_map(
+    make_config: MakeConfig, extension: str | None, expected: str
+) -> None:
+    splitter = build_splitter(load_config(make_config(markdown_for_md)), extension)
+    assert type(splitter).__name__ == expected
+
+
+def test_the_markdown_splitter_starts_a_chunk_at_a_heading(make_config: MakeConfig) -> None:
+    # Its heading separator is a pattern, "\n#{1,6} ". Without is_separator_regex, which
+    # langchain-text-splitters 1.1.2 leaves off, it is matched literally and never splits
+    # a real heading: "## Second" then rides at the end of the first chunk, as the default
+    # splitter leaves it.
+    paragraph = " ".join(f"word{i:04d}" for i in range(60))  # 539 characters, no newline
+    text = f"# First\n{paragraph}\n## Second\n{paragraph}"
+    config = load_config(make_config(markdown_for_md))
+    chunks = build_splitter(config, ".md").split_text(text)
+    assert [chunk.split("\n")[0] for chunk in chunks] == ["# First", "## Second"]
+    default = build_splitter(config).split_text(text)
+    assert default[0].endswith("## Second")  # the case the setting is there for
+
+
 def test_build_reranker_is_none_without_a_reranker(make_config: MakeConfig) -> None:
     assert build_reranker(load_config(make_config(use_fakes))) is None
 

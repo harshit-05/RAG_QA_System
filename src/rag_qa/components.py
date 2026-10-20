@@ -68,9 +68,13 @@ def build_store(config: RagConfig) -> QdrantStore:
     return store
 
 
-def build_splitter(config: RagConfig) -> Any:
-    """The ingestion text splitter (anything with ``split_documents``)."""
-    return build_object(config.component(config.pipeline.ingestion.splitter).spec())
+def build_splitter(config: RagConfig, extension: str | None = None) -> Any:
+    """An ingestion text splitter (anything with ``split_documents``): the one for files
+    with this lowercased suffix (``pipeline.ingestion.splitters``, S3-4), else the default
+    ``pipeline.ingestion.splitter``, which is also what no ``extension`` gives."""
+    ingestion = config.pipeline.ingestion
+    ref = ingestion.splitter if extension is None else ingestion.splitter_for(extension)
+    return build_object(config.component(ref).spec())
 
 
 def build_llm(config: RagConfig) -> BaseChatModel:

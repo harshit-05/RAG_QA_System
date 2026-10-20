@@ -375,15 +375,25 @@ class Ingestion(_Strict):
     #: File extension → loader reference, e.g. ``".pdf": components.loaders.pdf``.
     #: A file whose lowercased suffix is not a key here is skipped, not failed.
     loaders: dict[str, str]
+    #: The default splitter: it chunks every file whose extension ``splitters`` leaves out.
     splitter: str
+    #: File extension → splitter reference, overriding ``splitter`` for those files
+    #: (SRS §7.2, S3-4), e.g. ``".md": components.splitters.markdown``. Empty by default.
+    splitters: dict[str, str] = Field(default_factory=dict)
     embedder: str
+    #: The largest file ingestion reads, in MB of 10^6 bytes (SRS §7.1, S3-4). A file above
+    #: it is skipped and reported, as an unmapped extension is. Unset means no limit.
+    #: Strict, so ``true`` or ``"50"`` is refused rather than read as a number.
+    max_file_mb: float | None = Field(default=None, gt=0, allow_inf_nan=False, strict=True)
 
     @model_validator(mode="after")
     def check_extensions(self) -> "Ingestion":
         """Keys must be what a file's lowercased suffix can equal, or they never match.
 
         That means one dot, at the start: ``Path.suffix`` is only the last part, so a
-        ``.tar.gz`` key could never match ``a.tar.gz`` (whose suffix is ``.gz``).
+        ``.tar.gz`` key could never match ``a.tar.gz`` (whose suffix is ``.gz``). The
+        ``splitters`` keys follow the same rule, and each must be in ``loaders`` too: a file
+        no loader reads is never split, so its splitter would never be used.
         """
 
         def matchable(ext: str) -> bool:
@@ -391,15 +401,31 @@ class Ingestion(_Strict):
                 ext.startswith(".") and len(ext) > 1 and ext == ext.lower() and ext.count(".") == 1
             )
 
-        bad = [ext for ext in self.loaders if not matchable(ext)]
-        if bad:
-            raise ValueError(
-                f"loaders: extension keys {', '.join(map(repr, bad))} can never match a file. "
-                f"Use a lowercase suffix with one leading dot, e.g. '.pdf' (files are matched "
-                f"on their lowercased last suffix, so '.pdf' also covers REPORT.PDF, and "
-                f"'.gz' is what a.tar.gz matches)"
+        problems = []
+        for key, extensions in (("loaders", self.loaders), ("splitters", self.splitters)):
+            bad = [ext for ext in extensions if not matchable(ext)]
+            if bad:
+                problems.append(
+                    f"{key}: extension keys {', '.join(map(repr, bad))} can never match a "
+                    f"file. Use a lowercase suffix with one leading dot, e.g. '.pdf' (files "
+                    f"are matched on their lowercased last suffix, so '.pdf' also covers "
+                    f"REPORT.PDF, and '.gz' is what a.tar.gz matches)"
+                )
+        unread = [ext for ext in self.splitters if matchable(ext) and ext not in self.loaders]
+        if unread:
+            problems.append(
+                f"splitters: {', '.join(map(repr, unread))} has no loader in "
+                f"pipeline.ingestion.loaders, so no file of that type is read, and its "
+                f"splitter would never be used. Map a loader to it, or remove it here"
             )
+        if problems:
+            raise ValueError("; ".join(problems))
         return self
+
+    def splitter_for(self, extension: str) -> str:
+        """The splitter reference for files with this lowercased suffix: its own in
+        ``splitters``, else the default ``splitter``."""
+        return self.splitters.get(extension, self.splitter)
 
 
 class Query(_Strict):
@@ -643,6 +669,8 @@ class RagConfig(_Strict):
                 yield f"pipeline.{stage}.{slot}", ref, kind
         for extension, ref in self.pipeline.ingestion.loaders.items():
             yield f"pipeline.ingestion.loaders[{extension!r}]", ref, "loaders"
+        for extension, ref in self.pipeline.ingestion.splitters.items():
+            yield f"pipeline.ingestion.splitters[{extension!r}]", ref, "splitters"
         yield "pipeline.vector_store", self.pipeline.vector_store, "vector_stores"
 
     @model_validator(mode="after")

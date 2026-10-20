@@ -8,18 +8,24 @@ which made ingestion drag the whole query stack in with it.
 ``/v1/ingest`` job (S2-7) can report the same numbers the CLI does.
 
 **Incremental (DEC-17, S2-6).** A run compares the corpus walk with the live generation's
-manifest, and sorts each document into added, changed (its bytes or its loader's identity
-differ), removed or unchanged. Only added and changed documents are loaded, split and
-embedded: the *prepare* phase. The *apply* phase then builds a new generation in Qdrant
-from the live one's points, without the chunks of removed and changed documents, plus the
-new ones, and publishes it with one atomic alias switch (:mod:`rag_qa.vectorstore`,
-DEC-19). The live generation is never written to, so a crash or an exception publishes
-nothing.
+manifest, and sorts each document into added, changed (its bytes, its loader's identity or
+its splitter's differ), removed or unchanged. Only added and changed documents are loaded,
+split and embedded: the *prepare* phase. The *apply* phase then builds a new generation in
+Qdrant from the live one's points, without the chunks of removed and changed documents,
+plus the new ones, and publishes it with one atomic alias switch
+(:mod:`rag_qa.vectorstore`, DEC-19). The live generation is never written to, so a crash
+or an exception publishes nothing.
 
 A run rebuilds the index in full, and logs why, when there is no index or no usable
-manifest, when the embedder's identity or the splitter changed, when this code makes
-chunks differently (:data:`rag_qa.manifest.CHUNKING_VERSION`), when the manifest disagrees
-with its generation, or with ``--rebuild``.
+manifest, when the embedder's identity changed, when this code makes chunks differently
+(:data:`rag_qa.manifest.CHUNKING_VERSION`), when the manifest disagrees with its
+generation, or with ``--rebuild``. A changed splitter rebuilds nothing in full: it changes
+the documents it chunks, which are re-embedded (S3-4).
+
+**What the walk leaves out** (:func:`scan_corpus`): hidden and lock files, symlinks, a file
+whose extension has no loader, and, since S3-4, a file above ``max_file_mb``. Each is
+reported, and none is indexed, so a file indexed earlier is removed as a deleted one is.
+Tier 2's ``corpus`` fingerprint uses the same walk.
 
 **One writer per state folder.** A run holds an advisory ``flock(2)`` on ``ingest.lock`` in
 ``paths.state`` from start to finish. A second run with the same folder, from the CLI or
@@ -59,6 +65,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +118,10 @@ logger = logging.getLogger(__name__)
 #: the index holds.
 DIMENSION_PROBE = "dimension check"
 
+#: The bytes in one of ``max_file_mb``'s MB: decimal, so the corpus's largest file,
+#: 25,370,930 bytes, is the 25.4 MB the config's comment names.
+MEGABYTE = 1_000_000
+
 
 @dataclass
 class IngestReport:
@@ -118,17 +129,19 @@ class IngestReport:
 
     ``documents`` and ``chunks`` count the pages loaded and the chunks embedded by this
     run, so an update that changed nothing reports 0 of each. ``found`` counts the corpus
-    files a loader is mapped to. ``added`` … ``unchanged`` sort those files against the
-    manifest, and ``kept`` counts failed documents that kept their previous chunks.
-    ``rebuild`` says why the run rebuilt the index in full, or set out to (``None`` for an
-    update), and ``published`` names the generation it published (``None`` when it
-    published nothing: then the previous index, if any, is still the live one).
+    files a loader is mapped to and ``max_file_mb`` admits. ``added`` … ``unchanged`` sort
+    those files against the manifest, and ``kept`` counts failed documents that kept their
+    previous chunks. ``rebuild`` says why the run rebuilt the index in full, or set out to
+    (``None`` for an update), and ``published`` names the generation it published (``None``
+    when it published nothing: then the previous index, if any, is still the live one).
 
     ``skipped`` and ``symlinks`` hold corpus-relative names, and ``failed`` holds
     ``(name, "Type: message")`` pairs with no absolute path in them: documents, and
-    folders that could not be listed (named with a trailing slash). ``ignored`` counts
-    hidden and lock files, and hidden folders once each: the walk never enters them, and
-    a ``.git`` folder alone can hold thousands of files.
+    folders that could not be listed (named with a trailing slash). ``too_large`` holds
+    ``(name, size in bytes)`` for each file above ``max_file_mb``, the limit the run
+    applied (``None``: no limit). ``ignored`` counts hidden and lock files, and hidden
+    folders once each: the walk never enters them, and a ``.git`` folder alone can hold
+    thousands of files.
     """
 
     documents: int = 0
@@ -142,6 +155,8 @@ class IngestReport:
     rebuild: str | None = None
     published: str | None = None
     skipped: list[str] = field(default_factory=list)
+    too_large: list[tuple[str, int]] = field(default_factory=list)
+    max_file_mb: float | None = None
     symlinks: list[str] = field(default_factory=list)
     ignored: int = 0
     failed: list[tuple[str, str]] = field(default_factory=list)
@@ -174,6 +189,9 @@ class IngestReport:
             lines.append(f"Documents: {documents}.")
         if self.skipped:
             lines.append(f"Skipped {len(self.skipped)} file(s) with no configured loader.")
+        if self.too_large:
+            above = f"above {_limit(self.max_file_mb)} (max_file_mb)"
+            lines.append(f"Skipped {len(self.too_large)} file(s) {above}.")
         if self.symlinks:
             lines.append(f"Skipped {len(self.symlinks)} symlink(s) (not followed).")
         if self.ignored:
@@ -192,6 +210,32 @@ def _counted(count: int, one: str, many: str) -> str:
 def _nonzero(*counts: tuple[int, str]) -> str:
     """``"1 added, 3 unchanged"``: each count that is not zero, in order; "" if none is."""
     return ", ".join(f"{count} {what}" for count, what in counts if count)
+
+
+def _exact_mb(max_file_mb: float) -> Decimal:
+    """``max_file_mb`` exactly as written. As floats, 0.000249 MB is 248.99999999999997
+    bytes, which would turn away the 249-byte file the limit admits."""
+    return Decimal(repr(max_file_mb))
+
+
+def _megabytes(size: int, limit: Decimal) -> str:
+    """A file's size in MB above ``limit``: to three significant figures, or as many more
+    digits as it takes to read as above it, and never as an exponent. ``25.4``, ``1.52``,
+    ``0.005``, ``1,250``; and ``12.35``, not ``12.3``, above a 12.345 MB limit."""
+    exact = Decimal(size) / MEGABYTE  # exact: six decimal places at most
+    places = min(6, max(0, 2 - exact.adjusted()))
+    shown = exact.quantize(Decimal(1).scaleb(-places))
+    while shown <= limit and places < 6:
+        places += 1
+        shown = exact.quantize(Decimal(1).scaleb(-places))
+    return f"{shown.normalize():,f}"
+
+
+def _limit(max_file_mb: float | None) -> str:
+    """``max_file_mb`` for a line, as written: ``the 50 MB limit``, ``the 0.00001 MB limit``."""
+    if max_file_mb is None:
+        return "the limit"
+    return f"the {_exact_mb(max_file_mb).normalize():,f} MB limit"
 
 
 def _ignored(relative: Path) -> bool:
@@ -375,9 +419,11 @@ def scan_corpus(config: RagConfig, report: IngestReport) -> CorpusScan:
     """Walk the corpus and fingerprint each file a loader is mapped to (DEC-17).
 
     A file's fingerprint is the sha256 of its bytes plus its loader's reference and
-    identity. Whatever the walk passes over goes into ``report`` and the log: files with
-    no loader, symlinks, ignored entries, and folders it cannot list. A file whose bytes
-    cannot be read is a document failure, recorded here too.
+    identity, and its splitter's identity: its extension's own, else the default (S3-4).
+    Whatever the walk passes over goes into ``report`` and the log: files with no loader,
+    files above ``max_file_mb`` (with their size, and never hashed), symlinks, ignored
+    entries, and folders it cannot list. A file whose bytes cannot be read is a document
+    failure, recorded here too.
     """
     data_path = config.paths.data
     listing = discover_files(data_path)
@@ -393,12 +439,17 @@ def scan_corpus(config: RagConfig, report: IngestReport) -> CorpusScan:
         report.failed.append((f"{name}/", error))  # the slash: a folder, not a file
         unlisted.append(name)
 
-    loaders = config.pipeline.ingestion.loaders
-    identities = {ref: spec_identity(config.component(ref).spec()) for ref in loaders.values()}
+    ingestion = config.pipeline.ingestion
+    loaders = ingestion.loaders
+    refs = {*loaders.values(), ingestion.splitter, *ingestion.splitters.values()}
+    identities = {ref: spec_identity(config.component(ref).spec()) for ref in refs}
+    max_file_mb = report.max_file_mb = ingestion.max_file_mb
+    limit = None if max_file_mb is None else _exact_mb(max_file_mb)
     files, unhashed = [], set()
     for path in listing.files:
         name = path.relative_to(data_path).as_posix()
-        ref = loaders.get(path.suffix.lower())
+        extension = path.suffix.lower()
+        ref = loaders.get(extension)
         if ref is None:
             logger.info("  - Skipped %s (no loader configured for this file type)", name)
             report.skipped.append(name)
@@ -414,6 +465,13 @@ def scan_corpus(config: RagConfig, report: IngestReport) -> CorpusScan:
             report.failed.append((shown, error))
             continue
         try:
+            size = path.stat().st_size
+            if limit is not None and size > limit * MEGABYTE:
+                # Before the hash: a limit is there so that a huge file is never read.
+                shown = _megabytes(size, limit)
+                logger.info("  - Skipped %s (%s MB, above %s)", name, shown, _limit(max_file_mb))
+                report.too_large.append((name, size))
+                continue
             sha256 = file_sha256(path)
         except OSError as e:
             error = describe_error(e, config)
@@ -421,14 +479,17 @@ def scan_corpus(config: RagConfig, report: IngestReport) -> CorpusScan:
             report.failed.append((name, error))
             unhashed.add(name)
             continue
-        files.append(CorpusFile(path, name, FileState(sha256, ref, identities[ref])))
+        splitter = identities[ingestion.splitter_for(extension)]
+        state = FileState(sha256, ref, identities[ref], splitter)
+        files.append(CorpusFile(path, name, state))
     report.found = len(files) + len(unhashed)
     return CorpusScan(files=files, unhashed=frozenset(unhashed), unlisted=tuple(unlisted))
 
 
 @dataclass(frozen=True)
 class _Identities:
-    """The embedder and splitter the config asks for, as the manifest records them."""
+    """The embedder and the default splitter the config asks for, as the manifest records
+    them at the top level."""
 
     embedder_ref: str
     embedder: str
@@ -447,13 +508,15 @@ class _Identities:
         )
 
     def changed_since(self, manifest: Manifest) -> str | None:
-        """Why ``manifest``'s index cannot be updated with these, or ``None``."""
+        """Why ``manifest``'s index cannot be updated with these, or ``None``.
+
+        Not the splitter (S3-4): each document records its own, so :func:`diff` re-embeds
+        the documents a changed splitter chunks, and the rest keep their chunks. DEC-17
+        rebuilt in full here, when one splitter chunked every document.
+        """
         if manifest.embedder.identity != self.embedder:
             compared = _compared(manifest.embedder.ref, self.embedder_ref)
             return f"the embedder is not the one that built the index ({compared})"
-        if manifest.splitter.identity != self.splitter.identity:
-            compared = _compared(manifest.splitter.ref, self.splitter.ref)
-            return f"the splitter is not the one that built the index ({compared})"
         if manifest.chunking != CHUNKING_VERSION:
             return (
                 f"this version makes chunks differently (chunking version "
@@ -655,10 +718,15 @@ def _prepare(config: RagConfig, plan: _Plan, report: IngestReport) -> _Prepared:
     """Load and split each document to (re-)embed. Its chunks are embedded afterwards, in
     one call, as v0.2 embedded them (:func:`_update`)."""
     ingested_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    splitter = build_splitter(config)
-    # Every document is chunked by the default splitter, until S3-4 gives each extension
-    # its own; the record names it per document now, so the manifest's shape is final.
-    splitter_identity = _Identities.of(config).splitter.identity
+    ingestion = config.pipeline.ingestion
+    # One instance of each splitter in use, built before any document is loaded: its
+    # extension's own (S3-4), else the default.
+    splitters: dict[str, Any] = {}
+    for file in plan.load:
+        extension = file.path.suffix.lower()
+        ref = ingestion.splitter_for(extension)
+        if ref not in splitters:
+            splitters[ref] = build_splitter(config, extension)
     prepared = _Prepared()
     for file in plan.load:
         docs = _load(config, file, report, ingested_at)
@@ -666,6 +734,7 @@ def _prepare(config: RagConfig, plan: _Plan, report: IngestReport) -> _Prepared:
             prepared.failed.add(file.name)
             continue
         report.documents += len(docs)
+        splitter = splitters[ingestion.splitter_for(file.path.suffix.lower())]
         chunks = splitter.split_documents(docs)
         ids = [chunk_id(file.name, file.state.sha256, i) for i in range(len(chunks))]
         prepared.ids += ids
@@ -675,7 +744,7 @@ def _prepare(config: RagConfig, plan: _Plan, report: IngestReport) -> _Prepared:
             sha256=file.state.sha256,
             loader=file.state.loader,
             loader_identity=file.state.loader_identity,
-            splitter=splitter_identity,
+            splitter=file.state.splitter,  # the walk's, so the next diff compares like with like
             chunks=len(ids),
             ingested_at=ingested_at,
         )
@@ -834,7 +903,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--rebuild",
         action="store_true",
         help="re-embed every document into a fresh index instead of updating it (an "
-        "embedder or splitter change rebuilds in full anyway)",
+        "embedder change rebuilds in full anyway, and a splitter change re-embeds the "
+        "documents it splits)",
     )
     return parser
 

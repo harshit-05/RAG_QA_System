@@ -1,11 +1,16 @@
 """The ingestion manifest: what each index generation holds (DEC-17, DEC-19, ARCHITECTURE.md §3.4).
 
 Every generation carries its manifest in its own collection's metadata, so a query replica
-needs no shared disk (DEC-19). It records which embedder and splitter built the index, how
-the store searches it, and, for each document, the sha256 of the file's bytes, its loader's
-and splitter's identities and how many chunks it has. ``rag-ingest`` diffs the corpus
-against it to embed only what changed. The query side compares its embedder identity with
-the config's before comparing any vectors.
+needs no shared disk (DEC-19). It records which embedder built the index, the default
+splitter, how the store searches it, and, for each document, the sha256 of the file's
+bytes, its loader's and splitter's identities and how many chunks it has. ``rag-ingest``
+diffs the corpus against it to embed only what changed. The query side compares its
+embedder identity with the config's before comparing any vectors.
+
+**Which splitter record decides** (S3-4). Each document's own: a document whose splitter
+changed is re-embedded, as one whose loader changed is, and the others keep their chunks.
+The top-level record names the default splitter as of the generation's publish, and decides
+nothing.
 
 **Version 2** (S3-2). A document's chunk IDs are derived (:meth:`Manifest.chunk_ids`), not
 listed, which keeps a document near 200 bytes. The whole shape of §3.4 is written now,
@@ -164,8 +169,8 @@ class DocumentRecord(_Record):
     sha256: str
     loader: str
     loader_identity: str
-    #: The identity of the splitter that chunked it: the default one, until S3-4 gives each
-    #: extension its own.
+    #: The identity of the splitter that chunked it: its extension's own, or the default
+    #: (``pipeline.ingestion.splitters``, S3-4). It decides whether the document re-embeds.
     splitter: str
     chunks: int = Field(ge=0)
     ingested_at: str
@@ -178,7 +183,9 @@ class Manifest(_Record):
     generation: str  # the collection it describes: what the alias names when it is live
     chunking: int  # the CHUNKING_VERSION that made its chunks
     embedder: EmbedderRecord
-    splitter: SplitterRecord  # the default splitter
+    #: The default splitter when this generation was published. It names it and decides
+    #: nothing: each document's own record does (S3-4).
+    splitter: SplitterRecord
     #: The sparse encoder's record, null until S3-11b sets one (DEC-20). A later story
     #: widens the type; a null stays readable.
     sparse: None
@@ -229,11 +236,14 @@ def manifest_payload(manifest: Manifest) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class FileState:
-    """What the corpus walk found for one file: its bytes' sha256 and the loader it maps to."""
+    """What the corpus walk found for one file: its bytes' sha256, and the loader and
+    splitter its extension maps to."""
 
     sha256: str
     loader: str  # the loader's config reference, e.g. components.loaders.pdf
     loader_identity: str  # spec_identity of that loader's spec
+    #: spec_identity of the splitter that chunks it: its extension's own, else the default.
+    splitter: str
 
 
 @dataclass(frozen=True)
@@ -249,9 +259,12 @@ class Changes:
 def diff(manifest: Manifest | None, files: Mapping[str, FileState]) -> Changes:
     """Sort the corpus's ``files`` against ``manifest`` (DEC-17).
 
-    A document has changed when its bytes **or** its loader identity differ. Without the
-    second, an edit to the extension map or to a loader's spec would leave the old
-    loader's chunks in the index for good. With no manifest, every file is added.
+    A document has changed when its bytes, its loader identity **or** its splitter
+    identity differ. Without the loader's, an edit to the extension map or to a loader's
+    spec would leave the old loader's chunks in the index for good; without the
+    splitter's, the same for a splitter (S3-4). Those three are what make its chunks, with
+    the embedder and :data:`CHUNKING_VERSION`, which rebuild in full. With no manifest,
+    every file is added.
     """
     known = manifest.documents if manifest is not None else {}
     added, changed, unchanged = [], [], []
@@ -259,7 +272,11 @@ def diff(manifest: Manifest | None, files: Mapping[str, FileState]) -> Changes:
         record = known.get(name)
         if record is None:
             added.append(name)
-        elif (record.sha256, record.loader_identity) != (state.sha256, state.loader_identity):
+        elif (record.sha256, record.loader_identity, record.splitter) != (
+            state.sha256,
+            state.loader_identity,
+            state.splitter,
+        ):
             changed.append(name)
         else:
             unchanged.append(name)

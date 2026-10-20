@@ -37,6 +37,7 @@ from rag_qa.evaluation.gate import (
     answers_identity,
     below_generation_floors,
     digest_drift,
+    load_answers,
     load_thresholds,
     ollama_root,
     too_many_unscored,
@@ -144,6 +145,22 @@ def llm(c: dict[str, Any]) -> dict[str, Any]:
 
 def reranker(c: dict[str, Any]) -> dict[str, Any]:
     return c["components"]["rerankers"]["ms_marco_minilm_cpu"]
+
+
+def ingestion(c: dict[str, Any]) -> dict[str, Any]:
+    return c["pipeline"]["ingestion"]
+
+
+def a_copy_of_the_default_for_md(c: dict[str, Any]) -> None:
+    """An override that chunks as the default does: another entry, the same spec."""
+    c["components"]["splitters"]["copy"] = dict(c["components"]["splitters"]["english_recursive"])
+    ingestion(c)["splitters"] = {".md": "components.splitters.copy"}
+
+
+def without_s3_4_s_keys(c: dict[str, Any]) -> None:
+    """The real config as it was before S3-4: no limit, no map, no markdown entry."""
+    del ingestion(c)["max_file_mb"], ingestion(c)["splitters"]
+    del c["components"]["splitters"]["markdown"]
 
 
 def setter(get: Callable[[dict[str, Any]], dict[str, Any]], key: str, value: Any) -> Change:
@@ -255,9 +272,18 @@ MOVES: list[Any] = [
     pytest.param(
         lambda w, mp: mp.setattr(fp, "CHUNKING_VERSION", 2), "ingestion", id="chunking version"
     ),
+    # S3-4: a map that chunks some extension otherwise than the default.
+    pytest.param(
+        setter(ingestion, "splitters", {".md": "components.splitters.markdown"}),
+        "ingestion",
+        id="a per-extension splitter",
+    ),
     # corpus
     pytest.param(append_to_file("notes.txt", "More.\n"), "corpus", id="a file's bytes"),
     pytest.param(add_file("added.txt"), "corpus", id="a new indexed file"),
+    # S3-4: the limit reaches corpus through the shared walk, never hashed itself. 0.001
+    # MB (1,000 bytes) is below guide.pdf and sub/report.docx, above the three text files.
+    pytest.param(setter(ingestion, "max_file_mb", 0.001), "corpus", id="a limit below a file"),
     # questions
     pytest.param(
         first(lambda r: r.__setitem__("question", "What do notes say?")),
@@ -361,6 +387,20 @@ STAYS: list[Any] = [
     pytest.param(add_file(".hidden/notes.txt"), id="a hidden folder"),
     pytest.param(add_file("~$draft.docx", b"\x00" * 10), id="a Word lock file"),
     pytest.param(add_symlink, id="a symlink"),
+    # S3-4. The world is the real config, so this holds its six parts unchanged by the 50 MB
+    # limit, the empty map and the unused markdown entry together.
+    pytest.param(config_edit(without_s3_4_s_keys), id="the real config without S3-4's keys"),
+    pytest.param(setter(ingestion, "max_file_mb", None), id="no limit"),
+    pytest.param(setter(ingestion, "max_file_mb", 1000), id="a limit above every file"),
+    pytest.param(
+        config_edit(a_copy_of_the_default_for_md), id="an override with the default's spec"
+    ),
+    pytest.param(
+        config_edit(
+            lambda c: c["components"]["splitters"]["markdown"].__setitem__("chunk_size", 9)
+        ),
+        id="an unused splitter's spec",
+    ),
 ]
 
 
@@ -371,6 +411,34 @@ def test_machine_specific_and_unread_inputs_move_nothing(
     before = world.parts()
     change(world, monkeypatch)
     assert fp.moved(before, world.parts()) == []
+
+
+def test_the_real_config_s_ingestion_part_is_the_committed_run_s() -> None:
+    # The world's tests compare two configs through the same code, so a change to the part's
+    # shape (S3-4's map hashed as {} when empty, say) would pass them all and still mark
+    # every committed run stale. This holds the shape itself; rag-eval check, the last step
+    # of CI's check job, holds all six parts over the real corpus.
+    recorded = load_answers(REPO_ROOT / "eval" / "runs" / "answers-latest.json").fingerprint
+    assert fp.ingestion_part(load_config(REAL_CONFIG)) == recorded["ingestion"]
+
+
+def test_a_per_extension_splitter_s_spec_moves_ingestion_once_it_is_in_use(world: World) -> None:
+    ingestion(world.config)["splitters"] = {".md": "components.splitters.markdown"}
+    before = world.parts()
+    world.config["components"]["splitters"]["markdown"]["chunk_size"] = 500
+    assert fp.moved(before, world.parts()) == ["ingestion"]
+
+
+def test_the_default_still_moves_ingestion_when_every_extension_has_its_own(world: World) -> None:
+    # Then the default chunks nothing, so the part moves for nothing: the cheap direction,
+    # a needless re-run, kept so the part's shape never changes (ADR-026's "at worst").
+    ingestion(world.config)["splitters"] = {
+        extension: "components.splitters.markdown"
+        for extension in ingestion(world.config)["loaders"]
+    }
+    before = world.parts()
+    world.config["components"]["splitters"]["english_recursive"]["chunk_size"] = 500
+    assert fp.moved(before, world.parts()) == ["ingestion"]
 
 
 def test_the_corpus_part_is_exactly_what_rag_ingest_indexes(world: World) -> None:

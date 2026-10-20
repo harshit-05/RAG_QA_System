@@ -150,14 +150,49 @@ def test_an_index_that_lags_the_corpus_is_refused(
     assert "Run rag-ingest first" in err
 
 
+@pytest.mark.parametrize(
+    ("edit", "stale"),
+    [
+        pytest.param(
+            lambda d: d["components"]["splitters"]["english_recursive"].update(chunk_size=500),
+            "documents 5 changed (e.g. README.md, guide.pdf, notes.txt)",
+            id="the default splitter",
+        ),
+        # S3-4: each document's own splitter decides, so only the .md file is stale.
+        pytest.param(
+            lambda d: d["pipeline"]["ingestion"].update(
+                splitters={".md": "components.splitters.markdown"}
+            ),
+            "documents 1 changed (e.g. README.md)",
+            id="a per-extension splitter",
+        ),
+    ],
+)
 def test_an_index_built_by_another_splitter_is_refused(
-    evals: Path, capsys: pytest.CaptureFixture[str]
+    evals: Path, capsys: pytest.CaptureFixture[str], edit: Any, stale: str
 ) -> None:
     data: dict[str, Any] = yaml.safe_load(evals.read_text())
-    data["components"]["splitters"]["english_recursive"]["chunk_size"] = 500
+    edit(data)
     evals.write_text(yaml.safe_dump(data, sort_keys=False))
     assert generate(evals) == EXIT_CANNOT_RUN
-    assert "the splitter is not the one that built it" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert f"not up to date with the corpus and config: {stale}." in err
+
+
+def test_an_index_whose_top_level_splitter_alone_differs_is_current(
+    fake_rag: Path, sample_corpus: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Every file of the corpus has its own splitter, so the default chunks nothing: its
+    # edit leaves the index as rag-ingest would build it, and generate must not refuse it.
+    data: dict[str, Any] = yaml.safe_load(fake_rag.read_text())
+    ingestion = data["pipeline"]["ingestion"]
+    splitters = data["components"]["splitters"]
+    splitters["own"] = dict(splitters["english_recursive"])
+    ingestion["splitters"] = {ext: "components.splitters.own" for ext in ingestion["loaders"]}
+    splitters["english_recursive"]["chunk_size"] = 500
+    fake_rag.write_text(yaml.safe_dump(data, sort_keys=False))
+    write_golden(fake_rag)
+    assert generate(fake_rag) == EXIT_OK, capsys.readouterr().err
 
 
 def test_a_generation_error_cannot_run_and_shows_its_traceback(
