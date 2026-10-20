@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done (2026-10-20), pending the PR: two commits on `chore/s3-3-leave-langchain-community`, the dependency change and this record. Reviewed twice; the first review's four findings and the second review's six are fixed (see "First review" and "Second review"). Verification 1–11 are run and shown below, all as expected, and the gates passed again on the final tree (1020 passed, 98.37%; `rag-eval check` exit 0). 12, `gh pr checks`, runs once the PR is open. |
+| **Status** | Done (2026-10-20): PR #21, in two commits, `0ba74fb` the dependency change and `b30a669` this record, plus one recording CI. CI is green on `b30a669` (run 39458364522, both jobs); check `gh pr checks` on the head before the merge. Reviewed twice; the first review's four findings and the second review's six are fixed (see "First review" and "Second review"). Verification 1–12 are run and shown below, all as expected. Merge it with a merge commit. |
 | **Closes** | DEC-5 step 3; ISS-16; SRS §9 (deserialization only of what the system produced); backlog: the parity tests and the corpus PDF they read |
 | **Depends on** | S3-2 |
 | **Model** | opus-fast |
@@ -147,7 +147,12 @@ the `rag_qa` alias (`rag_qa--gen-20261019T153834837765Z-7f20891e`).
     test).
 11. **`uv sync`:** back to the main environment; none of `langchain_community`,
     `langchain_classic`, `faiss` or `ragas` is installed.
-12. **`gh pr checks`:** "no pull requests found for branch "main"". It waits for the PR.
+12. **`gh pr checks`** on PR #21, head `b30a669` (run 39458364522): `check pass 3m36s`
+    and `eval-retrieval pass 3m50s`. Every step succeeded, Audit ("No known
+    vulnerabilities found") and the Tier-2 check included; "Save the HF models" was
+    skipped, a cache hit. CI's suite: 1020 passed, 12 skipped, 5 xfailed, coverage 98.37%.
+    Its tier 1: 0.950 / 0.796 / 0.858, every floor met; its Qdrant server tests: 8 passed.
+    (Before the PR existed, on `main`, it printed "no pull requests found".)
 
 **The lock** (`git diff uv.lock`, 23 lines removed, none added): `faiss-cpu` 1.15.1's
 package block, and the project's two requirement lines. No other package and no version

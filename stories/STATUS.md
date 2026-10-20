@@ -5,10 +5,11 @@
 
 ## Now
 
-**Next action: commit S3-3 on `chore/s3-3-leave-langchain-community` (two commits), push
-it and open its PR; then verification 12, `gh pr checks`, and its record.** Verification
-1–11 are green, both reviews are done, and the gates passed again on the final tree. Merge
-with a merge commit once CI is green. S3-4 can start from `main` alongside it.
+**Next action: merge PR #21 with a merge commit, then start S3-4.** CI is green on the PR's
+head, `b30a669` (run 39458364522, both jobs): the suite 1020 passed, coverage 98.37%, the
+audit clean, tier 2 fresh, tier 1 0.950 / 0.796 / 0.858, and the 8 Qdrant server tests.
+Check `gh pr checks` on the head again after this record's commit. The commits:
+`0ba74fb` the dependency change, `b30a669` the story record, then this record of CI.
 
 **Second review of S3-3 (2026-10-20): no blockers; 5 doc and record findings and 1 nit,
 fixed in the working tree.** It re-ran verification 1–11, rebuilt the lock from `HEAD` in
@@ -1213,7 +1214,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | --- | --- | --- | --- | --- |
 | [S3-1](phase-3/S3-1-open-phase-3.md) | Open Phase 3: 1.0.0.dev0, format the code once and gate it | DEC-28, backlog: `ruff format` | — | Done 2026-10-16 (PR #19) |
 | [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19 (PR #20, merged 2026-10-20) |
-| [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Done 2026-10-20, pending the PR |
+| [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Done 2026-10-20 (PR #21) |
 | [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Todo |
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Todo |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Todo |
