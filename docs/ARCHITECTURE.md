@@ -2230,6 +2230,11 @@ switch, and the manifest travels in the collection's metadata.**
 - **State that is not the index.** `paths.state` (default `var/`) replaces
   `paths.vector_store`. It holds the writer lock, a `flock` on `var/ingest.lock` as in
   DEC-17, and S3-8's job database and job locks (`var/jobs/`). There is one writer per host.
+  _(S3-2's second review, 2026-10-20: one writer per `var/`, strictly. The lock is a file
+  and the index a collection, so writers that share an alias exclude each other only when
+  they share `var/`. A second checkout on one host has its own, and on a throwaway server
+  its recovery deleted the other run's new generation, and once the alias with it. The
+  rule stands; caveat 36 says how to keep it.)_
   Compose bind-mounts `var/`, so the CLI and the containers share the locks. A `flock` holds
   across the host and a container on that mount, and so does SQLite's WAL, written from six
   containers and the host at once (both checked). Both sides need one uid (DEC-24, design

@@ -5,11 +5,35 @@
 
 ## Now
 
-**Next action: commit S3-2's second-review follow-up on PR #20, check CI on its head, then
-merge with a merge commit.** Every verification has run, CI included: `24c5780` is green
-(run 39283008142, both jobs). The second review is below and in the story. The commits: `390b228` the parity tool, `84600e9` its review record, `c49aeea` the
-dependency and compose file, `3cc393a` the store (breaking), `09475d4` CI, `25c32ff` the
-README, `24c5780` the story record. The story's "Verification record" has every result.
+**Next action: commit round 2's three commits on PR #20 (the aiohttp bump first), check CI
+on the head, then merge with a merge commit.** `24c5780` was green (run 39283008142, both
+jobs). `a2b7d38`, the first round's follow-up, went red in Audit on aiohttp advisories
+published between the two runs, not on its own change (round 2, below). The commits:
+`390b228` the parity tool, `84600e9` its review record, `c49aeea` the dependency and
+compose file, `3cc393a` the store (breaking), `09475d4` CI, `25c32ff` the README, `24c5780`
+the story record, and `46a8b80`, `65464a6`, `a2b7d38` the first round's follow-up. The
+story's "Verification record" has every result.
+
+**Second review of S3-2, round 2 (2026-10-20, on `a2b7d38`): no blockers; 1 concurrency
+finding and 2 exit-code findings, fixed on the PR, and CI's red run explained and fixed.**
+It ran the hermetic suite against a dead Qdrant URL, the server tests on a throwaway
+v1.19.2, and two writers at once there; the real `rag_qa` alias was only read. Detail in
+the story.
+
+- **CI went red on the advisory database, not the review.** Three aiohttp 3.14.3
+  advisories were published at 17:07 UTC on 2026-10-19, between the green run (16:07) and
+  the red one (17:26); `main`'s lock fails the same audit. aiohttp 3.14.5 moves alone, and
+  the main environment audits clean. As S2-5's multidict bump did, a `build(deps)` commit.
+- **The writer lock excludes only writers that share `var/`** (caveat 36). A second checkout
+  on this host writes the same alias under its own lock. Its recovery deleted the other
+  run's new generation, and, forced, the generation just switched to, with the alias. The
+  docs now say so; a lock Qdrant holds is on the backlog.
+- **A wrong `RAG_QDRANT_URL` that reaches another HTTP server** crashed `rag-ingest`,
+  `rag-query` and `rag-serve` with exit 1. `check()` now refuses it: exit 2, and the URL
+  to check.
+- **A switch the server applied but whose answer was lost** said "published nothing", exit
+  2. The alias is read back now, and such a run is published.
+- **The suite:** 994 passed, 8 skipped, 5 xfailed, coverage 98.37%; `rag-eval check` exit 0.
 
 **Second review of S3-2 as a whole (2026-10-19): no blockers; 1 test gap and 3 doc
 findings, fixed in the follow-up commit.** It reproduced parity on the live index, ran the
@@ -1005,6 +1029,13 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
     no alias, recovery keeps every complete generation, so the previous one survives a lost
     live collection. `rag-query` names it, and README has the line that points the alias
     back.
+36. **The writer lock excludes only the writers that share `var/`** (S3-2's second review).
+    The lock is a file and the index a Qdrant collection, so a second checkout on this host
+    (a fresh-clone e2e) writes the same `rag_qa` alias under a lock of its own. On a
+    throwaway server, one run's recovery deleted the other's new generation, and that run
+    died on a 404. In a forced interleaving it deleted the generation just switched to, and
+    the alias went with it until the next publish. Give another checkout
+    `RAG_QDRANT_COLLECTION=<name>`, or stop this checkout's Qdrant while it runs its own.
 
 ## GPU offload notes (nothing *requires* GPU; Colab/Kaggle available)
 
@@ -1235,7 +1266,8 @@ diffed this backlog against `main`'s: no line was dropped.
   ADR-025's portable digests hold for one Ollama version, which Colab's recipe pins.
 - **After v1.0 — ingestion on several hosts.** The writer lock and the job records live on
   one host's state volume (DEC-19, DEC-23). A second ingesting host needs a lock both can
-  see.
+  see. So does a second checkout on one host, which has a `var/` of its own (caveat 36): a
+  lock Qdrant itself holds would cover both.
 - **After v1.0, for a much larger corpus — a clone from a snapshot.** An update copies the
   live generation point by point, linear in its size (DEC-19): about 1–2 s here.
 - **If tier 1 shows misses it would fix — stemming in the BM25 encoder** (DEC-20). A

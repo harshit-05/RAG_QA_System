@@ -109,9 +109,12 @@ prototype to production via a spec-driven story loop.
   `docker compose up -d qdrant` before any `rag-ingest`, `rag-query`, `rag-serve` or
   `rag-eval retrieval|generate`: each exits 2 without it. The alias is `rag_qa`;
   a scratch index is `RAG_QDRANT_COLLECTION=<name>`, and `RAG_VECTOR_STORE_PATH` is
-  refused (caveat 9). The writer lock is `var/ingest.lock`. The unit suite needs no
-  server; `RAG_TEST_QDRANT_URL=http://127.0.0.1:6333 uv run pytest -m qdrant_server`
-  runs the server tests. v0.3's `vectorstore/` folder is no longer read.
+  refused (caveat 9). The writer lock is `var/ingest.lock`, and it excludes only writers
+  sharing this `var/`: another checkout on this host (a fresh-clone e2e) gets
+  `RAG_QDRANT_COLLECTION=<name>` of its own, or the two can delete each other's new
+  generation (caveat 36). The unit suite needs no server;
+  `RAG_TEST_QDRANT_URL=http://127.0.0.1:6333 uv run pytest -m qdrant_server` runs the
+  server tests. v0.3's `vectorstore/` folder is no longer read.
 
 - Docker 29.9.0 installed (re-checked 2026-10-16). `gh` 2.101.0, authenticated as
   `harshit-05`; the token needs the `workflow` scope to push changes to

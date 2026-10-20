@@ -20,7 +20,10 @@ design review 1). The docs then describe v1.0 as delivered, and 1.0.0 is release
 ## Scope
 
 - **The end-to-end run**, from a fresh clone of `main` in `~/dev/rag-s3-12-e2e`, logged with
-  `tee -i`:
+  `tee -i`. First stop this checkout's Qdrant (`docker compose stop qdrant` here): the
+  clone's stack publishes the same port, and a host command in the clone would otherwise
+  write this checkout's `rag_qa` alias under a writer lock of its own (caveat 36, S3-2's
+  second review):
   1. `cp .env.example .env`, keys made with `rag-keys`, `docker compose up -d`, and every
      service healthy;
   2. an ingest over HTTPS through Caddy, then a question answered over SSE, then the same

@@ -343,7 +343,7 @@ directory. Environment variables override them, and the store's settings:
 | --- | --- |
 | `RAG_CONFIG` | which config file to load |
 | `RAG_DATA_PATH` | the documents folder, default `corpus/` |
-| `RAG_STATE_PATH` | `paths.state`, default `var/`: the writer lock, never the index |
+| `RAG_STATE_PATH` | `paths.state`, default `var/`: the writer lock, never the index; every writer of one collection must share it |
 | `RAG_QDRANT_URL` | the Qdrant server, default `http://localhost:6333` |
 | `RAG_QDRANT_COLLECTION` | the index's name, default `rag_qa`; another name is a separate index (a scratch one, say) |
 | `RAG_QDRANT_API_KEY` | Qdrant's API key, when it has one; read from the environment only, never from a file |
@@ -367,8 +367,11 @@ run where little changed takes seconds. Embedding the whole sample corpus (three
   `rag_qa` at it, in one atomic step. So a crash or an error never leaves a half-written
   index, and a question is answered from the old version or the new one, never a mix.
   The previous generation is kept for questions still using it; older ones are deleted.
-- One `rag-ingest` runs at a time on a machine. A second one exits 2 at once, saying
-  another is running; the lock is `var/ingest.lock`.
+- One `rag-ingest` runs at a time per checkout. A second one exits 2 at once, saying
+  another is running; the lock is `var/ingest.lock`. Another checkout on the same machine
+  has a `var/` of its own, but the same Qdrant and the same `rag_qa` alias by default:
+  give it a collection of its own, such as `RAG_QDRANT_COLLECTION=e2e`, or a run in each
+  can delete the other's new generation.
 
 ### Pointing the alias at a generation
 

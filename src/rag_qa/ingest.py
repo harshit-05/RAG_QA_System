@@ -21,9 +21,11 @@ manifest, when the embedder's identity or the splitter changed, when this code m
 chunks differently (:data:`rag_qa.manifest.CHUNKING_VERSION`), when the manifest disagrees
 with its generation, or with ``--rebuild``.
 
-**One writer.** A run holds an advisory ``flock(2)`` on ``ingest.lock`` in ``paths.state``
-from start to finish. A second run on this host, from the CLI or the API, exits 2:
-"another ingestion is running".
+**One writer per state folder.** A run holds an advisory ``flock(2)`` on ``ingest.lock`` in
+``paths.state`` from start to finish. A second run with the same folder, from the CLI or
+the API, exits 2: "another ingestion is running". The lock is a file and the index is a
+Qdrant collection, so every writer of one alias must share the folder; a second checkout
+on the same host does not (STATUS.md caveat 36).
 
 **Error policy (S1-4, ISS-05, NFR-7).** Two kinds of failure, handled differently:
 
@@ -326,14 +328,18 @@ class IndexInTheWayError(Exception):
 def _writer_lock(state: Path) -> Iterator[None]:
     """Hold the one-writer lock for the ``with`` body, or raise at once.
 
-    An advisory ``flock(2)`` on ``ingest.lock`` in ``paths.state``: one writer per host,
+    An advisory ``flock(2)`` on ``ingest.lock`` in ``paths.state``: one writer per folder,
     whichever collection it writes (DEC-19). Compose bind-mounts the same folder, so the
-    host's CLI and a container's API share it (S3-9). It is ``flock``, never
-    ``fcntl.lockf``: a ``flock`` lock belongs to the open file, so a second open in the
-    same process (the API's ingest thread) is refused too, and closing some other
-    descriptor of the file never drops it. POSIX ``lockf`` locks belong to the process,
-    so they fail on both counts (verified in S2-6). Closing the file releases the lock, and
-    so does the process ending, however it ends.
+    host's CLI and a container's API share it (S3-9). It guards an alias only among the
+    writers that share the folder: another checkout, or a run with ``RAG_STATE_PATH``
+    elsewhere, takes a lock of its own, and its recovery can delete this run's new
+    generation, the alias with it once switched (S3-2's second review, caveat 36).
+
+    It is ``flock``, never ``fcntl.lockf``: a ``flock`` lock belongs to the open file, so a
+    second open in the same process (the API's ingest thread) is refused too, and closing
+    some other descriptor of the file never drops it. POSIX ``lockf`` locks belong to the
+    process, so they fail on both counts (verified in S2-6). Closing the file releases the
+    lock, and so does the process ending, however it ends.
     """
     path = state / LOCK_FILE
     with open(path, "a") as lock:  # "a": created if missing, never truncated

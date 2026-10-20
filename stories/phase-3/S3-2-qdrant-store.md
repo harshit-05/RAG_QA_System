@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done (2026-10-19), pending the merge: PR #20, with a follow-up commit for the second review. CI was green on `24c5780` (run 39283008142, both jobs); check the PR's head before the merge. Verification 1–7 are run and shown below. Merge it with a merge commit. |
+| **Status** | Done (2026-10-19), pending the merge: PR #20, with follow-up commits for both rounds of the second review. CI was green on `24c5780` (run 39283008142, both jobs). `a2b7d38` went red in Audit (run 39294075683) on aiohttp advisories published between the two runs; round 2's first commit bumps aiohttp. Check the PR's head before the merge. Verification 1–7 are run and shown below. Merge it with a merge commit. |
 | **Closes** | DEC-3, DEC-19; NFR-4 (upsert in the store); SRS §11 (an interrupted ingestion never leaves the store half-written) |
 | **Depends on** | S3-1 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -401,6 +401,9 @@ Gates on the working tree: `ruff format --check`, `ruff check` and `mypy` clean;
 - **No split,** as the plan decided (2026-10-17): the parity tool is the branch's first
   commit.
 - **Added by the second review:** a test that every search asks for an exact scan.
+- **Added by its round 2:** aiohttp 3.14.5 in the lock (a dependency move outside the plan,
+  for advisories published mid-PR); `QdrantStore.check()` refusing an answer that is not
+  Qdrant's; a failed switch read back.
 
 ## Review (2026-10-19)
 
@@ -502,3 +505,78 @@ they were.
     hardening, once S3-9 puts Qdrant on an internal network, should decide whether to
     redact it (a backlog line).
 - **After the fixes:** ruff, format and mypy clean.
+
+## Second review, round 2 (2026-10-20, Opus 5.5)
+
+**No blockers; 1 concurrency finding and 2 exit-code findings, fixed on the PR, and the
+cause of CI's red run, fixed too.** Run on `a2b7d38`, with the earlier records treated as
+claims to check. Probes ran on a throwaway Qdrant v1.19.2 (`review-s3-2-qdrant`, removed
+afterwards); the real `rag_qa` alias was only read, and still names `…7f20891e`.
+
+- **Why CI went red on the first round's follow-up (run 39294075683).** The Audit step, not
+  the change: `a2b7d38` and its two parents touch docs and one test, no dependency.
+  - Three advisories against aiohttp 3.14.3 were published at 17:07–17:08 UTC on
+    2026-10-19, between the green run on `24c5780` (16:07) and the red one (17:26):
+    CVE-2026-111064 (high: no request/header timeout), GHSA-2g87-pp6c-29x5 (high:
+    unbounded memory/CPU) and CVE-2026-111063 (low: the cookie Secure attribute).
+  - CI's audit, run on `main`'s lock, `24c5780`'s and `a2b7d38`'s, fails alike on each,
+    so `main` was red too for its next run.
+  - aiohttp reaches the main environment only through `langchain-community` (S3-3 removes
+    it). 3.14.5 (2026-10-11) fixes all three. `uv lock --upgrade-package aiohttp` moves
+    aiohttp alone, and the main environment then audits clean. The `eval` extra keeps its
+    four known findings (langchain, langgraph-sdk, diskcache, ragas: S3-9).
+  - The audit policy allows no ignore for a fixed advisory, and S2-5's multidict bump
+    (`2dd2010`) is the precedent: a `build(deps)` commit on the story's PR.
+  - `eval-retrieval` was skipped, not failed: it `needs: check`, which predates S3-2.
+- **Finding, documented: the writer lock excludes only writers that share `var/`.** The lock
+  is a file in `paths.state`, the index a URL and a collection, so DEC-19's "one writer per
+  host" holds per state folder. A second checkout on this host (S2-9's fresh clone, S3-12's
+  coming one) defaults to the same `rag_qa` alias at localhost:6333, under its own lock.
+  Two writers, one held inside its write window, varying only the lock's folder:
+  - **the same folder:** the second was refused, "another ingestion is running";
+  - **different folders:** the second's start-of-run recovery deleted the first's
+    in-progress generation, published, and the first died on a raw 404 `StoreError`, a
+    traceback and exit 1 under `rag-ingest`;
+  - **forced, the worse order:** the first switched to its generation just before the
+    second's recovery deleted it. The first reported "published", the alias was deleted with
+    its target, and no alias existed for the rest of the second run (34 of 34 reads, every
+    50 ms), until its full rebuild published. About 2 minutes on the real corpus.
+
+  Docs now say so: caveat 36, a dated note in DEC-19, `ingest.py`'s docstrings, CLAUDE.md,
+  README, and S3-12's fresh-clone run. The backlog's several-hosts line names a lock Qdrant
+  holds as the code fix (the maintainer's call: docs now).
+- **Finding, fixed: a wrong `RAG_QDRANT_URL` that reaches another HTTP server crashed.**
+  Story step 10 promises one message and exit 2, and `rag-serve` documents 0 and 2 only.
+  With the right host and a wrong path (a 404), or Ollama's port (a body that is not JSON),
+  `rag-ingest`, `rag-query` and `rag-serve` gave a traceback and exit 1, and `rag-eval
+  retrieval` exit 2 by its crash path, with no hint. JSON of another shape, which the
+  client wraps, said "Is Qdrant running?" while it ran. `check()` now refuses any answer
+  that is not Qdrant's, naming the URL to check: all four commands exit 2 on both URLs, no
+  traceback. A test runs the real client against a loopback server for each of the three
+  answers.
+- **Finding, fixed: a switch the server applied, but whose answer was lost, said "published
+  nothing".** Its read timeout became `StoreUnavailableError`: exit 2 and "Is Qdrant
+  running?", though the alias had moved. `write_generation` now reads the alias back after a
+  failed switch; a run whose alias names its generation is published. On the throwaway, such
+  a run now reports its generation. Tests: applied-then-lost is published; not applied
+  still fails, with the read-back answering and failing.
+- **Checked and sound:**
+  - the hermetic suite on `a2b7d38` (988 passed, 8 skipped, 5 xfailed, the HF cache
+    empty), and the server tests on the throwaway (8 passed, nothing left);
+  - the first round's exact-scan test fails, alone, with `exact=False` in a scratch copy;
+    its README pointer and anchor are right;
+  - the image digest is the registry's for the tag today, as in `compose.yaml`, `ci.yml`
+    and DEC-24;
+  - the cut rule's stop condition, the one-request switch, recovery's two branches, readers
+    bound to a generation, `generate`'s check of a generation it moves to, and the API's
+    not-ready refresh, read against the review notes;
+  - a bad `RAG_QDRANT_COLLECTION` is a clean exit 2, and a URL with no scheme works;
+  - all 10 commits: headers, wrapped bodies, parseable trailers, the `BREAKING-CHANGE:`
+    trailer naming the retriever change, and no attribution in them or the PR body.
+- **Note, no change:** during a hung Qdrant each API request pays two client timeouts (the
+  refresh reads the alias, then again under its lock), up to 10 s each. S3-6's breaker owns
+  it.
+- **After the fixes:** ruff, format and mypy clean; `uv lock --check` clean; **994 passed, 8
+  skipped, 5 xfailed**, coverage 98.37%, with a dead Qdrant URL and an empty HF cache; the
+  server tests 8 passed; `rag-eval check` exit 0, every part ok. The 4 new tests of new
+  behaviour fail on `a2b7d38`'s `vectorstore.py`; the 2 guards pass on both.
