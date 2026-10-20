@@ -6,8 +6,11 @@ a collection's layout) is in ``test_qdrant_server.py``, under the ``qdrant_serve
 """
 
 import json
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
@@ -282,6 +285,51 @@ def test_a_crash_at_any_step_leaves_the_live_generation_and_one_recovery_cleans_
     assert len(left) == 1  # the run's own, incomplete
     assert recover(store) == sorted(left)
     assert generations(qdrant) == [previous, live]
+
+
+LOST = ResponseHandlingException(TimeoutError("timed out"))  # the client's read timeout
+
+
+def test_a_switch_the_server_applied_but_whose_answer_was_lost_is_published(
+    qdrant: QdrantClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # S3-2's second review: the alias moved, so the run published, and must not raise
+    # StoreUnavailableError, which every command reports as "published nothing", exit 2.
+    store = make_store(qdrant)
+    live = publish(store, **{"a.txt": 1})
+    real = qdrant.update_collection_aliases
+
+    def applied_then_lost(*args: Any, **kwargs: Any) -> Any:
+        real(*args, **kwargs)
+        raise LOST
+
+    monkeypatch.setattr(qdrant, "update_collection_aliases", applied_then_lost)
+    published = publish(store, **{"a.txt": 2})
+    assert published != live
+    assert live_generation(qdrant) == published
+
+
+@pytest.mark.parametrize("read_back", ["answers", "fails too"])
+def test_a_switch_that_failed_and_was_not_applied_still_fails(
+    qdrant: QdrantClient, monkeypatch: pytest.MonkeyPatch, read_back: str
+) -> None:
+    store = make_store(qdrant)
+    live = publish(store, **{"a.txt": 1})
+    real_get_aliases = qdrant.get_aliases
+    switches = []
+
+    def lost(*args: Any, **kwargs: Any) -> Any:
+        switches.append(1)
+        if read_back == "fails too":  # from here on: write_generation read the alias first
+            monkeypatch.setattr(qdrant, "get_aliases", Refusing(LOST).call)
+        raise LOST
+
+    monkeypatch.setattr(qdrant, "update_collection_aliases", lost)
+    with pytest.raises(StoreUnavailableError, match="TimeoutError: timed out"):
+        publish(store, **{"a.txt": 2})
+    assert switches == [1]  # it failed at the switch, not before
+    monkeypatch.setattr(qdrant, "get_aliases", real_get_aliases)
+    assert live_generation(qdrant) == live
 
 
 # ---- recovery --------------------------------------------------------------------------------
@@ -675,3 +723,58 @@ def test_check_refuses_a_server_too_old_for_collection_metadata(
 
 def test_check_passes_a_current_server(qdrant: QdrantClient) -> None:
     make_store(qdrant).check()  # local mode reports the client's version, 1.19.1
+
+
+@contextmanager
+def answering(status: int, content_type: str, body: bytes) -> Iterator[str]:
+    """A loopback HTTP server answering every GET with ``body``: what a wrong store URL
+    reaches in place of Qdrant. Yields its URL."""
+
+    class Answer(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: Any) -> None:  # no request lines in the test output
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Answer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    ("status", "content_type", "body", "said"),
+    [
+        (404, "text/plain", b"Not Found", "answered 404: Not Found"),
+        (200, "text/plain", b"Ollama is running", "does not answer as Qdrant does"),
+        (200, "application/json", b'{"status": "ok"}', "does not answer as Qdrant does"),
+    ],
+    ids=["a-path-qdrant-does-not-serve", "another-service-on-the-port", "another-json-api"],
+)
+def test_check_refuses_whatever_answers_in_place_of_qdrant(
+    status: int, content_type: str, body: bytes, said: str
+) -> None:
+    # S3-2's second review: a wrong RAG_QDRANT_URL that reaches another HTTP server gave a
+    # traceback and exit 1 from rag-ingest, rag-query and rag-serve (a 404, a body that
+    # is not JSON), or "Is Qdrant running?" while it ran (JSON of another shape, which the
+    # client wraps). The real client, so the test sees what the library raises for each.
+    # Each must be a store that cannot be used, exit 2, with the URL to check.
+    with answering(status, content_type, body) as url:
+        client = QdrantClient(url=url, timeout=5, check_compatibility=False)
+        try:
+            with pytest.raises(StoreUnavailableError) as exc:
+                QdrantStore(url=url, collection="rag_qa", client=client).check()
+        finally:
+            client.close()
+    assert said in str(exc.value)
+    assert vectorstore.URL_HINT in str(exc.value)
+    assert QDRANT_HINT not in str(exc.value)  # something answered: Qdrant may well run

@@ -67,6 +67,11 @@ from rag_qa.settings import StoreSettings
 
 #: What to try when Qdrant cannot be reached, shown under the error.
 QDRANT_HINT: Final = "Is Qdrant running? docker compose up -d qdrant"
+#: What to check when something answers at the store's URL, but not as Qdrant does.
+URL_HINT: Final = (
+    "Check RAG_QDRANT_URL, or the url of the config's vector store: it names Qdrant's "
+    "REST API, such as http://localhost:6333"
+)
 
 #: What :func:`live_index` says when there is no index at all, as against one that cannot
 #: be used: the query side tells "run rag-ingest first" from "re-run rag-ingest" by it.
@@ -163,10 +168,11 @@ class QdrantStore:
     def check(self) -> None:
         """Ask the server for its version: every command's first step (DEC-19).
 
-        Raises :class:`StoreUnavailableError` when it cannot be reached or refuses us, or
-        is older than :data:`MIN_SERVER`, which has no collection metadata.
+        Raises :class:`StoreUnavailableError` when it cannot be reached or refuses us, when
+        what answers is not Qdrant's API (a wrong URL, :data:`URL_HINT`), or when it is
+        older than :data:`MIN_SERVER`, which has no collection metadata.
         """
-        with _translated(self):
+        with _as_qdrant(self):
             version = self.client.info().version
         parts = tuple(int(part) for part in re.findall(r"\d+", version)[:2])
         if parts < MIN_SERVER:
@@ -175,7 +181,7 @@ class QdrantStore:
                 f"{'.'.join(map(str, MIN_SERVER))} or newer (collection metadata)"
             )
         # The other half of "can we use it": a key Qdrant refuses shows here, not mid-run.
-        with _translated(self):
+        with _as_qdrant(self):
             self.client.get_aliases()
 
     def alias_target(self) -> str | None:
@@ -217,6 +223,36 @@ def _translated(store: QdrantStore, generation: str | None = None) -> Iterator[N
         raise StoreError(
             f"Qdrant at {store.url} answered {e.status_code}: {_server_error(e)}"
         ) from e
+
+
+@contextmanager
+def _as_qdrant(store: QdrantStore) -> Iterator[None]:
+    """:func:`_translated`, for :meth:`QdrantStore.check`, where any answer but Qdrant's
+    means a store that cannot be used. A wrong URL can reach another server: a path Qdrant
+    does not serve (a 404), or another service on the port (a body that is not Qdrant's
+    JSON). Every command must stop on it with exit 2 and a hint, never a traceback (S3-2's
+    second review)."""
+    try:
+        with _translated(store):
+            yield
+    except StoreUnavailableError as e:
+        source = getattr(e.__cause__, "source", None)
+        if isinstance(source, ValueError):  # JSON of another shape: the client wraps it
+            raise _not_qdrant(store, source) from e
+        raise
+    except StoreError as e:  # an HTTP answer Qdrant does not give to these requests
+        raise StoreUnavailableError(f"{e}. {URL_HINT}") from e
+    except ValueError as e:  # a body that is not JSON at all: the client does not wrap it
+        raise _not_qdrant(store, e) from e
+
+
+def _not_qdrant(store: QdrantStore, error: ValueError) -> StoreUnavailableError:
+    """The refusal of an answer that is not Qdrant's, with the error's first line only:
+    pydantic's runs to many."""
+    shown = str(error).splitlines()[0] if str(error) else ""
+    return StoreUnavailableError(
+        f"{store.url} does not answer as Qdrant does ({type(error).__name__}: {shown}). {URL_HINT}"
+    )
 
 
 def _server_error(error: UnexpectedResponse) -> str:
@@ -427,7 +463,10 @@ def write_generation(
 
     Nothing is published until the last request, the switch. An exception before it
     leaves an incomplete generation for :func:`recover`, which the next run calls under
-    the writer lock. Pruning after the switch is the caller's job, through :func:`recover`.
+    the writer lock. A switch request that fails is read back: when the alias names the
+    new generation, the server applied it and only its answer was lost, so the generation
+    is published and returned. Pruning after the switch is the caller's job, through
+    :func:`recover`.
     """
     if base is None and not add.ids:
         raise ValueError("a new index needs at least one chunk")
@@ -487,8 +526,27 @@ def write_generation(
         )
     with _translated(store):
         client.update_collection(name, metadata={COMPLETE_KEY: True})
-        _switch(store, name)
+    try:
+        with _translated(store):
+            _switch(store, name)
+    except StoreError:
+        if not _switched_to(store, name):
+            raise
     return Published(generation=name)
+
+
+def _switched_to(store: QdrantStore, generation: str) -> bool:
+    """Whether the alias names ``generation``, read back after its switch request failed.
+
+    The server may have applied the switch and lost only the answer (a read timeout, a
+    reset connection). Then the run published, and must say so rather than "published
+    nothing" with exit 2 (S3-2's second review). A read that fails too leaves the
+    failure as it was: the next run's :func:`recover` keeps whichever generation is live.
+    """
+    try:
+        return store.alias_target() == generation
+    except StoreError:
+        return False
 
 
 def _switch(store: QdrantStore, generation: str) -> None:
