@@ -5,11 +5,55 @@
 
 ## Now
 
-**Next action: merge PR #20 with a merge commit, then start S3-3.** CI is green on the
-PR's head, `5ab1dee` (run 39375380128, both jobs), with round 2's three commits on it. After
-the merge, delete v0.3's `vectorstore/` folder on this host: nothing reads it, and the index
-is in Qdrant (`docker compose up -d qdrant` before any command). S3-3 and S3-4 can each
-start from the merged `main`.
+**Next action: merge PR #21 with a merge commit, then start S3-4.** CI is green on the PR's
+head, `b30a669` (run 39458364522, both jobs): the suite 1020 passed, coverage 98.37%, the
+audit clean, tier 2 fresh, tier 1 0.950 / 0.796 / 0.858, and the 8 Qdrant server tests.
+Check `gh pr checks` on the head again after this record's commit. The commits:
+`0ba74fb` the dependency change, `b30a669` the story record, then this record of CI.
+
+**Second review of S3-3 (2026-10-20): no blockers; 5 doc and record findings and 1 nit,
+fixed in the working tree.** It re-ran verification 1–11, rebuilt the lock from `HEAD` in
+a scratch copy (byte-identical), and broke each new guard on purpose. Detail in the story.
+
+- **Held:** the lock, the 14 packages, tier-1 parity (`5a36e2f9…`, IDENTICAL), and the
+  negative control against langchain-core 1.6.3's source. The predicate flags every
+  deprecation kind and the old sunset text, and the install guard fails on a stand-in for
+  each removed package.
+- **Fixed:** this file's DEC-5 row and ARCHITECTURE.md's DEC-5 text still described the
+  exit as pending and the gate's allowance; verification 10's count (158); the two package
+  counts' flags; and the read timeout's note. Qdrant's access log and telemetry record only
+  completed requests, so they cannot say whether the query arrived (S3-6 backlog line).
+- **The suite:** 1020 passed, 12 skipped, 5 xfailed, coverage 98.37%; `rag-eval check`
+  exit 0.
+
+**S3-3 (2026-10-20): `langchain-community` and `faiss-cpu` are out of the dependencies, and
+retrieval is unchanged.**
+
+- **The lock** loses `faiss-cpu` alone. `langchain-community` and `langchain-classic` stay
+  for ragas, in the `eval` extra. The main environment loses 14 packages, aiohttp and
+  multidict among them.
+- **Parity:** the contexts file is IDENTICAL to S3-2's (`5a36e2f9…`), tier 1 is unchanged
+  (0.950, 0.796, 0.858), and `rag-eval check` exits 0.
+- **The suite:** 1020 passed, 12 skipped, 5 xfailed, coverage 98.37%, and no warnings: the
+  sunset notice is gone.
+- **The gates that guard it:** the deprecation gate's negative control is now
+  `ChatOllama.dict()`, deprecated in langchain-core 1.4.2, and the sunset allowance is
+  gone. The architecture test scans `src` for the three packages and checks that a plain
+  sync installs none.
+- **Discovered:** the first tier-1 run hit a Qdrant read timeout with Qdrant up. It did
+  not reproduce (backlog line for S3-6).
+- **First review (2026-10-20):** everything reproduced, including the contexts digest and
+  the 102 → 88 package count (`uv export --no-dev`). No blocker; four findings fixed: STATUS's backlog and DEC-5
+  exit lines, CLAUDE.md's two stale LangChain claims, two test nits (one redundant scan
+  entry and predicate clause, one tautological test), and `.claude/` kept out of the commit.
+  Detail in the story.
+
+**S3-2 is merged** (2026-10-20, PR #20, merge commit `123e171`). CI was green on the PR's
+last head, `5276dca` (run 39381661063), and is green on `main` after the merge (run
+39381665898). v0.3's `vectorstore/` folder is deleted on this host. The live index is in
+Qdrant under the `rag_qa` alias (`docker compose up -d qdrant` before any command), and
+S3-2's parity baseline, which S3-3 to S3-10 diff against, is
+`~/dev/rag-s3-2/contexts-qdrant.json`.
 
 - **The commits:** `390b228` the parity tool, `84600e9` its review record, `c49aeea` the
   dependency and compose file, `3cc393a` the store (breaking), `09475d4` CI, `25c32ff` the
@@ -1169,8 +1213,8 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
 | [S3-1](phase-3/S3-1-open-phase-3.md) | Open Phase 3: 1.0.0.dev0, format the code once and gate it | DEC-28, backlog: `ruff format` | — | Done 2026-10-16 (PR #19) |
-| [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19, pending the merge (PR #20) |
-| [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Todo |
+| [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19 (PR #20, merged 2026-10-20) |
+| [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Done 2026-10-20 (PR #21) |
 | [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Todo |
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Todo |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Todo |
@@ -1216,7 +1260,7 @@ S3-2's (design review 1).
 | DEC-1 | LangChain: migrate to 1.x vs pin legacy 0.2.x | **Resolved 2026-09-18: migrate to 1.x** | Verified resolve: core 1.6.3, community 0.4.2, ollama 1.1.0, huggingface 1.2.2, text-splitters 1.1.2, classic 1.0.8 (transitive only). Rules: app code imports only `langchain_core` / `_text_splitters` / `_community` / `_huggingface` / `_ollama`; chain is hand-composed LCEL, no `langchain_classic` imports in Phase 0–1; PyTorch index `explicit = true`. Full rationale: ARCHITECTURE.md §0.1. |
 | DEC-2 | Query LLM: pull `qwen2:7b` vs repoint to already-pulled `mistral` | **Resolved 2026-09-18: `mistral`, `phi3` fallback** | Same weight class as qwen2:7b, so the reason is zero download + known-good here, not RAM. `qwen2_ollama` entry stays in config unused. All Ollama entries: `temperature 0`, `num_ctx 4096`, `num_predict 512`, `validate_model_on_init true`; retriever `k 5`. Revisit with the Phase 2 eval harness. **Revisit placed (Phase 3 pass, 2026-10-14): S3-11**, the tier-2 sweep (DEC-26): mistral and phi3, plus qwen2:7b if pulled, plus a current model if the maintainer wants one, generated and scored on a Colab T4; faithfulness and the decline rate choose, and the time to first token here breaks a tie. **Design review 2 (2026-10-16):** the rule is a margin fixed before the first run. mistral stays unless a candidate leads by 0.10 in faithfulness or 0.2 in the decline rate, with no metric behind by more than 0.05 (DEC-26). |
 | DEC-4 | Repo layout: `docs/` currently holds the RAG corpus, colliding with the universal convention that `docs/` is project documentation | **Resolved 2026-09-18: corpus → `corpus/`, `docs/` becomes project documentation** | Maintainer decision. The old name needed a CLAUDE.md hard rule to stay safe, and the text loader claims `.md`, so a project doc dropped in there gets embedded into the index. Renamed in S0-4 (which rewrites every path anyway); `SRS.md` / `WORKFLOW.md` / `ARCHITECTURE.md` move into `docs/` in S0-7, which also inverts the CLAUDE.md rule. `CLAUDE.md` and `README.md` stay at root (auto-load; GitHub renders README from root only). `stories/` stays at root as working state. |
-| DEC-5 | `langchain-community` was sunset 2026-05-22 (issue #674): frozen, unmaintained, warns on import. We use it for FAISS, the loaders, and the disabled cross-encoder | **Resolved 2026-09-25: staged exit, keep through Phase 0** | Nothing is broken; the lock pins it and `langchain-core<2` bounds drift. Exit rides planned work: loaders → ~40 lines of own code on `pypdf`/`docx2txt` (Phase 1, with the loader-selection item); cross-encoder → `sentence-transformers` directly (Phase 2 reranker); FAISS → `langchain-qdrant` (Phase 3). After Phase 3 both `langchain-community` and its transitive `langchain-classic` leave `pyproject.toml`. No official standalone FAISS/loader package exists; the unofficial `langchain-faiss` 0.1.1 is rejected on supply-chain grounds. **Step 3's mechanism amended (Phase 3 pass, 2026-10-14):** our own module on `qdrant-client`, not `langchain-qdrant`, whose `add_texts` would embed again in batches of 64 and could break the parity proof (DEC-19). The goal stands; S3-3 removes `langchain-community` and `faiss-cpu`. |
+| DEC-5 | `langchain-community` was sunset 2026-05-22 (issue #674): frozen, unmaintained, warns on import. We use it for FAISS, the loaders, and the disabled cross-encoder | **Resolved 2026-09-25: staged exit, keep through Phase 0** | Nothing is broken; the lock pins it and `langchain-core<2` bounds drift. Exit rides planned work: loaders → ~40 lines of own code on `pypdf`/`docx2txt` (Phase 1, with the loader-selection item); cross-encoder → `sentence-transformers` directly (Phase 2 reranker); FAISS → `langchain-qdrant` (Phase 3). After Phase 3 both `langchain-community` and its transitive `langchain-classic` leave `pyproject.toml`. No official standalone FAISS/loader package exists; the unofficial `langchain-faiss` 0.1.1 is rejected on supply-chain grounds. **Step 3's mechanism amended (Phase 3 pass, 2026-10-14):** our own module on `qdrant-client`, not `langchain-qdrant`, whose `add_texts` would embed again in batches of 64 and could break the parity proof (DEC-19). The goal stands. **Done (S3-3, 2026-10-20):** `langchain-community` and `faiss-cpu` left `pyproject.toml` (`langchain-classic` was never in it), and a plain `uv sync` installs neither LangChain package. ragas still brings both into the `eval` extra, so `uv.lock` keeps them, and the import scan in `tests/test_architecture.py`, not the environment, keeps them out of `src`. The deprecation gate allows no warning; its negative control is `ChatOllama.dict()`. ARCHITECTURE.md DEC-5 has the dated note. |
 | DEC-3 | Vector store for Phase 3: Qdrant vs pgvector | **Resolved 2026-10-14: Qdrant** (maintainer) | Native hybrid dense+sparse, one container, no Postgres to run. pgvector only if a Postgres already exists in the deployment. Store-specific code is confined to `vectorstore.py` so either works. **Resolved in the Phase 3 pass**, with three additions from the maintainer: backup and restore are tested against a real server, because local mode has no snapshots (DEC-25); the source of the sparse vectors is decided explicitly, and they are switched on only in the batched re-run (DEC-20); the quickstart change is stated, a Qdrant container, not local mode with `path=` (DEC-19). The design is DEC-19. S3-2. |
 | DEC-6 | Config validation: how far Pydantic reaches into the call sites | **Resolved 2026-09-25: frozen `RagConfig`, attribute access everywhere** | `load_config()` returns a frozen model, not a dict; typed component kinds (`extra="forbid"`) make ISS-01 and ISS-11 unwritable; component leaves stay `extra="allow"` (ADR-010); retrievers get their own `RetrieverSpec` (no `_target_` — typing them as components fails the real config, verified). Non-mutation becomes structural via the access path: call sites only get fresh copies from `component(ref).spec()`/`.kwargs()` — `frozen=True` alone does not freeze nested dicts (verified). **Verified trap:** a field literally named `_target_` is silently dropped by Pydantic (leading underscore ⇒ private attribute; `model_dump()` returned `{}`) — the schema must use `target: str = Field(alias="_target_")` and dump `by_alias=True`. S1-1. ARCHITECTURE.md §1.1, §1.4. |
 | DEC-7 | Where the `_target_` allowlist lives, and whether it is configurable | **Resolved 2026-09-25: hardcoded, inside `import_from_string`** | Enforcing at the import funnel rather than in `build_object` covers `ingest.py`'s direct call — the gap ADR-015 flagged. Not config-overridable and no env escape hatch: an allowlist the config can edit is not an allowlist. `langchain_classic.` was allowed as a *config* prefix (the disabled reranker entry); ADR-007 governs *source* imports and is unaffected. **S2-4 (2026-10-04) removed `langchain_classic.` and `langchain_community.`** from the list: our own reranker replaced that entry (DEC-16), so no `_target_` names either. A v0.2 `config.yaml` no longer loads until its old `cross_encoder` entry is deleted. Load string-checks prefixes (nested too) and never imports; a separate `check_imports` helper, used by tests, catches misspelled classes (ISS-03). S1-2. Closes ISS-04. |
@@ -1293,6 +1337,15 @@ diffed this backlog against `main`'s: no line was dropped.
   would still rewrite its Python examples. CI's bare `ruff format --check` is unaffected,
   and CLAUDE.md has sessions run it bare for this reason (S3-1's second review, round 2).
 
+- **S3-6 — a Qdrant read timeout ended a tier-1 run with Qdrant up** (found in S3-3).
+  `rag-eval retrieval` retrieved 9 of 20 questions, then a query hit the client's 10 s
+  timeout: exit 2, and "Is Qdrant running?". Not reproduced, and the host showed no
+  pressure. Qdrant's access log and telemetry record only completed requests, so they show
+  that the query never completed, not whether it arrived (S3-3's second review). DEC-21's
+  retries cover it. S3-6 can use it as a real case, turn on `httpx`/`httpcore` debug
+  logging to tell a lost request from a stalled one, and decide whether a timeout with the
+  server up should say so rather than ask if it runs.
+
 - **S3-8 — the Qdrant URL in an ingest job's error text** (found in S3-2's second review).
   `describe_error` passes `cannot use Qdrant at http://host:6333 (…)` through to
   `GET /v1/ingest/<job>` clients. Not a path, so DEC-18 holds; once S3-9 puts Qdrant on an
@@ -1303,6 +1356,8 @@ diffed this backlog against `main`'s: no line was dropped.
 - **S3-1 (PR #19):** Phase 3 opened at 1.0.0.dev0, and the `ruff format` line closed
   (DEC-28). The reformat is `01854a1`, alone, and CI's Format step keeps the tree formatted.
   It opens one line: the exclude and a file named on the command line.
+- **S3-3 (2026-10-20):** the parity tests against the `langchain-community` loaders, and
+  the corpus PDF line that rode with them (found in S1-3). DEC-5's exit is complete.
 
 ### Closed in Phase 2
 
@@ -1601,9 +1656,9 @@ diffed this backlog against `main`'s: no line was dropped.
     `timeout -s ABRT 540 python -X faulthandler -m rag_qa.ingest`, so Python dumps
     where every thread was.
   - It needs gh's `workflow` scope to push (caveat 13).
-- **S3-3 — the parity tests and the corpus PDF they read** (found in S1-3).
-  They are accepted until `langchain-community` leaves. Removing that PDF before
-  then fails them loudly, which is right.
+- **Closed by S3-3 (2026-10-20) — the parity tests and the corpus PDF they read** (found
+  in S1-3). The parity tests are deleted with `langchain-community`. The PDF stays in
+  `corpus/`, where it is corpus content (README and the tier-2 run cite it); no test reads it.
 - **On the first real GPU run — CUDA 12 fallback (found in S1-7).** `cu130`
   wheels need a recent NVIDIA driver, and this host cannot check that. If
   Colab/Kaggle refuse, add a `cuda12` variant on `cu128`, which caps torch at 2.11.
@@ -1688,7 +1743,7 @@ diffed this backlog against `main`'s: no line was dropped.
   - own loaders (**Phase 1 → S1-3**);
   - the cross-encoder via `sentence-transformers` (**Phase 2 → S2-4**, done 2026-10-05);
   - dropping `langchain-community` and `langchain-classic` from `pyproject.toml`
-    after the Qdrant move (Phase 3 → S3-3).
+    after the Qdrant move (**Phase 3 → S3-3**, done 2026-10-20).
 
   Note: ragas pulls both into the `eval` extra, so Phase 3 removes them from our
   direct dependencies only.

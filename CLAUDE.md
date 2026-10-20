@@ -1,6 +1,6 @@
 # RAG_QA_System — session bootstrap
 
-Config-driven RAG engine (LangChain / FAISS / Ollama) being brought from
+Config-driven RAG engine (LangChain / Qdrant / Ollama) being brought from
 prototype to production via a spec-driven story loop.
 
 ## Read these before doing anything
@@ -98,10 +98,11 @@ prototype to production via a spec-driven story loop.
   an edit (STATUS.md caveat 24; README, "Evaluation").
 
 - The stack runs on LangChain 1.x (DEC-1, migrated in S0-5); app code never
-  imports `langchain_classic`, which arrives only transitively. Since S2-4 no
-  `_target_` names it or `langchain_community`, and the `registry.py` allowlist
-  refuses both: the reranker is our own (`rag_qa.rerankers`, DEC-16). Since S3-2
-  no module imports `langchain_community` at all; S3-3 removes it and `faiss-cpu`.
+  imports `langchain_classic`. Since S2-4 no `_target_` names it or
+  `langchain_community`, and the `registry.py` allowlist refuses both: the reranker is
+  our own (`rag_qa.rerankers`, DEC-16). Since S3-3 neither package nor `faiss-cpu` is a
+  dependency or in a plain `uv sync`; only the `eval` extra installs the two LangChain
+  ones, through ragas, and `tests/test_architecture.py` keeps them out of `src`.
 
 - **The index lives in Qdrant** (DEC-19, since S3-2): the `qdrant` service of
   `compose.yaml`, `qdrant/qdrant:v1.19.2-unprivileged` pinned by digest, on

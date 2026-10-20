@@ -20,9 +20,14 @@
   merely names the package cannot trip it.
 * DEC-19 (S3-2): only ``rag_qa.vectorstore`` imports ``qdrant_client``, the store's seam.
   Checked on the parsed imports too, ``from`` and plain, nested modules included.
+* DEC-5 (S3-3): no module imports ``langchain_community`` or ``faiss``, again on the parsed
+  imports (``langchain_classic`` is the ADR-007 rule above), and a plain ``uv sync`` installs
+  none of the three. Only the ``eval`` extra brings the two LangChain packages back, through
+  ragas.
 """
 
 import ast
+import importlib.util
 import json
 import subprocess
 import sys
@@ -171,3 +176,43 @@ def test_the_qdrant_import_scan_catches_both_forms(tmp_path: Path) -> None:
         True,
         False,
     ]
+
+
+#: The packages DEC-5's exit took out of our dependencies (S3-3), by import name.
+#: ``langchain_classic`` is only in the install check: the ADR-007 scan above covers its imports.
+DROPPED_PACKAGES = ("langchain_community", "faiss", "langchain_classic")
+IMPORT_BANNED = ("langchain_community", "faiss")
+
+
+def _dropped_imports(path: Path) -> set[str]:
+    return {name for name in _imported_modules(path) if name.split(".")[0] in IMPORT_BANNED}
+
+
+@pytest.mark.parametrize(
+    "path", application_files(SRC), ids=lambda p: p.relative_to(SRC).as_posix()
+)
+def test_no_module_imports_a_package_dec_5_removed(path: Path) -> None:
+    # The eval extra still installs langchain_community (ragas needs it), so there an
+    # import would work: this scan, not the environment, is what keeps it out.
+    found = _dropped_imports(path)
+    assert found == set(), f"{path.name} imports {sorted(found)}, which S3-3 removed (DEC-5)"
+
+
+def test_the_removed_package_scan_catches_both_forms(tmp_path: Path) -> None:
+    # A negative control: a plain import and a from-import of a submodule both count.
+    (tmp_path / "a.py").write_text("import faiss\n")
+    (tmp_path / "b.py").write_text("from langchain_community.vectorstores import FAISS\n")
+    (tmp_path / "c.py").write_text('"""Mentions langchain_community in prose only."""\n')
+    assert [bool(_dropped_imports(tmp_path / n)) for n in ("a.py", "b.py", "c.py")] == [
+        True,
+        True,
+        False,
+    ]
+
+
+def test_a_plain_sync_installs_none_of_the_removed_packages() -> None:
+    installed = {name for name in DROPPED_PACKAGES if importlib.util.find_spec(name)}
+    if importlib.util.find_spec("ragas"):
+        # The eval extra: ragas brings the two LangChain packages back. FAISS stays out.
+        installed -= {"langchain_community", "langchain_classic"}
+    assert installed == set()

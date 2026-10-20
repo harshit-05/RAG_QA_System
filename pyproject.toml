@@ -7,15 +7,15 @@ requires-python = ">=3.12,<3.13"
 authors = [{ name = "Harshit Deswal", email = "harshit.deswal@ilmfy.io" }]
 
 # Import surface is fixed by DEC-1 rule 1 (ARCHITECTURE.md §0.1): application code
-# imports only these packages. The `langchain` meta-package is deliberately absent,
-# and `langchain-classic` is never imported even though it arrives transitively.
+# imports only these packages. The `langchain` meta-package is deliberately absent.
+# `langchain-community` and `faiss-cpu` left in S3-3 (DEC-5). ragas still brings
+# `langchain-community` and `langchain-classic` into the eval extra, and no module of
+# ours imports either (tests/test_architecture.py).
 dependencies = [
     "langchain-core>=1,<2",
-    "langchain-community>=0.4,<0.5",
     "langchain-text-splitters>=1,<2",
     "langchain-ollama>=1,<2",
     "langchain-huggingface>=1,<2",
-    "faiss-cpu>=1.15",
     "sentence-transformers>=5",
     "pypdf>=6",
     "docx2txt>=0.9",
