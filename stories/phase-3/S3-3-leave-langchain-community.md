@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done (2026-10-20): PR #21, in two commits, `0ba74fb` the dependency change and `b30a669` this record, plus one recording CI. CI is green on `b30a669` (run 39458364522, both jobs); check `gh pr checks` on the head before the merge. Reviewed twice; the first review's four findings and the second review's six are fixed (see "First review" and "Second review"). Verification 1–12 are run and shown below, all as expected. Merge it with a merge commit. |
+| **Status** | Done (2026-10-20); merged 2026-10-20: PR #21, merge commit `9542c9b`. Three commits: `0ba74fb` the dependency change, `b30a669` this record, `72ca896` the record of CI. CI was green on `b30a669` (run 39458364522, both jobs), on the last head `72ca896` (run 39464788422), and on `main` after the merge (run 39466730259). Reviewed twice; the first review's four findings and the second review's six are fixed (see "First review" and "Second review"). Verification 1–12 are run and shown below, all as expected. |
 | **Closes** | DEC-5 step 3; ISS-16; SRS §9 (deserialization only of what the system produced); backlog: the parity tests and the corpus PDF they read |
 | **Depends on** | S3-2 |
 | **Model** | opus-fast |
