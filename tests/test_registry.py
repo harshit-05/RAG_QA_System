@@ -12,7 +12,8 @@ from rag_qa.registry import ALLOWED_PREFIXES, allowlist_hint, build_object, impo
 from rag_qa.schema import Components
 
 #: Targets under the two prefixes S2-4 removed: the old reranker entry's three classes,
-#: and FAISS, which vectorstore.py imported from langchain_community until S3-2.
+#: and FAISS, which vectorstore.py imported from langchain_community until S3-2. They are
+#: refused by prefix, before any import, so they stay when the packages leave (S3-3).
 DROPPED = [
     "langchain_classic.retrievers.ContextualCompressionRetriever",
     "langchain_classic.retrievers.document_compressors.CrossEncoderReranker",

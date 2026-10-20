@@ -35,8 +35,8 @@ which classes a config can build, not the kwargs it passes them.
 ``trust_remote_code: true`` plus someone else's model repository runs that
 repository's Python. Never load a config from an untrusted source, and never let a
 request supply or override components (a constraint on the Phase 2 API). ISS-16
-drew the same line for v0.3's pickled FAISS index; since S3-2 the index is in Qdrant, and
-no index file is unpickled.
+drew the same line for v0.3's pickled FAISS index. Since S3-2 the index is in Qdrant, and
+since S3-3 FAISS is not installed: no index file is unpickled.
 """
 
 from collections.abc import Iterable
@@ -50,8 +50,9 @@ from typing import Any
 #: what might be (ADR-020). S2-4 removed ``langchain_classic.`` and
 #: ``langchain_community.``. The old reranker entry was the only ``_target_`` under
 #: either, and our own reranker (:mod:`rag_qa.rerankers`, DEC-16) replaced it.
-#: Since S3-2 no module imports ``langchain_community`` either: the store is
-#: :mod:`rag_qa.vectorstore` on ``qdrant-client``, and S3-3 removes the package.
+#: Since S3-2 no module imports ``langchain_community`` or FAISS either: the store is
+#: :mod:`rag_qa.vectorstore` on ``qdrant-client``. S3-3 removed both packages, so only
+#: the ``eval`` extra, through ragas, installs ``langchain_community``.
 ALLOWED_PREFIXES = (
     "langchain_core.",
     "langchain_huggingface.",

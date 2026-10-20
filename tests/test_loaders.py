@@ -1,22 +1,19 @@
-"""Our loaders (S1-3, DEC-8): the metadata contract, parity with the loaders they
-replace, and recursive corpus discovery."""
+"""Our loaders (S1-3, DEC-8): the metadata contract and recursive corpus discovery.
+
+The parity tests against the ``langchain_community`` loaders these replaced, and the
+corpus PDF one of them read, left with that package (S3-3, DEC-5).
+"""
 
 from pathlib import Path
 
 import pytest
-from conftest import REPO_ROOT, MakeConfig, write_docx, write_pdf
+from conftest import MakeConfig, write_docx, write_pdf
 
 from rag_qa.chain import citation
 from rag_qa.config import load_config
 from rag_qa.ingest import IngestReport, discover_files, scan_corpus
 from rag_qa.loaders import DocxLoader, PdfLoader, TextLoader
 from rag_qa.registry import import_from_string
-
-SMALL_REAL_PDF = (
-    REPO_ROOT
-    / "corpus"
-    / "Batch22_SmartSurveillanceSystemsUsingYOLOv8AScalableApproachforCrowdandThreatDetection.pdf"
-)
 
 # --- the metadata contract (citations are built from it) ------------------------------
 
@@ -76,41 +73,6 @@ def test_text_loader_encoding_is_configurable(tmp_path: Path) -> None:
 def test_loaders_pass_the_target_allowlist(name: str) -> None:
     # Classes defined in rag_qa: all three S1-2 checks (prefix, defining module, class).
     assert import_from_string(f"rag_qa.loaders.{name}").__name__ == name
-
-
-# --- parity with the langchain_community loaders being replaced -------------------------
-# The oracle tests go when langchain-community leaves (DEC-5, Phase 3).
-
-
-def _pdf_cases(sample: Path) -> list[Path]:
-    return [sample / "guide.pdf", SMALL_REAL_PDF]
-
-
-def test_pdf_loader_matches_pypdfloader(sample_corpus: Path) -> None:
-    from langchain_community.document_loaders import PyPDFLoader
-
-    for path in _pdf_cases(sample_corpus):
-        ours, theirs = PdfLoader(path).load(), PyPDFLoader(str(path)).load()
-        assert len(ours) == len(theirs), path.name
-        for mine, old in zip(ours, theirs, strict=True):
-            assert mine.page_content == old.page_content, (path.name, mine.metadata["page"])
-            for key in ("source", "page", "page_label", "total_pages"):
-                assert mine.metadata[key] == old.metadata[key], (path.name, key)
-
-
-def test_docx_and_text_loaders_match_the_old_ones(sample_corpus: Path) -> None:
-    from langchain_community.document_loaders import Docx2txtLoader
-    from langchain_community.document_loaders import TextLoader as OldTextLoader
-
-    docx = sample_corpus / "sub" / "report.docx"
-    assert (
-        DocxLoader(docx).load()[0].page_content == Docx2txtLoader(str(docx)).load()[0].page_content
-    )
-    for text in (sample_corpus / "notes.txt", sample_corpus / "README.md"):
-        assert (
-            TextLoader(text).load()[0].page_content
-            == OldTextLoader(str(text)).load()[0].page_content
-        )
 
 
 # --- recursive discovery and the extension map (ISS-13, FR-2) --------------------------

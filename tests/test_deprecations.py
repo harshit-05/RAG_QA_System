@@ -3,19 +3,19 @@
 Records warnings while importing every module **and** running the whole pipeline
 (ingest, build the chain, invoke, stream, and ``stream_answer``, the path every front
 end answers through since S2-1) with the fakes. It fails on any
-``LangChainDeprecationWarning``, and on any ``DeprecationWarning`` except DEC-5's
-``langchain-community`` sunset notice, which since S3-2 must not appear at all: no module
-of ours imports ``langchain_community`` once the store is Qdrant (DEC-19), and S3-3 removes
-the package.
+``LangChainDeprecationWarning``, and on any other ``DeprecationWarning``. Until S3-3 it
+allowed one, DEC-5's ``langchain-community`` sunset notice; that package is gone, so
+nothing is allowed.
 
 Two design points, both from S0-5's Discovered section:
 
 * **Never a command-line ``-W error`` gate.** ``langchain_core`` calls
   ``warnings.filterwarnings("default", ...)`` on import and overrides it, so such
   a gate is structurally unable to fail on a deprecated LangChain API.
-* **A negative control.** The same predicate, run over the legacy
-  ``langchain_community.llms.Ollama``, must report a violation. A check with no
-  known-bad case run against it is an assumption, not a check.
+* **A negative control.** The same predicate, run over an API LangChain deprecates,
+  must report a violation. A check with no known-bad case run against it is an
+  assumption, not a check. Since S3-3 that API is ``ChatOllama.dict()``; before, it was
+  the legacy ``langchain_community.llms.Ollama``, which left with its package.
 
 Each check runs in a **fresh interpreter**: inside one pytest session other tests
 have already imported LangChain, and import-time warnings fire once per process,
@@ -28,8 +28,6 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-
-SUNSET_NOTICE = "`langchain-community` is being sunset"  # DEC-5: expected, allowed
 
 _HARNESS = textwrap.dedent(
     """
@@ -61,13 +59,15 @@ def record_warnings(body: str, env: dict[str, str] | None = None) -> list[dict]:
 
 
 def violations(records: list[dict]) -> list[dict]:
-    """The gate's predicate: LangChain deprecations, or deprecations other than DEC-5's."""
+    """The gate's predicate: every deprecation, LangChain's pending kind included.
+
+    ``LangChainDeprecationWarning`` subclasses ``DeprecationWarning``, so the second clause
+    covers it; the pending one subclasses ``PendingDeprecationWarning`` and needs its own.
+    """
     return [
         r
         for r in records
-        if "LangChainDeprecationWarning" in r["mro"]
-        or "LangChainPendingDeprecationWarning" in r["mro"]
-        or ("DeprecationWarning" in r["mro"] and SUNSET_NOTICE not in r["message"])
+        if "LangChainPendingDeprecationWarning" in r["mro"] or "DeprecationWarning" in r["mro"]
     ]
 
 
@@ -107,19 +107,18 @@ def test_no_deprecated_api_across_imports_and_the_whole_pipeline(fake_rag: Path)
         },
     )
     assert violations(records) == [], violations(records)
-    # DEC-5's staged exit, step 3: the store no longer imports langchain_community, so its
-    # sunset notice is gone from the whole pipeline. If it comes back, a module imports the
-    # package again. The negative control below keeps the predicate itself honest.
-    assert not any(SUNSET_NOTICE in r["message"] for r in records)
 
 
 def test_negative_control_the_gate_flags_a_deprecated_langchain_api() -> None:
+    # A method of the chat model class we answer with, deprecated in langchain-core 1.4.2
+    # and removed in 2.0, which pyproject.toml's bound keeps out. It replaced the legacy
+    # langchain_community.llms.Ollama class when that package left (S3-3).
     records = record_warnings(
         """
-        from langchain_community.llms import Ollama
-        Ollama(model="x")
+        from langchain_ollama import ChatOllama
+        ChatOllama(model="x").dict()
         """
     )
     flagged = violations(records)
-    assert flagged, "the gate failed to flag the legacy Ollama class: it is blind"
+    assert flagged, "the gate failed to flag ChatOllama.dict(): it is blind"
     assert any("LangChainDeprecationWarning" in r["mro"] for r in flagged)

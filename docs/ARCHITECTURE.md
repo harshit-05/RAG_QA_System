@@ -79,6 +79,13 @@ command-line `-W error::DeprecationWarning` gate is unusable here, because
 `langchain_core` overrides it on import. Deprecation checks record warnings in-process,
 allow only the sunset notice, and carry a negative control.
 
+_S3-3 (2026-10-20): step 3 is done. `langchain-community` and `faiss-cpu` left
+`pyproject.toml` (`langchain-classic` was never in it), and a plain `uv sync` installs
+neither LangChain package; ragas still brings both into the `eval` extra. The deprecation
+gate now allows no warning, the sunset notice included, and its negative control is
+`ChatOllama.dict()`, deprecated in langchain-core 1.4.2 and removed in 2.0, which the `<2`
+bound keeps out._
+
 **DEC-3 (lean, decided in the Phase 3 pass) — Qdrant over pgvector.** Native hybrid
 dense + sparse retrieval, one container, no Postgres to operate. pgvector wins only if a
 Postgres already exists in the deployment. Nothing store-specific lives outside
@@ -187,6 +194,11 @@ Invariant (ISS-16), documented in the module: the index directory is only ever p
 by `rag-ingest` on this host; never open an index from an untrusted source. Callers use
 only `.as_retriever()` / `.add_documents()`. Phase 3 replaces the two bodies and adds a
 `_target_`-built store component; nothing else changes.
+
+_S3-3 (2026-10-20): the invariant is moot, because the pickle is gone. Since S3-2 the index
+is a Qdrant collection, and S3-3 removed `faiss-cpu` and `langchain-community` from the
+dependencies, so no index file is deserialized and `allow_dangerous_deserialization`
+appears nowhere in `src/` (ISS-16, §9)._
 
 ### 0.6 Deliberately not built in Phase 0
 
