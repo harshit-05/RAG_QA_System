@@ -14,7 +14,9 @@ function, and it always reads ``pipeline.ingestion.embedder``.
 
 :func:`preflight` is the start-up check of the language model's server that ``rag-serve``
 and ``rag-query`` share (S2-7, S2-8). It lives here, not in the ``api`` package, because
-the CLI never imports that package (ARCHITECTURE.md §2.2).
+the CLI never imports that package (ARCHITECTURE.md §2.2). :func:`build_store` is the
+vector store's one build path, and every command checks the store before anything else
+(DEC-19).
 """
 
 import asyncio
@@ -27,8 +29,11 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 from pydantic import ValidationError
 
+from rag_qa.config import ConfigError
 from rag_qa.registry import build_object
 from rag_qa.schema import RagConfig
+from rag_qa.settings import ENV_QDRANT_PREFIX, describe_settings_error
+from rag_qa.vectorstore import QdrantStore
 
 #: What to try when an Ollama model cannot be reached, shown under the error.
 OLLAMA_HINT = "Is Ollama running? Try: systemctl status ollama"
@@ -37,6 +42,30 @@ OLLAMA_HINT = "Is Ollama running? Try: systemctl status ollama"
 def build_embedder(config: RagConfig) -> Embeddings:
     """The embedder for both ingestion and querying: always ``pipeline.ingestion.embedder``."""
     return build_object(config.component(config.pipeline.ingestion.embedder).spec())
+
+
+def build_store(config: RagConfig) -> QdrantStore:
+    """The vector store both halves share: ``pipeline.vector_store`` (DEC-19).
+
+    Sends no request; :meth:`~rag_qa.vectorstore.QdrantStore.check` does. Raises
+    :class:`~rag_qa.config.ConfigError` when the entry cannot make a store: its kwargs, a
+    ``RAG_QDRANT_*`` setting, or a ``_target_`` that is not one.
+    """
+    ref = config.pipeline.vector_store
+    try:
+        store = build_object(config.component(ref).spec())
+    except ValidationError as e:  # the RAG_QDRANT_* settings, read by the store itself
+        raise ConfigError(
+            f"Invalid environment:\n{describe_settings_error(e, ENV_QDRANT_PREFIX)}"
+        ) from None
+    except (TypeError, ValueError) as e:
+        raise ConfigError(f"Cannot build the vector store {ref}: {e}") from e
+    if not isinstance(store, QdrantStore):
+        raise ConfigError(
+            f"{ref} builds a {type(store).__name__}, not a store: its _target_ must be "
+            f"rag_qa.vectorstore.QdrantStore"
+        )
+    return store
 
 
 def build_splitter(config: RagConfig) -> Any:

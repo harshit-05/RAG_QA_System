@@ -22,9 +22,27 @@ from pydantic_core import ErrorDetails
 
 from rag_qa.registry import import_from_string
 from rag_qa.schema import PathContext, RagConfig
-from rag_qa.settings import ENV_CONFIG, PATH_ENV_VARS, EnvSettings
+from rag_qa.settings import (
+    ENV_CONFIG,
+    ENV_QDRANT_COLLECTION,
+    ENV_QDRANT_PREFIX,
+    ENV_VECTOR_STORE_PATH,
+    PATH_ENV_VARS,
+    EnvSettings,
+    StoreSettings,
+    describe_settings_error,
+)
 
 DEFAULT_CONFIG_FILENAME = "config.yaml"
+
+#: Why ``RAG_VECTOR_STORE_PATH`` is refused while set (DEC-19). Never ignored: a scratch
+#: ingest that set it to stay off the real index would otherwise write the real index.
+VECTOR_STORE_PATH_REFUSED = (
+    f"{ENV_VECTOR_STORE_PATH} is set, but the index is no longer a folder: since 1.0 it is "
+    f"a Qdrant collection (DEC-19). For a scratch index, set {ENV_QDRANT_COLLECTION} to a "
+    f"name of your own (lowercase letters, digits and _) and unset {ENV_VECTOR_STORE_PATH}. "
+    f'Nothing was read or written. README, "Upgrading from v0.3"'
+)
 
 
 class ConfigError(Exception):
@@ -49,8 +67,20 @@ def resolve_config_path(
 
 
 def load_config(config_path: str | os.PathLike[str] | None = None) -> RagConfig:
-    """Load, validate and freeze the config. Raises :class:`ConfigError` on any problem."""
+    """Load, validate and freeze the config. Raises :class:`ConfigError` on any problem.
+
+    The environment is checked first: ``RAG_VECTOR_STORE_PATH`` set, or a ``RAG_QDRANT_*``
+    setting that cannot be used, is refused before the file is read.
+    """
     env = EnvSettings()
+    if env.vector_store_path:
+        raise ConfigError(VECTOR_STORE_PATH_REFUSED)
+    try:
+        StoreSettings()
+    except ValidationError as e:
+        raise ConfigError(
+            f"Invalid environment:\n{describe_settings_error(e, ENV_QDRANT_PREFIX)}"
+        ) from None
     path = resolve_config_path(config_path, env).resolve()
     if not path.is_file():
         raise ConfigError(

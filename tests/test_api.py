@@ -50,6 +50,7 @@ from langchain_core.messages import AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import RunnableLambda
 from langchain_ollama import ChatOllama
+from qdrant_client import QdrantClient
 from starlette.datastructures import State
 from starlette.requests import Request
 
@@ -61,10 +62,12 @@ from rag_qa.api.jobs import KEEP
 from rag_qa.api.models import IngestReportOut, QueryRequest
 from rag_qa.api.state import NO_INDEX_YET, REINGEST, Serving, serialized
 from rag_qa.chain import IncompatibleIndexError, NoIndexError
+from rag_qa.components import build_store
 from rag_qa.config import load_config
 from rag_qa.ingest import CorpusUnreadableError, IngestionRunningError, IngestReport, ingest
 from rag_qa.schema import RagConfig
-from rag_qa.settings import ENV_DATA_PATH, ENV_VECTOR_STORE_PATH, ServerSettings
+from rag_qa.settings import ENV_DATA_PATH, ServerSettings
+from rag_qa.vectorstore import StoreUnavailableError
 
 TOKEN = "s3cret"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -100,9 +103,8 @@ def serve(
 def scratch_config(
     make_config: MakeConfig, sample_corpus: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> RagConfig:
-    """The fakes' config over the sample corpus, with no index yet (caveat 9: both paths)."""
+    """The fakes' config over the sample corpus, with no index yet in the test's store."""
     monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
     return load_config(make_config(use_fakes))
 
 
@@ -802,15 +804,18 @@ def test_an_index_rebuilt_with_another_embedder_makes_the_server_not_ready(
 
 @pytest.mark.parametrize("damage", ["another embedder", "another dimension"])
 def test_an_unusable_index_at_start_up_counts_as_none(
-    scratch_config: RagConfig, make_config: MakeConfig, tmp_path: Path, damage: str
+    scratch_config: RagConfig,
+    make_config: MakeConfig,
+    tmp_path: Path,
+    damage: str,
+    qdrant: QdrantClient,
 ) -> None:
     # The cases build_query_pipeline(require_index=False) covered until S2-7.
     if damage == "another embedder":
         ingest(load_config(make_config(bigger_embedder)))
     else:
         ingest(scratch_config)
-        store = scratch_config.paths.vector_store
-        edit_manifest(store, lambda m: m["embedder"].update(dimension=9))
+        edit_manifest(qdrant, lambda m: m["embedder"].update(dimension=9))
     with serve(scratch_config, tmp_path) as (client, _):
         health = client.get("/v1/health")
         assert health.status_code == 503
@@ -911,17 +916,19 @@ def test_an_open_that_a_flip_raced_is_tried_once_more(
     real_open = api_state.open_retrieval
     calls: list[str] = []
 
-    def raced_open(config: RagConfig, embeddings: Any, *, reranker: Any) -> Any:
+    def raced_open(config: RagConfig, embeddings: Any, *, reranker: Any, store: Any) -> Any:
         calls.append("open")
         if len(calls) == 1:
             (sample_corpus / "late.txt").write_text("A late addition.\n")
             ingest(config)  # the flip lands mid-open
             raise IncompatibleIndexError("the generation it checked is gone")
-        return real_open(config, embeddings, reranker=reranker)
+        return real_open(config, embeddings, reranker=reranker, store=store)
 
     monkeypatch.setattr(api_state, "open_retrieval", raced_open)
     embeddings = DeterministicFakeEmbedding(size=8)
-    retrieve, served = api_state.open_served(scratch_config, embeddings, None)
+    retrieve, served = api_state.open_served(
+        scratch_config, build_store(scratch_config), embeddings, None
+    )
     assert calls == ["open", "open"]
     assert served.ready and retrieve is not None
     assert served.manifest is not None and "late.txt" in served.manifest.documents
@@ -932,13 +939,15 @@ def test_an_open_that_fails_with_no_flip_is_not_retried(
 ) -> None:
     calls: list[str] = []
 
-    def failing_open(config: RagConfig, embeddings: Any, *, reranker: Any) -> Any:
+    def failing_open(config: RagConfig, embeddings: Any, *, reranker: Any, store: Any) -> Any:
         calls.append("open")
         raise IncompatibleIndexError("built by another embedder")
 
     monkeypatch.setattr(api_state, "open_retrieval", failing_open)
     embeddings = DeterministicFakeEmbedding(size=8)
-    retrieve, served = api_state.open_served(scratch_config, embeddings, None)
+    retrieve, served = api_state.open_served(
+        scratch_config, build_store(scratch_config), embeddings, None
+    )
     assert (calls, retrieve, served.problem) == (["open"], None, REINGEST)
 
 
@@ -958,10 +967,10 @@ def test_an_open_that_fails_for_another_reason_is_not_ready_and_tried_again(
         real_open = api_state.open_retrieval
         failing = [True]
 
-        def flaky_open(config: RagConfig, embeddings: Any, *, reranker: Any) -> Any:
+        def flaky_open(config: RagConfig, embeddings: Any, *, reranker: Any, store: Any) -> Any:
             if failing[0]:
                 raise OSError(f"cannot read {tmp_path}/index/manifest.json: the disk went away")
-            return real_open(config, embeddings, reranker=reranker)
+            return real_open(config, embeddings, reranker=reranker, store=store)
 
         monkeypatch.setattr(api_state, "open_retrieval", flaky_open)
         (sample_corpus / "added.txt").write_text("A new note.\n")
@@ -980,6 +989,51 @@ def test_an_open_that_fails_for_another_reason_is_not_ready_and_tried_again(
         assert client.post("/v1/query", json={"question": "q"}).status_code == 200
 
 
+def test_qdrant_unreachable_on_a_refresh_is_not_ready_and_tried_again(
+    scratch_config: RagConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # DEC-19: every request reads the alias. With Qdrant gone it answers 503, never 500,
+    # and the first request after Qdrant is back serves the index again.
+    ingest(scratch_config)
+    with serve(scratch_config, tmp_path) as (client, serving):
+        assert client.get("/v1/health").status_code == 200
+        real = serving.store.alias_target
+
+        def down() -> str | None:
+            raise StoreUnavailableError("cannot use Qdrant at http://q (ConnectError)")
+
+        monkeypatch.setattr(serving.store, "alias_target", down)
+        health = client.get("/v1/health")
+        assert health.status_code == 503
+        assert health.json()["index"]["detail"] == api_state.UNAVAILABLE
+        for response in refused(client):
+            assert response.status_code == 503
+            assert response.json()["detail"] == api_state.UNAVAILABLE
+        assert caplog.text.count("Not serving an index: cannot use Qdrant") == 1  # said once
+
+        monkeypatch.setattr(serving.store, "alias_target", real)
+        assert client.get("/v1/health").status_code == 200
+        assert client.post("/v1/query", json={"question": "q"}).status_code == 200
+
+
+def test_qdrant_unreachable_at_start_up_is_not_ready_not_a_crash(
+    scratch_config: RagConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = build_store(scratch_config)
+
+    def down() -> str | None:
+        raise StoreUnavailableError("cannot use Qdrant at http://q (ConnectError)")
+
+    monkeypatch.setattr(store, "alias_target", down)
+    retrieve, served = api_state.open_served(
+        scratch_config, store, DeterministicFakeEmbedding(size=8), None
+    )
+    assert (retrieve, served) == (None, api_state.NOT_SEEN)
+
+
 def test_concurrent_requests_share_one_failed_reopen(
     scratch_config: RagConfig, sample_corpus: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -991,7 +1045,7 @@ def test_concurrent_requests_share_one_failed_reopen(
     with serve(scratch_config, tmp_path) as (client, serving):
         opens: list[str] = []
 
-        def failing_open(config: RagConfig, embeddings: Any, *, reranker: Any) -> Any:
+        def failing_open(config: RagConfig, embeddings: Any, *, reranker: Any, store: Any) -> Any:
             opens.append("open")
             time.sleep(0.2)  # long enough for the other refreshes to queue on the lock
             raise OSError("the disk went away")
@@ -1018,10 +1072,10 @@ def test_concurrent_requests_reopen_a_new_generation_once(
         real_open = api_state.open_retrieval
         opens: list[str] = []
 
-        def counting_open(config: RagConfig, embeddings: Any, *, reranker: Any) -> Any:
+        def counting_open(config: RagConfig, embeddings: Any, *, reranker: Any, store: Any) -> Any:
             opens.append("open")
             time.sleep(0.2)  # long enough for the other refreshes to queue on the lock
-            return real_open(config, embeddings, reranker=reranker)
+            return real_open(config, embeddings, reranker=reranker, store=store)
 
         monkeypatch.setattr(api_state, "open_retrieval", counting_open)
         (sample_corpus / "added.txt").write_text("A new note.\n")

@@ -1,10 +1,17 @@
-"""The ingestion manifest: what each index generation holds (DEC-17, ARCHITECTURE.md §2.4).
+"""The ingestion manifest: what each index generation holds (DEC-17, DEC-19, ARCHITECTURE.md §3.4).
 
-``manifest.json`` sits inside every generation, beside the index it describes. It records
-which embedder and splitter built the index and, for each document, the sha256 of the
-file's bytes, its loader's identity and the IDs of its chunks. ``rag-ingest`` diffs the
-corpus against it to embed only what changed. The query side compares its embedder
-identity with the config's before comparing any vectors.
+Every generation carries its manifest in its own collection's metadata, so a query replica
+needs no shared disk (DEC-19). It records which embedder and splitter built the index, how
+the store searches it, and, for each document, the sha256 of the file's bytes, its loader's
+and splitter's identities and how many chunks it has. ``rag-ingest`` diffs the corpus
+against it to embed only what changed. The query side compares its embedder identity with
+the config's before comparing any vectors.
+
+**Version 2** (S3-2). A document's chunk IDs are derived (:meth:`Manifest.chunk_ids`), not
+listed, which keeps a document near 200 bytes. The whole shape of §3.4 is written now,
+``sparse`` and the per-document ``splitter`` included: the records are strict, so a field
+added by a later story would make every manifest written before it unreadable. Version 1
+is not read: it only ever lived beside a FAISS index.
 
 Pure Python, like :mod:`rag_qa.schema`: pydantic and the standard library, no LangChain
 (``tests/test_architecture.py``). S2-5's fingerprint reuses :func:`spec_identity` and
@@ -14,17 +21,15 @@ Pure Python, like :mod:`rag_qa.schema`: pydantic and the standard library, no La
 
 import hashlib
 import json
-import os
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-MANIFEST_FILE = "manifest.json"
-MANIFEST_VERSION: Final = 1
+MANIFEST_VERSION: Final = 2
 
 #: How this code turns a file into chunks. The identities see the config only, never the
 #: code, so **bump it whenever the same file and config would make other chunks**: a change
@@ -119,10 +124,10 @@ def embedder_identity(spec: Mapping[str, Any]) -> str:
 def chunk_id(relative_path: str, sha256: str, index: int) -> str:
     """The ID of a document's ``index``-th chunk: ``uuid5`` over ``path:sha256:index``.
 
-    Deterministic, so an unchanged document keeps its IDs. The path is in the key because
-    two files with identical bytes would otherwise share IDs: FAISS rejects duplicates, and
-    deleting one document would delete the other's chunks. UUIDs are also what Qdrant
-    accepts as point IDs (DEC-3).
+    Deterministic, so an unchanged document keeps its IDs, and a manifest need only count
+    them. The path is in the key because two files with identical bytes would otherwise
+    share IDs, and deleting one document would delete the other's chunks. UUIDs are what
+    Qdrant accepts as point IDs (DEC-3).
     """
     return str(uuid.uuid5(CHUNK_NAMESPACE, f"{relative_path}:{sha256}:{index}"))
 
@@ -142,47 +147,63 @@ class SplitterRecord(_Record):
     identity: str
 
 
+class StoreRecord(_Record):
+    """How the store searches the generation (DEC-19): by cosine, always exactly."""
+
+    distance: Literal["cosine"]
+    exact: Literal[True]
+
+
+#: The only store record this version writes or reads.
+STORE: Final = StoreRecord(distance="cosine", exact=True)
+
+
 class DocumentRecord(_Record):
     """One corpus file. :attr:`Manifest.documents` keys it by its corpus-relative path."""
 
     sha256: str
     loader: str
     loader_identity: str
-    chunk_ids: list[str]
+    #: The identity of the splitter that chunked it: the default one, until S3-4 gives each
+    #: extension its own.
+    splitter: str
+    chunks: int = Field(ge=0)
     ingested_at: str
 
 
 class Manifest(_Record):
-    """What one index generation holds, in the shape of ARCHITECTURE.md §2.4."""
+    """What one index generation holds, in the shape of ARCHITECTURE.md §3.4."""
 
-    version: Literal[1] = MANIFEST_VERSION
-    generation: str  # the folder it sits in: what the symlink points to when it is live
-    # The CHUNKING_VERSION that made its chunks. Absent in the first S2-6 manifests, which
-    # version 1 made: so the default is 1, never the current version.
-    chunking: int = 1
+    version: Literal[2] = MANIFEST_VERSION
+    generation: str  # the collection it describes: what the alias names when it is live
+    chunking: int  # the CHUNKING_VERSION that made its chunks
     embedder: EmbedderRecord
-    splitter: SplitterRecord
+    splitter: SplitterRecord  # the default splitter
+    #: The sparse encoder's record, null until S3-11b sets one (DEC-20). A later story
+    #: widens the type; a null stays readable.
+    sparse: None
+    store: StoreRecord
     documents: dict[str, DocumentRecord]
 
+    def chunk_ids_of(self, name: str) -> list[str]:
+        """The IDs of document ``name``'s chunks, in order, derived as ingestion made them."""
+        record = self.documents[name]
+        return [chunk_id(name, record.sha256, i) for i in range(record.chunks)]
+
     def chunk_ids(self) -> set[str]:
-        """Every chunk ID the manifest lists, across its documents."""
-        return {cid for record in self.documents.values() for cid in record.chunk_ids}
+        """Every chunk ID the manifest's documents hold."""
+        return {cid for name in self.documents for cid in self.chunk_ids_of(name)}
 
 
-def load_manifest(path: Path) -> Manifest | None:
-    """The manifest at ``path``, or ``None`` when there is none (a v0.2 index, say).
+def parse_manifest(data: object) -> Manifest:
+    """The manifest in ``data``, a generation's metadata entry as JSON reads it.
 
-    Raises :class:`ManifestError` when one is there but cannot be used. The messages name
-    no path, so callers can log them as they are.
+    Raises :class:`ManifestError` when it cannot be used: absent, not an object, of
+    another version, or not this version's shape. The messages name no collection, so
+    callers can say where it came from.
     """
-    try:
-        data = json.loads(path.read_bytes())
-    except FileNotFoundError:
-        return None
-    except OSError as e:
-        raise ManifestError(f"cannot read it ({type(e).__name__}: {e.strerror})") from e
-    except ValueError as e:  # JSONDecodeError, and UnicodeDecodeError
-        raise ManifestError(f"it is not valid JSON ({e})") from e
+    if data is None:
+        raise ManifestError("there is none")
     if not isinstance(data, dict):
         raise ManifestError(f"it is not a JSON object but a {type(data).__name__}")
     version = data.get("version")
@@ -201,19 +222,9 @@ def load_manifest(path: Path) -> Manifest | None:
         ) from e
 
 
-def save_manifest(manifest: Manifest, path: Path) -> None:
-    """Write ``manifest`` to ``path`` atomically: a temporary file, ``fsync``, ``os.replace``.
-
-    A reader finds the old file or the new one, never half of one. Making the rename
-    itself durable takes an ``fsync`` of the folder, which the caller does once every file
-    is in (:func:`rag_qa.vectorstore.write_generation`).
-    """
-    tmp = path.with_name(f"{path.name}.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(manifest.model_dump_json(indent=2) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+def manifest_payload(manifest: Manifest) -> dict[str, Any]:
+    """``manifest`` as JSON, whole: what a generation's metadata holds under its key."""
+    return manifest.model_dump(mode="json")
 
 
 @dataclass(frozen=True)

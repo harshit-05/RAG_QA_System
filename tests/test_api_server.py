@@ -224,10 +224,16 @@ def test_a_server_stopped_with_ctrl_c_exits_0(
     assert server.main(["--config", str(path)]) == server.EXIT_OK
 
 
-#: ``rag-serve`` with the real uvicorn and no Ollama or models: a stub app, no preflight.
+#: ``rag-serve`` with the real uvicorn and no Ollama, Qdrant server or models: a stub app,
+#: no preflight, and an in-memory store for its Qdrant check. The child cannot see the
+#: suite's fixture, and without its own store it would ask the real server on
+#: localhost:6333, and pass only while one runs (found by S3-2's Verification 3).
 CTRL_C_CHILD = """
 import sys
 from fastapi import FastAPI
+from qdrant_client import QdrantClient
+import rag_qa.vectorstore
+rag_qa.vectorstore.connect = lambda *args, **kwargs: QdrantClient(":memory:")
 from rag_qa.api import server
 server.preflight = lambda config: None
 server.create_app = lambda config, settings: FastAPI()

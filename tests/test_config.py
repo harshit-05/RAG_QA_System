@@ -8,16 +8,18 @@ from conftest import REAL_CONFIG, REPO_ROOT, MakeConfig
 
 from rag_qa.config import ConfigError, load_config
 from rag_qa.schema import RagConfig
+from rag_qa.settings import ENV_STATE_PATH, ENV_VECTOR_STORE_PATH
 
 
-def test_real_config_loads_and_every_reference_resolves() -> None:
+def test_real_config_loads_and_every_reference_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(ENV_STATE_PATH)  # the suite points it at each test's own folder
     config = load_config(REAL_CONFIG)
 
     assert isinstance(config, RagConfig)
     assert config.paths.data == REPO_ROOT / "corpus"
-    assert config.paths.vector_store == REPO_ROOT / "vectorstore" / "db_faiss"
+    assert config.paths.state == REPO_ROOT / "var"
     ingestion, query = config.pipeline.ingestion, config.pipeline.query
-    for ref in (ingestion.splitter, ingestion.embedder, query.llm):
+    for ref in (ingestion.splitter, ingestion.embedder, query.llm, config.pipeline.vector_store):
         assert config.component(ref).target
     assert config.retriever(query.retriever).kwargs()
 
@@ -56,8 +58,8 @@ MALFORMED = [
         id="ISS-02 absolute path",
     ),
     pytest.param(
-        lambda c: c["paths"].update(vector_store="~/indexes/faiss"),
-        ["paths:", "absolute path", "RAG_VECTOR_STORE_PATH"],
+        lambda c: c["paths"].update(data="~/corpus"),
+        ["paths:", "absolute path", "RAG_DATA_PATH"],
         id="home-relative path",
     ),
     pytest.param(
@@ -65,10 +67,36 @@ MALFORMED = [
         ["paths:", "'data' is empty", "RAG_DATA_PATH"],
         id="empty path",
     ),
+    # --- the store (S3-2, DEC-19) ---
     pytest.param(
-        lambda c: c["components"].update(vector_stores={"faiss": {"_target_": "x.FAISS"}}),
-        ["components:", "unknown key 'vector_stores'"],
-        id="ISS-11 dead vector_stores block",
+        lambda c: c["paths"].update(vector_store="vectorstore/db_faiss"),
+        ["paths:", "'vector_store' was removed in 1.0", "docker compose up -d qdrant"],
+        id="v0.3's paths.vector_store",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"].pop("vector_store"),
+        ["pipeline.vector_store: required key is missing"],
+        id="no store in the pipeline",
+    ),
+    pytest.param(
+        lambda c: c["pipeline"].update(vector_store="components.llms.mistral_ollama"),
+        ["pipeline.vector_store", "points into components.llms", "components.vector_stores"],
+        id="store reference to the wrong kind",
+    ),
+    pytest.param(
+        lambda c: c["components"]["vector_stores"]["qdrant"].update(_target_="x.FAISS"),
+        ["components.vector_stores.qdrant", "outside the import allowlist"],
+        id="a store outside the allowlist",
+    ),
+    pytest.param(
+        lambda c: c["components"]["vector_stores"]["qdrant"].update(collection="Rag-QA"),
+        ["vector_stores.qdrant: collection 'Rag-QA' must be 1 to 48 lowercase"],
+        id="a collection name with a hyphen",
+    ),
+    pytest.param(
+        lambda c: c["components"]["retrievers"]["vector_search"].update(search_type="mmr"),
+        ["search_type 'mmr' is not supported", "similarity only"],
+        id="a search the store does not run",
     ),
     pytest.param(
         lambda c: c.update(vector_store_path="vectorstore/db_faiss"),
@@ -197,12 +225,13 @@ def elsewhere(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_relative_path_in_the_file_anchors_to_the_config_dir(
-    make_config: MakeConfig, elsewhere: Path
+    make_config: MakeConfig, elsewhere: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delenv(ENV_STATE_PATH)
     path = make_config()
     config = load_config(path)
     assert config.paths.data == (path.parent / "corpus").resolve()
-    assert config.paths.vector_store == (path.parent / "vectorstore" / "db_faiss").resolve()
+    assert config.paths.state == (path.parent / "var").resolve()
 
 
 def test_relative_env_override_anchors_to_the_working_dir(
@@ -216,36 +245,47 @@ def test_relative_env_override_anchors_to_the_working_dir(
 def test_absolute_env_override_is_accepted(
     make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    target = (tmp_path / "machine-specific" / "index").resolve()
-    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(target))
-    assert load_config(make_config()).paths.vector_store == target
+    target = (tmp_path / "machine-specific" / "var").resolve()
+    monkeypatch.setenv(ENV_STATE_PATH, str(target))
+    assert load_config(make_config()).paths.state == target
 
 
-def test_a_vector_store_symlink_is_kept_not_resolved(
+def test_a_state_path_is_resolved_through_links_as_data_is(
     make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # From S2-6 the store is a symlink to the live index generation (DEC-17). Resolved at
-    # load, every caller would be pinned to one generation, and ingestion would take that
-    # real directory for a v0.2 index: found by the suite, the first time it met a symlink.
-    (tmp_path / "index.gen-1").mkdir()
-    link = tmp_path / "index"
-    link.symlink_to("index.gen-1")
-    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(link))
-    assert load_config(make_config()).paths.vector_store == link
-    monkeypatch.delenv("RAG_VECTOR_STORE_PATH")  # the same for a path in the file
-    path = make_config(lambda c: c["paths"].update(vector_store="index"))
-    assert load_config(path).paths.vector_store == link
-
-
-def test_the_folders_above_the_store_are_still_resolved_as_before(
-    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The link is followed before ".." applies, exactly as resolve() always did, so an
-    # existing store path keeps pointing where it did (first review).
+    # v0.3 kept the store path's last part unresolved, since it was the link to the live
+    # generation (DEC-17). paths.state is a plain folder: the link is followed before ".."
+    # applies, exactly as resolve() always did.
     (tmp_path / "deep" / "real").mkdir(parents=True)
     (tmp_path / "linked").symlink_to(tmp_path / "deep" / "real")
-    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(tmp_path / "linked" / ".." / "index"))
-    assert load_config(make_config()).paths.vector_store == tmp_path / "deep" / "index"
+    monkeypatch.setenv(ENV_STATE_PATH, str(tmp_path / "linked" / ".." / "var"))
+    assert load_config(make_config()).paths.state == tmp_path / "deep" / "var"
+
+
+def test_rag_vector_store_path_is_refused_while_set(
+    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Never ignored (DEC-19): caveat 9's scratch ingest set it to stay off the real index,
+    # and ignored, it would write the real index. Refused before the file is even read.
+    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
+    with pytest.raises(ConfigError) as exc:
+        load_config(tmp_path / "no-such-config.yaml")
+    message = str(exc.value)
+    assert "RAG_VECTOR_STORE_PATH is set" in message
+    assert "RAG_QDRANT_COLLECTION" in message  # the migration
+    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, "")  # empty counts as unset, as for every path
+    assert isinstance(load_config(make_config()), RagConfig)
+
+
+@pytest.mark.parametrize("name", ["Rag-QA", "rag--gen-x", "a" * 49, "has space"])
+def test_a_bad_collection_in_the_environment_is_refused_at_load(
+    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    monkeypatch.setenv("RAG_QDRANT_COLLECTION", name)
+    with pytest.raises(ConfigError) as exc:
+        load_config(make_config())
+    assert "RAG_QDRANT_COLLECTION: collection" in str(exc.value)
+    assert "1 to 48 lowercase letters" in str(exc.value)
 
 
 def test_absolute_path_in_the_file_is_fine_when_the_env_overrides_it(
@@ -272,11 +312,14 @@ def test_empty_env_override_counts_as_unset(
         pytest.param(lambda c: c.update(paths=None), id="empty paths section"),
     ],
 )
-def test_omitted_paths_fall_back_to_anchored_defaults(make_config: MakeConfig, edit: Any) -> None:
+def test_omitted_paths_fall_back_to_anchored_defaults(
+    make_config: MakeConfig, edit: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(ENV_STATE_PATH)
     path = make_config(edit)
     config = load_config(path)
     assert config.paths.data == (path.parent / "corpus").resolve()
-    assert config.paths.vector_store == (path.parent / "vectorstore" / "db_faiss").resolve()
+    assert config.paths.state == (path.parent / "var").resolve()
 
 
 def test_rag_config_selects_the_file(

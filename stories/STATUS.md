@@ -5,9 +5,88 @@
 
 ## Now
 
-**Next action: merge PR #19 (S3-1) with a merge commit, then start S3-2.** Not a squash or
-a rebase: `.git-blame-ignore-revs` names the reformat, `01854a1`, by its SHA, and only a
-merge commit keeps that commit.
+**Next action: merge PR #20 with a merge commit, then start S3-3.** CI is green on the
+PR's head, `5ab1dee` (run 39375380128, both jobs), with round 2's three commits on it. After
+the merge, delete v0.3's `vectorstore/` folder on this host: nothing reads it, and the index
+is in Qdrant (`docker compose up -d qdrant` before any command). S3-3 and S3-4 can each
+start from the merged `main`.
+
+- **The commits:** `390b228` the parity tool, `84600e9` its review record, `c49aeea` the
+  dependency and compose file, `3cc393a` the store (breaking), `09475d4` CI, `25c32ff` the
+  README, `24c5780` the story record; `46a8b80`, `65464a6`, `a2b7d38` the first round's
+  follow-up; `21260b9` aiohttp 3.14.5, `79411fc` the store fixes, `5ab1dee` the lock's scope
+  and round 2's record.
+- **CI:** green on `24c5780` (run 39283008142); red on `a2b7d38` (run 39294075683), in
+  Audit, on aiohttp advisories published between the two runs, which `main`'s lock fails
+  too; green again on `5ab1dee` once `21260b9` bumped aiohttp. The story's "Verification
+  record" has every result.
+
+**Second review of S3-2, round 2 (2026-10-20, on `a2b7d38`): no blockers; 1 concurrency
+finding and 2 exit-code findings, fixed on the PR, and CI's red run explained and fixed.**
+It ran the hermetic suite against a dead Qdrant URL, the server tests on a throwaway
+v1.19.2, and two writers at once there; the real `rag_qa` alias was only read. Detail in
+the story.
+
+- **CI went red on the advisory database, not the review.** Three aiohttp 3.14.3
+  advisories were published at 17:07 UTC on 2026-10-19, between the green run (16:07) and
+  the red one (17:26); `main`'s lock fails the same audit. aiohttp 3.14.5 moves alone, and
+  the main environment audits clean. As S2-5's multidict bump did, a `build(deps)` commit.
+- **The writer lock excludes only writers that share `var/`** (caveat 36). A second checkout
+  on this host writes the same alias under its own lock. Its recovery deleted the other
+  run's new generation, and, forced, the generation just switched to, with the alias. The
+  docs now say so; a lock Qdrant holds is on the backlog.
+- **A wrong `RAG_QDRANT_URL` that reaches another HTTP server** crashed `rag-ingest`,
+  `rag-query` and `rag-serve` with exit 1. `check()` now refuses it: exit 2, and the URL
+  to check.
+- **A switch the server applied but whose answer was lost** said "published nothing", exit
+  2. The alias is read back now, and such a run is published.
+- **The suite:** 994 passed, 8 skipped, 5 xfailed, coverage 98.37%; `rag-eval check` exit 0.
+
+**Second review of S3-2 as a whole (2026-10-19): no blockers; 1 test gap and 3 doc
+findings, fixed in the follow-up commit.** It reproduced parity on the live index, ran the
+hermetic suite against a dead Qdrant URL, and attacked the store on a throwaway server.
+Detail in the story.
+
+- **No test said search is exact:** `exact=False` passed everything, since local mode
+  ignores it and a small collection is scanned in full. A new test spies on the request.
+- **The cut rule is necessary:** with 40 exact ties and a restart, the server's own cut
+  gave 6 answers; ours gave one.
+- **Held under attack:** update equals rebuild, a reader on a deleted generation, a lost
+  alias (and the README's recovery recipe), Qdrant stopped mid-run, and the API going 503
+  and back.
+- **The embedder varies by about 1e-7 with batch composition** (not the store): a story
+  claim of "no drift from a fresh ingest" is reworded.
+- **A backlog line:** the Qdrant URL reaches API clients inside an ingest job's error
+  text; S3-8 decides on redacting it.
+
+**S3-2 phases B to H (2026-10-19): the index is in Qdrant, and retrieval is unchanged.**
+
+- **Parity holds:** `contexts-qdrant.json` is IDENTICAL to FAISS's (sha256 `5a36e2f9…`), a
+  second run is STABLE, and tier 1 equals FAISS's question by question (0.950, 0.7958,
+  0.8583). `rag-eval check` exits 0: no tier-2 re-run.
+- **The hermetic suite:** 987 passed, 8 skipped (the `qdrant_server` tests), 5 xfailed,
+  coverage 98.36%, with Qdrant stopped and an empty HF cache. The server tests: 8 passed.
+  Verification 3 caught one test whose child process reached the real Qdrant; fixed.
+- **The crash drill ran twice:** a kill while embedding leaves nothing (a generation is
+  created after embedding), and a kill timed into the window before the switch leaves an
+  orphan the next run removes. The alias held both times.
+- **The API** picked up a CLI `--rebuild` with no restart.
+- **Before working on the store:** start Qdrant, `docker compose up -d qdrant` (CLAUDE.md).
+  v0.3's `vectorstore/` folder is still on disk here, unread: delete it after the merge.
+
+**Second review of S3-2 phase A, the parity tool (2026-10-19): no blockers; 2 findings, 1
+wording fix and 2 nits, fixed before the first commit.** All 25 golden questions, run
+through the real `stream_answer` with a recording fake model, got exactly the prompt whose
+context the FAISS file digests. The FAISS run reproduced byte for byte. Detail in the story.
+
+- **The tool now retrieves through `ainvoke`,** as every answer does. Equal on FAISS (step 1
+  re-run: the same sha256s), but a Qdrant retriever with its own async path would otherwise
+  have been proven on a path no answer takes.
+- **A test that checked only `context_record`'s definition** is replaced by one that runs
+  the answer path, plus one that tier 1 uses `ainvoke`. Each failed with its guard broken.
+- **For phase B:** chunks carry `ingested_at`, which the Qdrant re-ingest sets anew, so
+  "the same metadata as FAISS" holds except for that key (Discovered).
+- **The suite:** 899 passed, 5 xfailed, coverage 98.38%; `rag-eval check` exit 0.
 
 - **The maintainer, in parallel** (no session needed):
   - hand-label faithfulness for the 20 answerable v0.3 answers, before S3-11 (format in
@@ -957,6 +1036,13 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
     no alias, recovery keeps every complete generation, so the previous one survives a lost
     live collection. `rag-query` names it, and README has the line that points the alias
     back.
+36. **The writer lock excludes only the writers that share `var/`** (S3-2's second review).
+    The lock is a file and the index a Qdrant collection, so a second checkout on this host
+    (a fresh-clone e2e) writes the same `rag_qa` alias under a lock of its own. On a
+    throwaway server, one run's recovery deleted the other's new generation, and that run
+    died on a 404. In a forced interleaving it deleted the generation just switched to, and
+    the alias went with it until the next publish. Give another checkout
+    `RAG_QDRANT_COLLECTION=<name>`, or stop this checkout's Qdrant while it runs its own.
 
 ## GPU offload notes (nothing *requires* GPU; Colab/Kaggle available)
 
@@ -1083,7 +1169,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | Story | Title | Closes | Depends | Status |
 | --- | --- | --- | --- | --- |
 | [S3-1](phase-3/S3-1-open-phase-3.md) | Open Phase 3: 1.0.0.dev0, format the code once and gate it | DEC-28, backlog: `ruff format` | — | Done 2026-10-16 (PR #19) |
-| [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Todo |
+| [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19, pending the merge (PR #20) |
 | [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Todo |
 | [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Todo |
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Todo |
@@ -1145,7 +1231,7 @@ S3-2's (design review 1).
 | DEC-16 | Reranker: `langchain_classic`'s `ContextualCompressionRetriever`, or our own | **Resolved 2026-10-02: our own `CrossEncoderReranker` on `sentence-transformers`** (DEC-5 step 2) | A `langchain_core` `BaseDocumentCompressor` that writes `rerank_score` into metadata. k=20 candidates are cut to `top_n` 5, and tier-1 numbers decide whether it is on. `langchain_classic.` and `langchain_community.` leave `ALLOWED_PREFIXES`. The `min_score` knob is for the Sources-relevance backlog line. S2-4. **Outcome (S2-4, 2026-10-04): on.** Hit rate 0.950, MRR 0.7958, recall 0.8583, against dense 0.800, 0.5875, 0.7167; 8 questions won, 4 lost (still hits), 1.4 s per answer on CPU. |
 | DEC-17 | Incremental ingestion: change detection, failure handling, write safety | **Resolved 2026-10-02: a sha256 manifest beside the index, generation directories published by an atomic symlink flip, one writer** (the flip replaced a two-rename swap in the second review) | **Updates:** only added and changed documents are re-embedded. A failed document keeps its chunks, which dissolves DEC-13. **Full rebuild** when the embedder identity or the splitter changes. Device keys are left out of the identity, so Colab's `_cuda` equals local `_cpu`. **IDs and metadata:** uuid5 chunk IDs, ready for Qdrant (DEC-3). `source` becomes corpus-relative, plus `source_sha256` and `ingested_at` (SRS §7.3). **Query side:** `rag-query` refuses a mismatched index. **Breaking:** re-ingest once. S2-6. **As implemented (2026-10-05):** `multi_process` stays in the identity, since langchain-huggingface 1.2.2's multi-process path drops `encode_kwargs` (maintainer). An empty `model_kwargs` counts as none. Generation stamps carry microseconds and always sort after the live one. Only a folder holding exactly `index.faiss` and `index.pkl` is migrated as v0.2, and anything else at the path exits 2. Every update opens the live index, and an update probes the embedder's dimension. ARCHITECTURE.md DEC-17 has the dated notes. |
 | DEC-18 | HTTP API shape: SSE library, auth, concurrency, ingest jobs | **Resolved 2026-10-02: FastAPI ≥ 0.135 native SSE; a token is required off localhost (maintainer); one generation at a time** | **Surface:** `rag-serve`. `QueryRequest` is `{question}` with `extra="forbid"`, so the API never supplies components, and a `trust_remote_code` load guard comes with it. **Load:** 503 with `Retry-After` when busy. A disconnect cancels generation: under uvicorn (ASGI 2.3) Starlette cancels the stream, and `stream_answer` runs inside it, with no producer task (second review). Requests with an `Origin` header are refused. **Ingest:** single-flight jobs in memory, which swap only the retrieval half. **Privacy:** no host paths over HTTP. S2-7. **As built (S2-7, 2026-10-12):** FastAPI's native SSE runs the generator in its own producer task. The cancel still reaches `stream_answer`, and the slot's teardown closes a stream that a drop between events left paused (the spike's window). Retrieval is serialized by a lock, not the slot. The API opens the index itself (`chain.open_retrieval`), and `require_index` is gone. `rag-serve` checks Ollama before uvicorn starts. ARCHITECTURE.md DEC-18 has the dated notes. |
-| DEC-19 | The Qdrant store: how an index is written, published, recovered and found | **Resolved 2026-10-14: a generation is a collection behind an atomic alias switch; the manifest lives in the collection's metadata; our own module on `qdrant-client`** | Qdrant v1.19.2, `qdrant-client` 1.19.1 (resolves with the stack; adds grpcio, protobuf, portalocker, h2; no locked version moves). ADR-024's pattern carries over: build `<collection>--gen-<stamp>-<hex>`, then one `update_collection_aliases` call, then recovery keeps the target and the newest older one. Manifest version 2: identities plus per-document records, with chunk counts in place of ID lists. Search is always exact, by cosine (MiniLM's vectors are unit length). `paths.state` (`var/`) holds the lock and S3-8's job database. **Breaking:** `paths.vector_store` and `RAG_VECTOR_STORE_PATH` are refused at load; a scratch index is `RAG_QDRANT_COLLECTION`. **Quickstart:** `docker compose up -d qdrant` first; local mode with `path=` is not offered (its folder lock admits one process). Parity with FAISS is proven by a contexts digest of all 25 golden questions, so no tier-2 re-run. **Design review 1 (2026-10-15):** readers resolve the alias again per question, since a generation is deleted two switches later; S3-2 writes manifest version 2 whole; a retry counts a create that finds our collection, or a delete that finds none, as done; S3-3 … S3-10 repeat the digest. **Design review 2 (2026-10-16):** the protocol held, killed at every step; our code makes every cut, since the server decides a tie by the collection's layout; with no alias (deleting the target deletes it), recovery deletes only incomplete generations; the manifest sits under one metadata key, written whole; and `var/` is shared under one uid. S3-2. ARCHITECTURE.md §3.1. |
+| DEC-19 | The Qdrant store: how an index is written, published, recovered and found | **Resolved 2026-10-14: a generation is a collection behind an atomic alias switch; the manifest lives in the collection's metadata; our own module on `qdrant-client`** | Qdrant v1.19.2, `qdrant-client` 1.19.1 (resolves with the stack; adds grpcio, protobuf, portalocker, h2; no locked version moves). ADR-024's pattern carries over: build `<collection>--gen-<stamp>-<hex>`, then one `update_collection_aliases` call, then recovery keeps the target and the newest older one. Manifest version 2: identities plus per-document records, with chunk counts in place of ID lists. Search is always exact, by cosine (MiniLM's vectors are unit length). `paths.state` (`var/`) holds the lock and S3-8's job database. **Breaking:** `paths.vector_store` and `RAG_VECTOR_STORE_PATH` are refused at load; a scratch index is `RAG_QDRANT_COLLECTION`. **Quickstart:** `docker compose up -d qdrant` first; local mode with `path=` is not offered (its folder lock admits one process). Parity with FAISS is proven by a contexts digest of all 25 golden questions, so no tier-2 re-run. **Design review 1 (2026-10-15):** readers resolve the alias again per question, since a generation is deleted two switches later; S3-2 writes manifest version 2 whole; a retry counts a create that finds our collection, or a delete that finds none, as done; S3-3 … S3-10 repeat the digest. **Design review 2 (2026-10-16):** the protocol held, killed at every step; our code makes every cut, since the server decides a tie by the collection's layout; with no alias (deleting the target deletes it), recovery deletes only incomplete generations; the manifest sits under one metadata key, written whole; and `var/` is shared under one uid. **As implemented (S3-2, 2026-10-19/20):** parity with FAISS proven, the contexts digest of all 25 golden questions identical (`5a36e2f9…`), so no tier-2 re-run. A generation is created after the embedding, so a kill while embedding leaves nothing to recover. A retriever takes `k` only: the schema refuses FAISS's other options. Readers resolve the alias per question (`build_retrieve`), the API per request, and go not-ready when the alias cannot be read; `rag-eval generate` holds a generation it moves to against its corpus scan. `check()` refuses a server older than 1.16 or an answer that is not Qdrant's (exit 2), and a switch whose answer was lost is read back. The writer lock excludes only writers that share `var/` (caveat 36). Local mode differs from the server (a failing alias batch applied halfway, vector precision), so those properties are `qdrant_server` tests, which CI runs against its service container. S3-2. ARCHITECTURE.md §3.1. |
 | DEC-20 | Hybrid retrieval: where the sparse vectors come from, how they are fused, how it is switched on | **Resolved 2026-10-14: our own BM25 encoder; Qdrant prefetch + RRF with an explicit constant; then the cross-encoder; tier 1 decides, S3-11 switches** | `rag_qa/sparse.py`, about 80 lines with no dependency; IDF applied by Qdrant. Rejected: fastembed's `Qdrant/bm25` (onnxruntime, a model download, a tokenizer that moves with releases) and Qdrant's own BM25 (needs `cloud_inference=True`, which local mode refuses; its tokenizer changes with the server). Qdrant's default RRF constant is 2, so `rrf_k` is always set (60). A `sources` filter by document path (API and CLI) is FR-3's metadata filtering. The real config sets no sparse encoder until S3-11b, so nothing hashed moves before the batched re-run. **Design review 1:** Qdrant's server breaks no RRF ties, so the fusion returns its whole union and our code cuts it, ties by point ID; S3-5 runs hybrid tier 1 twice. **Design review 2 (2026-10-16):** each prefetch still cut its own list on the server, which kept other tied points for each insertion order and after a restart. So the two branches run as separate searches, each cut by our code, and our code fuses them by RRF. S3-5's second run follows a restart. S3-5, S3-11, S3-11b. |
 | DEC-21 | NFR-6 and the hosted fallback | **Resolved 2026-10-14: timeouts, safe retries and circuit breakers on network calls; an opt-in OpenAI-compatible fallback, with one real check** (maintainer) | Ollama: connect 5 s, read 600 s; retries only before the first token. Qdrant: 10 s; every call retried (all idempotent). Our own breaker per dependency; open means 503 with `Retry-After` before the first byte. The fallback (`pipeline.query.fallback_llm`, a `fallback` extra with `langchain-openai`) answers only while Ollama's breaker is open or after a connection error before the first token; streamed itself, never `.with_fallbacks()`; its key from the environment only; never used by tier 2. It absorbs the backlog's reopen back-off. **Design review 1:** with a fallback configured, an open Ollama breaker routes to it, and the start-up checks warn instead of exiting 2; retry semantics are stated per call; the retry before the first token is a hand-written loop. **Design review 2 (2026-10-16):** Qdrant's breaker wraps each attempt, with one deadline per retrieval, since retrieval holds the retrieval lock; a 404 is never retried; the fallback sets `max_retries: 0` and a timeout, as the OpenAI SDK retries twice on its own. S3-6. |
 | DEC-22 | NFR-10: logs, traces, metrics, alerts | **Resolved 2026-10-14: structlog; OpenTelemetry spans we create ourselves; prometheus-client; burn-rate alerts; Jaeger** | No LangChain callback handlers: one that suspends reopens DEC-14's cancel window. Spans are never current across a `yield`, and end in a `finally`. Metrics on their own port. Alert rules tested by `promtool` in CI. NFR-1 by a 100k synthetic benchmark; NFR-3 reported by `rag-ingest`. **Design review 2 (2026-10-16):** it held. With the instrumentation off, excluded or full, a client dropped during 30 s of silence cancelled the stream within milliseconds, and every span ended. promtool runs from the Prometheus image, by digest. S3-7. |
@@ -1187,7 +1273,8 @@ diffed this backlog against `main`'s: no line was dropped.
   ADR-025's portable digests hold for one Ollama version, which Colab's recipe pins.
 - **After v1.0 — ingestion on several hosts.** The writer lock and the job records live on
   one host's state volume (DEC-19, DEC-23). A second ingesting host needs a lock both can
-  see.
+  see. So does a second checkout on one host, which has a `var/` of its own (caveat 36): a
+  lock Qdrant itself holds would cover both.
 - **After v1.0, for a much larger corpus — a clone from a snapshot.** An update copies the
   live generation point by point, linear in its size (DEC-19): about 1–2 s here.
 - **If tier 1 shows misses it would fix — stemming in the BM25 encoder** (DEC-20). A
@@ -1195,11 +1282,21 @@ diffed this backlog against `main`'s: no line was dropped.
 
 ### Opened in Phase 3 stories
 
+- **S3-9 — `ubuntu-latest` becomes Ubuntu 26 from 2026-10-19** (found in S3-2's CI run
+  39283008142, as an annotation). Both CI jobs run on it, and the Qdrant service container
+  and the system tools come from the image. S3-9, which pins the CI images, pins the
+  runner too, or records why not.
+
 - **If a tool formats files by name (an editor's format-on-save, a pre-commit hook) —
   `force-exclude = true` under `[tool.ruff]`** (found in S3-1). `[tool.ruff.format]`'s
   `exclude = ["*.md"]` applies only while ruff walks a folder, so `ruff format docs/ADR.md`
   would still rewrite its Python examples. CI's bare `ruff format --check` is unaffected,
   and CLAUDE.md has sessions run it bare for this reason (S3-1's second review, round 2).
+
+- **S3-8 — the Qdrant URL in an ingest job's error text** (found in S3-2's second review).
+  `describe_error` passes `cannot use Qdrant at http://host:6333 (…)` through to
+  `GET /v1/ingest/<job>` clients. Not a path, so DEC-18 holds; once S3-9 puts Qdrant on an
+  internal network, decide whether to redact it.
 
 ### Closed in Phase 3
 

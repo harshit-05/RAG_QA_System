@@ -18,6 +18,8 @@
 * ADR-007 / DEC-1: application code never imports ``langchain_classic`` or the
   ``langchain`` meta-package. Checked on the **parsed imports**, so a docstring that
   merely names the package cannot trip it.
+* DEC-19 (S3-2): only ``rag_qa.vectorstore`` imports ``qdrant_client``, the store's seam.
+  Checked on the parsed imports too, ``from`` and plain, nested modules included.
 """
 
 import ast
@@ -136,3 +138,36 @@ def test_the_legacy_import_scan_reaches_subpackages(tmp_path: Path) -> None:
         if _legacy_imports(p)
     }
     assert flagged == {"api/routes.py"}
+
+
+def _qdrant_imports(path: Path) -> set[str]:
+    return {
+        name
+        for name in _imported_modules(path)
+        if name == "qdrant_client" or name.startswith("qdrant_client.")
+    }
+
+
+@pytest.mark.parametrize(
+    "path", application_files(SRC), ids=lambda p: p.relative_to(SRC).as_posix()
+)
+def test_only_the_store_imports_the_qdrant_client(path: Path) -> None:
+    # DEC-19: every Qdrant call, and every error it can raise, goes through one module, so
+    # the store can change (DEC-3's pgvector, a cluster) behind a seam of one file.
+    found = _qdrant_imports(path)
+    if path.relative_to(SRC).as_posix() == "vectorstore.py":
+        assert found, "vectorstore.py no longer imports qdrant_client: is the scan blind?"
+    else:
+        assert found == set(), f"{path.name} imports {sorted(found)}; only vectorstore may"
+
+
+def test_the_qdrant_import_scan_catches_both_forms(tmp_path: Path) -> None:
+    # A negative control: a plain import and a from-import of a submodule both count.
+    (tmp_path / "a.py").write_text("import qdrant_client\n")
+    (tmp_path / "b.py").write_text("from qdrant_client.http import models\n")
+    (tmp_path / "c.py").write_text('"""Mentions qdrant_client in prose only."""\n')
+    assert [bool(_qdrant_imports(tmp_path / n)) for n in ("a.py", "b.py", "c.py")] == [
+        True,
+        True,
+        False,
+    ]

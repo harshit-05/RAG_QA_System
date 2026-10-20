@@ -100,8 +100,21 @@ prototype to production via a spec-driven story loop.
 - The stack runs on LangChain 1.x (DEC-1, migrated in S0-5); app code never
   imports `langchain_classic`, which arrives only transitively. Since S2-4 no
   `_target_` names it or `langchain_community`, and the `registry.py` allowlist
-  refuses both: the reranker is our own (`rag_qa.rerankers`, DEC-16).
-  `vectorstore.py` still imports FAISS from `langchain_community` until Phase 3.
+  refuses both: the reranker is our own (`rag_qa.rerankers`, DEC-16). Since S3-2
+  no module imports `langchain_community` at all; S3-3 removes it and `faiss-cpu`.
+
+- **The index lives in Qdrant** (DEC-19, since S3-2): the `qdrant` service of
+  `compose.yaml`, `qdrant/qdrant:v1.19.2-unprivileged` pinned by digest, on
+  127.0.0.1:6333 with its data in the `qdrant-storage` volume. Start it with
+  `docker compose up -d qdrant` before any `rag-ingest`, `rag-query`, `rag-serve` or
+  `rag-eval retrieval|generate`: each exits 2 without it. The alias is `rag_qa`;
+  a scratch index is `RAG_QDRANT_COLLECTION=<name>`, and `RAG_VECTOR_STORE_PATH` is
+  refused (caveat 9). The writer lock is `var/ingest.lock`, and it excludes only writers
+  sharing this `var/`: another checkout on this host (a fresh-clone e2e) gets
+  `RAG_QDRANT_COLLECTION=<name>` of its own, or the two can delete each other's new
+  generation (caveat 36). The unit suite needs no server;
+  `RAG_TEST_QDRANT_URL=http://127.0.0.1:6333 uv run pytest -m qdrant_server` runs the
+  server tests. v0.3's `vectorstore/` folder is no longer read.
 
 - Docker 29.9.0 installed (re-checked 2026-10-16). `gh` 2.101.0, authenticated as
   `harshit-05`; the token needs the `workflow` scope to push changes to

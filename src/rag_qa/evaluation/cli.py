@@ -5,7 +5,8 @@ Two tiers, by what can be computed where:
 - ``rag-eval retrieval`` scores retrieval against the golden set: tier 1, which CI
   recomputes on every pull request and every push to ``main``
   (:mod:`rag_qa.evaluation.retrieval`). It prints one row per answerable question, misses
-  first, then the means against their floors.
+  first, then the means against their floors. With ``--contexts-out`` it also writes the
+  contexts digest of every golden question, which proves two stores retrieve alike (S3-2).
 - Tier 2 runs offline, for hours, and is committed (S2-5):
   ``rag-eval generate`` answers every golden question through ``stream_answer``
   (:mod:`.generation`); ``rag-eval score`` scores those answers with RAGAs and a local
@@ -21,7 +22,8 @@ directory, as usual.
 
 Exit codes, for every command: **0** it ran and passed; **1** it ran and failed: a floor
 is missed, or (``check``) the committed run is stale; **2** it could not run: a bad
-config, dataset, thresholds or run file, no usable index, Ollama or the judge unusable,
+config, dataset, thresholds or run file, Qdrant unusable (``retrieval`` and ``generate``,
+which check it first), no usable index, Ollama or the judge unusable,
 a file it cannot write, a command-line usage error (as ``argparse`` uses), or any other
 error while running (printed with its traceback). So exit 1 only ever means a measured
 verdict, which is how CI reads it (S2-3's second review). ``generate`` and ``score``
@@ -44,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from rag_qa.chain import NoIndexError
+from rag_qa.components import build_store
 from rag_qa.config import ConfigError, load_config, resolve_config_path
 from rag_qa.evaluation.checkpoint import CheckpointError, checkpoint_path, discard
 from rag_qa.evaluation.dataset import ExpectedSource, GoldenItem, GoldenSetError, load_golden
@@ -72,13 +75,16 @@ from rag_qa.evaluation.gate import (
 from rag_qa.evaluation.generation import StaleIndexError, generate
 from rag_qa.evaluation.ragas_scoring import ScoreRequest, ScoringError, score
 from rag_qa.evaluation.retrieval import (
+    CONTEXTS_VERSION,
     ItemScore,
     RetrievalScores,
     aggregate,
+    context_record,
     evaluate_retrieval,
 )
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_CONFIG
+from rag_qa.vectorstore import StoreUnavailableError
 
 EXIT_OK = 0
 EXIT_FLOOR_MISSED = 1
@@ -119,6 +125,19 @@ def _crashed(what: str, error: Exception) -> int:
     sys.stdout.flush()
     traceback.print_exc()
     return _cannot_run(f"{what} could not run: {type(error).__name__}: {error}")
+
+
+def _store_problem(config: RagConfig) -> str | None:
+    """Why the vector store cannot be used, or ``None``: the first check of the commands
+    that read the index, ``retrieval`` and ``generate`` (DEC-19). ``check`` and ``score``
+    never touch it, and CI's model-free job has no Qdrant to ask."""
+    try:
+        store = build_store(config)
+        store.check()
+    except (ConfigError, StoreUnavailableError) as e:
+        return str(e)
+    store.close()
+    return None
 
 
 def _shown(path: Path) -> Path:
@@ -247,6 +266,8 @@ def run_retrieval(args: argparse.Namespace) -> int:
         config = load_config(config_file)
     except ConfigError as e:
         return _cannot_run(e)
+    if (problem := _store_problem(config)) is not None:
+        return _cannot_run(problem)
     dataset = Path(args.dataset) if args.dataset else eval_dir(config_file) / DATASET_FILE
     thresholds_file = (
         Path(args.thresholds) if args.thresholds else eval_dir(config_file) / THRESHOLDS_FILE
@@ -276,9 +297,15 @@ def run_retrieval(args: argparse.Namespace) -> int:
         f"Retriever: {query.retriever} {config.retriever(query.retriever).kwargs()}, "
         f"reranker: {reranking}"
     )
+    contexts: list[dict[str, Any]] = []
+    record = (
+        (lambda item, docs: contexts.append(context_record(item, docs, config.paths.data)))
+        if args.contexts_out
+        else None
+    )
     try:
-        scores = evaluate_retrieval(config, answerable)
-    except NoIndexError as e:
+        scores = evaluate_retrieval(config, items, record=record)
+    except (NoIndexError, StoreUnavailableError) as e:
         return _cannot_run(e)
     # Deliberately broad: whatever stops retrieval from running is "could not run",
     # never a floor verdict. Uncaught, it would exit 1, and CI reads exit 1 as "retrieval
@@ -299,6 +326,18 @@ def run_retrieval(args: argparse.Namespace) -> int:
             )
         except OSError as e:
             return _cannot_run(f"cannot write {args.json}: {e.strerror}")
+    if args.contexts_out:
+        written = {
+            "version": CONTEXTS_VERSION,
+            "items": sorted(contexts, key=lambda context: context["id"]),
+        }
+        try:
+            Path(args.contexts_out).write_text(
+                json.dumps(written, indent=2) + "\n", encoding="utf-8"
+            )
+        except OSError as e:
+            return _cannot_run(f"cannot write {args.contexts_out}: {e.strerror}")
+        print(f"\nWrote the contexts of {len(contexts)} questions to {args.contexts_out}.")
     shown = _shown(thresholds_file.resolve())
     if below:
         missed = "; ".join(
@@ -405,6 +444,8 @@ def run_generate(args: argparse.Namespace) -> int:
         setup = _setup(args)
     except _CannotRun as e:
         return _cannot_run(e)
+    if (problem := _store_problem(setup.config)) is not None:
+        return _cannot_run(problem)
     out = Path(args.out) if args.out else setup.eval_dir / RUNS_DIR / ANSWERS_FILE
     total = len(setup.golden) if args.limit is None else min(args.limit, len(setup.golden))
     print(
@@ -432,7 +473,7 @@ def run_generate(args: argparse.Namespace) -> int:
         ),
         kept,
         "generation",
-        (FingerprintError, NoIndexError, StaleIndexError),
+        (FingerprintError, NoIndexError, StaleIndexError, StoreUnavailableError),
     )
     if isinstance(run, int):
         return run
@@ -587,8 +628,9 @@ def build_parser() -> argparse.ArgumentParser:
         "the answerable questions, checked against the floors (tier 1). Needs the index and "
         "the embedder only.",
         epilog="Exit status: 0 every floor is met; 1 a floor is missed; 2 could not run "
-        "(no index; a bad config, dataset or thresholds file; a --json file that cannot be "
-        "written; a usage error; or any other error while retrieving, with its traceback).",
+        "(no index; a bad config, dataset or thresholds file; a --json or --contexts-out "
+        "file that cannot be written; a usage error; or any other error while retrieving, "
+        "with its traceback).",
     )
     retrieval.add_argument(
         "--config",
@@ -609,6 +651,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         metavar="OUT",
         help="also write the per-question results and the means to this JSON file",
+    )
+    retrieval.add_argument(
+        "--contexts-out",
+        metavar="OUT",
+        help="also write, for every golden question in id order, answerable or not, the "
+        "sha256 of the context its prompt gets and its citations: two runs whose files "
+        "are identical put the same prompts in front of the model",
     )
     retrieval.set_defaults(run=run_retrieval)
 

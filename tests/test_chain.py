@@ -18,12 +18,15 @@ from conftest import (
     StreamingFakeChatModel,
     StubCrossEncoder,
     edit_manifest,
+    generations,
     live_generation,
     use_fakes,
     use_fakes_and_reranker,
 )
 from langchain_core.documents import Document
+from qdrant_client import QdrantClient, models
 
+from rag_qa import vectorstore
 from rag_qa.answering import Sources, stream_answer
 from rag_qa.chain import (
     IncompatibleIndexError,
@@ -37,9 +40,10 @@ from rag_qa.chain import (
     open_retrieval,
 )
 from rag_qa.chain import live_generation as chain_live_generation
-from rag_qa.components import build_embedder, build_reranker
+from rag_qa.components import build_embedder, build_reranker, build_store
 from rag_qa.config import load_config
-from rag_qa.settings import ENV_VECTOR_STORE_PATH
+from rag_qa.ingest import ingest
+from rag_qa.manifest import Manifest
 
 
 def answer_from(pipeline: QueryPipeline) -> str:
@@ -99,10 +103,9 @@ def test_citation_falls_back_to_page_plus_one_without_a_label() -> None:
 
 
 def test_no_index_fails_before_any_model_is_built(
-    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "no-index"))
-    config = load_config(make_config(use_fakes))
+    config = load_config(make_config(use_fakes))  # the test's store holds no index
 
     def no_model(config: Any) -> None:
         raise AssertionError("an LLM was built for a pipeline that cannot answer")
@@ -120,24 +123,21 @@ def test_with_an_index_both_halves_are_built(fake_rag: Path) -> None:
 
 
 def test_open_retrieval_names_the_generation_it_opened_and_its_manifest(
-    fake_rag: Path,
+    fake_rag: Path, qdrant: QdrantClient
 ) -> None:
-    # What the API serves, lists and reports (S2-7): the generation the link pointed to,
-    # with that generation's own manifest.
+    # What the API serves, lists and reports (S2-7): the generation the alias named, with
+    # that generation's own manifest.
     config = load_config(fake_rag)
     opened = open_retrieval(config, build_embedder(config))
-    assert opened.generation == live_generation(config.paths.vector_store)
-    assert opened.generation == chain_live_generation(config)
-    assert opened.manifest.generation == opened.generation.name
+    assert opened.generation == live_generation(qdrant)
+    assert opened.generation == chain_live_generation(build_store(config))
+    assert opened.manifest.generation == opened.generation
     assert "guide.pdf" in opened.manifest.documents
     assert opened.retrieve.invoke("How many staff?")
 
 
-def test_without_an_index_there_is_no_live_generation(
-    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "no-index"))
-    assert chain_live_generation(load_config(make_config(use_fakes))) is None
+def test_without_an_index_there_is_no_live_generation(make_config: MakeConfig) -> None:
+    assert chain_live_generation(build_store(load_config(make_config(use_fakes)))) is None
 
 
 def test_a_reranker_passed_in_is_used_and_none_is_built(
@@ -175,55 +175,60 @@ def other_embedder(c: dict[str, Any]) -> None:
     c["components"]["embedders"]["fake"]["size"] = 16
 
 
-def test_a_v02_index_is_refused_before_any_model_is_built(
-    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_models: None
+@pytest.mark.parametrize("what", ["a collection", "an alias of something else"])
+def test_what_rag_ingest_will_not_touch_is_refused_without_sending_the_user_there(
+    make_config: MakeConfig, qdrant: QdrantClient, no_models: None, what: str
 ) -> None:
-    store = tmp_path / "index"  # v0.2's layout: a real folder, no manifest
-    store.mkdir()
-    (store / "index.faiss").write_bytes(b"")
-    (store / "index.pkl").write_bytes(b"")
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(store))
-    with pytest.raises(IncompatibleIndexError, match=r"built by v0\.2.*Re-run rag-ingest"):
+    # "Re-run rag-ingest" would only meet rag-ingest's own exit 2 here (S2-6's review).
+    qdrant.create_collection("theirs" if what != "a collection" else "rag_qa", vectors_config={})
+    if what != "a collection":
+        qdrant.update_collection_aliases(
+            change_aliases_operations=[
+                models.CreateAliasOperation(
+                    create_alias=models.CreateAlias(collection_name="theirs", alias_name="rag_qa")
+                )
+            ]
+        )
+    with pytest.raises(IncompatibleIndexError) as refused:
         build_query_pipeline(load_config(make_config(use_fakes)))
-
-
-@pytest.mark.parametrize(
-    ("what", "says"),
-    [("generation", "is an index generation folder"), ("file", "is a file, not an index")],
-)
-def test_what_rag_ingest_will_not_replace_is_refused_without_sending_the_user_there(
-    fake_rag: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    no_models: None,
-    what: str,
-    says: str,
-) -> None:
-    # "Re-run rag-ingest" would only meet rag-ingest's own exit 2 here (second review).
-    if what == "generation":
-        target = live_generation(load_config(fake_rag).paths.vector_store)
-    else:
-        target = tmp_path / "a-file"
-        target.write_text("someone's file")
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(target))
-    with pytest.raises(IncompatibleIndexError, match=says) as refused:
-        build_query_pipeline(load_config(fake_rag))
-    assert "Point paths.vector_store or RAG_VECTOR_STORE_PATH" in str(refused.value)
+    assert "Set RAG_QDRANT_COLLECTION" in str(refused.value)
     assert "Re-run rag-ingest" not in str(refused.value)
 
 
-def test_an_index_without_a_manifest_is_refused(fake_rag: Path, no_models: None) -> None:
+def test_an_index_without_a_manifest_is_refused(
+    fake_rag: Path, qdrant: QdrantClient, no_models: None
+) -> None:
     config = load_config(fake_rag)
-    (live_generation(config.paths.vector_store) / "manifest.json").unlink()
-    with pytest.raises(IncompatibleIndexError, match="has no manifest"):
+    qdrant.update_collection(live_generation(qdrant), metadata={"manifest": None})
+    with pytest.raises(IncompatibleIndexError, match="its manifest cannot be used: there is none"):
         build_query_pipeline(config)
 
 
-def test_an_index_with_an_unusable_manifest_is_refused(fake_rag: Path, no_models: None) -> None:
+def test_an_index_with_an_unusable_manifest_is_refused(
+    fake_rag: Path, qdrant: QdrantClient, no_models: None
+) -> None:
     config = load_config(fake_rag)
-    (live_generation(config.paths.vector_store) / "manifest.json").write_text("{oops")
-    with pytest.raises(IncompatibleIndexError, match="cannot be used: it is not valid JSON"):
+    edit_manifest(qdrant, lambda m: m.update(version=99))
+    with pytest.raises(IncompatibleIndexError, match="unknown manifest version 99"):
         build_query_pipeline(config)
+
+
+def test_a_live_collection_lost_names_the_complete_generation_to_point_the_alias_at(
+    fake_rag: Path, sample_corpus: Path, qdrant: QdrantClient, no_models: None
+) -> None:
+    # Design review 2: deleting the alias's target deletes the alias. The previous
+    # generation survives (recovery keeps complete ones), and "no index" names it.
+    config = load_config(fake_rag)
+    previous = live_generation(qdrant)
+    (sample_corpus / "late.txt").write_text("A second generation.\n")
+    ingest(config)
+    qdrant.delete_collection(live_generation(qdrant))
+    with pytest.raises(NoIndexError) as refused:
+        build_query_pipeline(config)
+    message = str(refused.value)
+    assert f"its generation {previous} is complete" in message
+    assert 'README, "Pointing the alias at a generation"' in message
+    assert not isinstance(refused.value, IncompatibleIndexError)
 
 
 def test_an_index_from_another_embedder_is_refused_before_any_model_is_built(
@@ -234,11 +239,10 @@ def test_an_index_from_another_embedder_is_refused_before_any_model_is_built(
 
 
 def test_build_rag_chain_refuses_an_unusable_index_before_any_model_is_built(
-    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_models: None
+    make_config: MakeConfig, no_models: None
 ) -> None:
-    # The invoke path (the RAGAs harness) built the LLM and the embedder first (second
-    # review): with Ollama down, the Ollama error hid the real one.
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "no-index"))
+    # The invoke path (the RAGAs harness) built the LLM and the embedder first (S2-6's
+    # second review): with Ollama down, the Ollama error hid the real one.
     with pytest.raises(NoIndexError, match="Run rag-ingest first"):
         build_rag_chain(load_config(make_config(use_fakes)))
 
@@ -253,31 +257,32 @@ def no_llm_or_reranker(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_a_dimension_mismatch_is_refused_before_the_llm(
-    fake_rag: Path, no_llm_or_reranker: None
+    fake_rag: Path, qdrant: QdrantClient, no_llm_or_reranker: None
 ) -> None:
     # It needs the embedder, but not Ollama: retrieval is built before the LLM.
     config = load_config(fake_rag)
-    edit_manifest(config.paths.vector_store, lambda m: m["embedder"].update(dimension=9))
+    edit_manifest(qdrant, lambda m: m["embedder"].update(dimension=9))
     with pytest.raises(IncompatibleIndexError, match="9-dimension"):
         build_query_pipeline(config)
 
 
-def test_an_index_that_will_not_open_is_refused_not_a_traceback(
-    fake_rag: Path, no_llm_or_reranker: None
+def test_an_incomplete_live_generation_is_refused_not_served(
+    fake_rag: Path, qdrant: QdrantClient, no_llm_or_reranker: None
 ) -> None:
-    # A corrupt pickle crashed rag-query with UnpicklingError (second review).
+    # The alias only ever names a complete generation; one pointed at another by hand is
+    # refused with the reason, rather than answered from (DEC-19).
     config = load_config(fake_rag)
-    (live_generation(config.paths.vector_store) / "index.pkl").write_bytes(b"not a pickle")
-    with pytest.raises(IncompatibleIndexError, match=r"cannot open the index.*UnpicklingError"):
+    qdrant.update_collection(live_generation(qdrant), metadata={"complete": False})
+    with pytest.raises(IncompatibleIndexError, match="it is incomplete"):
         build_query_pipeline(config)
 
 
 def test_a_dimension_the_index_does_not_hold_is_refused_before_the_reranker_loads(
-    fake_rag: Path, monkeypatch: pytest.MonkeyPatch
+    fake_rag: Path, qdrant: QdrantClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The identity's backstop: the same spec, but a model that now makes other vectors.
     config = load_config(fake_rag)
-    edit_manifest(config.paths.vector_store, lambda m: m["embedder"].update(dimension=9))
+    edit_manifest(qdrant, lambda m: m["embedder"].update(dimension=9))
 
     def no_model(*args: Any) -> None:
         raise AssertionError("the reranker loaded before the dimension was checked")
@@ -285,6 +290,92 @@ def test_a_dimension_the_index_does_not_hold_is_refused_before_the_reranker_load
     monkeypatch.setattr("rag_qa.chain.build_reranker", no_model)
     with pytest.raises(IncompatibleIndexError, match="9-dimension vectors.*makes 8-dimension"):
         build_retrieve(config, build_embedder(config))
+
+
+# --- readers and the alias (DEC-19, story step 8) --------------------------------------------
+
+
+def test_the_retrieval_half_resolves_the_alias_before_every_question(
+    fake_rag: Path, sample_corpus: Path, qdrant: QdrantClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # rag-query before each question, rag-eval before each item: a session that outlives
+    # an ingest searches the new generation, and one that outlives two still answers,
+    # although the generation it started on is gone by then.
+    config = load_config(fake_rag)
+    retrieve = build_retrieve(config, build_embedder(config))
+    searched: list[str] = []
+    real = vectorstore.search
+
+    def spy(store: Any, generation: str, vector: Any, k: int) -> Any:
+        searched.append(generation)
+        return real(store, generation, vector, k)
+
+    monkeypatch.setattr(vectorstore, "search", spy)
+    names = [live_generation(qdrant)]
+    assert retrieve.invoke("Staff?")
+    for name in ("penguins.txt", "terns.txt"):
+        (sample_corpus / name).write_text(f"{name} nest on Kestrel Island.\n")
+        ingest(config)
+        names.append(live_generation(qdrant))
+        assert retrieve.invoke("Staff?")
+    assert names[0] not in generations(qdrant)  # pruned two switches later
+    assert searched == names  # each question searched the generation live at the time
+
+
+def test_a_question_reads_the_alias_once_and_opens_nothing_when_it_has_not_moved(
+    fake_rag: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = load_config(fake_rag)
+    retrieve = build_retrieve(config, build_embedder(config))
+    opens: list[str] = []
+    real = open_retrieval
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        opens.append("open")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("rag_qa.chain.open_retrieval", counting)
+    for _ in range(3):
+        retrieve.invoke("Staff?")
+    assert opens == []
+
+
+def test_a_new_generation_is_heard_before_it_is_searched_and_may_be_refused(
+    fake_rag: Path, sample_corpus: Path
+) -> None:
+    # rag-eval generate holds a generation it moves to against the corpus it records.
+    config = load_config(fake_rag)
+    heard: list[Manifest] = []
+    retrieve = build_retrieve(config, build_embedder(config), on_new_generation=heard.append)
+    retrieve.invoke("q")
+    assert heard == []  # the first generation is the one it opened with
+    (sample_corpus / "late.txt").write_text("Late.\n")
+    ingest(config)
+    retrieve.invoke("q")
+    assert len(heard) == 1 and "late.txt" in heard[0].documents
+
+    def refuse(manifest: Manifest) -> None:
+        raise RuntimeError("not the corpus this run records")
+
+    refusing = build_retrieve(config, build_embedder(config), on_new_generation=refuse)
+    (sample_corpus / "later.txt").write_text("Later.\n")
+    ingest(config)
+    with pytest.raises(RuntimeError, match="not the corpus"):
+        refusing.invoke("q")
+
+
+def test_a_bound_half_whose_generation_is_gone_resolves_the_alias_once_more(
+    fake_rag: Path, sample_corpus: Path, qdrant: QdrantClient
+) -> None:
+    # The API's case: its half is bound to the generation it served, and two switches can
+    # delete that generation between the refresh and the search (design review 2).
+    config = load_config(fake_rag)
+    opened = open_retrieval(config, build_embedder(config))
+    for name in ("one.txt", "two.txt"):
+        (sample_corpus / name).write_text(f"{name}\n")
+        ingest(config)
+    assert opened.generation not in generations(qdrant)
+    assert opened.retrieve.invoke("Staff?")  # from the live generation, not an error
 
 
 def test_build_rag_chain_and_stream_answer_give_the_model_the_same_prompt(

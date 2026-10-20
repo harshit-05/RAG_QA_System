@@ -33,11 +33,13 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
 from langchain_ollama import ChatOllama
 from pydantic import Field
+from qdrant_client import QdrantClient
 
-from rag_qa import cli
+from rag_qa import cli, vectorstore
 from rag_qa.chain import QueryPipeline
 from rag_qa.cli import EXIT_CANNOT_START, EXIT_OK, HF_CACHE_HINT, describe_failure, repl
 from rag_qa.components import OLLAMA_HINT
+from rag_qa.vectorstore import QDRANT_HINT, StoreError, StoreUnavailableError
 
 CTRL_C = "ctrl-c"  # script: the user presses Ctrl-C once, mid-answer
 CTRL_C_TWICE = "ctrl-c twice"  # and again while the answer is unwinding
@@ -379,29 +381,51 @@ def test_help_does_no_work(monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None
     assert "--config" in capsys.readouterr().out
 
 
-def test_no_index_yet_says_to_run_rag_ingest(
-    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
-) -> None:
+def test_no_index_yet_says_to_run_rag_ingest(make_config: MakeConfig, capsys: Any) -> None:
     # The real build_query_pipeline: it raises NoIndexError before building any model.
-    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(tmp_path / "empty"))
-    assert cli.main(["--config", str(make_config())]) == EXIT_CANNOT_START
-    assert "Run rag-ingest first" in capsys.readouterr().err
-
-
-def test_a_v02_index_says_to_re_run_rag_ingest(
-    make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
-) -> None:
-    # Caveat 20: every index from before S2-6 has no manifest. The real build_query_pipeline
-    # refuses it before building any model, so no Ollama is needed for this.
-    store = tmp_path / "index"
-    store.mkdir()
-    (store / "index.faiss").write_bytes(b"")
-    (store / "index.pkl").write_bytes(b"")
-    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(store))
     assert cli.main(["--config", str(make_config())]) == EXIT_CANNOT_START
     err = capsys.readouterr().err
-    assert "no manifest" in err
-    assert "Re-run rag-ingest" in err
+    assert "Run rag-ingest first" in err
+    assert "v0.3" not in err  # no FAISS folder beside this config
+
+
+def test_no_index_with_v03_s_folder_still_there_says_it_is_no_longer_read(
+    make_config: MakeConfig, tmp_path: Path, capsys: Any
+) -> None:
+    # Caveat 20, from S3-2: v0.3's FAISS folder beside the config is never read again.
+    config = make_config()
+    (config.parent / "vectorstore" / "db_faiss.gen-20261005T080811.306241Z-3e556052").mkdir(
+        parents=True
+    )
+    assert cli.main(["--config", str(config)]) == EXIT_CANNOT_START
+    err = capsys.readouterr().err
+    assert "Run rag-ingest first" in err
+    assert f"v0.3's FAISS index in {config.parent / 'vectorstore'} is no longer read" in err
+    assert 'README, "Upgrading from v0.3"' in err
+
+
+def test_qdrant_down_is_one_message_with_the_hint_before_anything_else(
+    make_config: MakeConfig,
+    fake_ollama: FakeOllama,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    # Story step 10: a refused connection, through the real client, to a port nothing uses.
+    down = QdrantClient(url=dead_url(), check_compatibility=False, timeout=2)
+    monkeypatch.setattr(vectorstore, "connect", lambda *args, **kwargs: down)
+    monkeypatch.setattr(cli, "build_query_pipeline", _pipeline_must_not_be_built)
+    path = probe_config(make_config, fake_ollama.url)
+    assert cli.main(["--config", str(path)]) == EXIT_CANNOT_START
+    err = capsys.readouterr().err
+    assert "Error: cannot use Qdrant at" in err
+    assert QDRANT_HINT in err
+    assert "Traceback" not in err
+    assert fake_ollama.requests == []  # Qdrant first: Ollama was never asked
+
+
+def test_qdrant_lost_mid_session_keeps_the_session_and_says_so(capsys: Any) -> None:
+    error = StoreUnavailableError(f"cannot use Qdrant at http://q (ConnectError). {QDRANT_HINT}")
+    assert describe_failure(error, ScriptedModel()) == str(error)
 
 
 def test_an_index_from_another_embedder_says_to_rebuild(
@@ -450,7 +474,7 @@ def test_main_runs_the_session_with_the_built_pipeline(
     capsys: Any,
 ) -> None:
     model = ScriptedModel(script=["an answer"])
-    monkeypatch.setattr(cli, "build_query_pipeline", lambda config: fake_pipeline(model))
+    monkeypatch.setattr(cli, "build_query_pipeline", lambda config, **kw: fake_pipeline(model))
     # honoured: looked up at call time
     monkeypatch.setattr("builtins.input", scripted("a question"))
     path = probe_config(make_config, fake_ollama.url)  # over fake_rag's index
@@ -513,14 +537,9 @@ def test_a_language_model_that_cannot_be_built_stops_the_start_with_its_reason(
 
 
 def test_a_missing_index_is_refused_before_ollama_is_asked(
-    make_config: MakeConfig,
-    fake_ollama: FakeOllama,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: Any,
+    make_config: MakeConfig, fake_ollama: FakeOllama, capsys: Any
 ) -> None:
-    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(tmp_path / "empty"))
-    path = probe_config(make_config, fake_ollama.url)
+    path = probe_config(make_config, fake_ollama.url)  # the test's store holds no index
     assert cli.main(["--config", str(path)]) == EXIT_CANNOT_START
     assert "Run rag-ingest first" in capsys.readouterr().err
     assert fake_ollama.requests == []
@@ -556,16 +575,16 @@ def test_an_index_that_cannot_be_read_is_not_blamed_on_the_hf_cache(
     monkeypatch: pytest.MonkeyPatch,
     capsys: Any,
 ) -> None:
-    # S2-8's review: the one broad catch around the start used to give an OSError from the
+    # S2-8's review: the one broad catch around the start used to give an error from the
     # index check "cannot load the models" and the Hugging Face hint, which sent the reader
-    # to the wrong place.
-    def unreadable(config: Any) -> None:
-        raise PermissionError(13, "Permission denied", "manifest.json")
+    # to the wrong place. Since S3-2 the index check reads Qdrant, not files.
+    def unreadable(config: Any, **kwargs: Any) -> None:
+        raise StoreError("Qdrant at http://q answered 500: segment is corrupt")
 
     monkeypatch.setattr(cli, "check_index", unreadable)
     assert cli.main(["--config", str(make_config(use_fakes))]) == EXIT_CANNOT_START
     err = capsys.readouterr().err
-    assert "Error: cannot read the index: PermissionError: " in err
+    assert "Error: cannot read the index: Qdrant at http://q answered 500" in err
     assert "cannot load the models" not in err
     assert HF_CACHE_HINT not in err
     assert "Traceback" not in err
@@ -581,7 +600,7 @@ def test_an_index_that_cannot_be_read_is_not_blamed_on_the_hf_cache(
 def test_ctrl_c_while_loading_exits_2_without_a_traceback(
     fake_rag: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, where: str
 ) -> None:
-    def interrupted(config: Any) -> None:
+    def interrupted(config: Any, **kwargs: Any) -> None:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(where, interrupted)

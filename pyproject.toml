@@ -1,7 +1,7 @@
 [project]
 name = "rag-qa-system"
 version = "1.0.0.dev0"
-description = "Config-driven local RAG question-answering engine built on LangChain, FAISS and Ollama."
+description = "Config-driven local RAG question-answering engine built on LangChain, Qdrant and Ollama."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 authors = [{ name = "Harshit Deswal", email = "harshit.deswal@ilmfy.io" }]
@@ -25,6 +25,7 @@ dependencies = [
     "fastapi>=0.135",
     "uvicorn>=0.32.1",
     "requests>=2.34.2",   # scripts/fetch_dataset.py; declared, not left transitive (S2-8)
+    "qdrant-client>=1.19.1",   # the index (DEC-19, S3-2); only rag_qa.vectorstore imports it
 ]
 
 [project.scripts]
@@ -97,6 +98,18 @@ torch = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The hermetic suite runs Qdrant in process (DEC-19). A test that must hold for the real
+# server carries this marker, and is skipped unless RAG_TEST_QDRANT_URL names one: CI's
+# eval-retrieval job runs them against its service container (`pytest -m qdrant_server`).
+markers = [
+    "qdrant_server: needs a real Qdrant server at RAG_TEST_QDRANT_URL",
+]
+# Local mode's own notes that a server-only setting has no effect in it: true, and the
+# point of the qdrant_server tests. Matched by message, so any other warning still shows.
+filterwarnings = [
+    "ignore:Payload indexes have no effect in the local Qdrant:UserWarning",
+    "ignore:Local mode performs exact \\(brute-force\\) search:UserWarning",
+]
 
 # Lint (NFR-9, S1-6). Ruff 0.16's *default* rule set is broad (~790 rules: F, B,
 # UP, SIM, RUF, PL*, PERF, ...), so this extends it rather than replacing it with

@@ -25,15 +25,18 @@ session. A connection error from an Ollama model names Ollama, with a hint.
 in-session history: an arrow key moves the cursor instead of reaching the model as
 ``^[[A``.
 
-**Starting (S2-8).** :func:`start` refuses an unusable index from its files alone, then
-asks whether the language model's server answers (:func:`rag_qa.components.preflight`,
-the check ``rag-serve`` runs), then loads the models. A failure in any of them, or a
-Ctrl-C while they load, is one message and exit 2, not a traceback.
+**Starting (S2-8, S3-2).** :func:`start` asks Qdrant first, then refuses an unusable index
+from its metadata alone, then asks whether the language model's server answers
+(:func:`rag_qa.components.preflight`, the check ``rag-serve`` runs), then loads the
+models. A failure in any of them, or a Ctrl-C while they load, is one message and exit 2,
+not a traceback. Once the session runs, the alias is resolved again before every question
+(DEC-19), so an ingest made meanwhile is answered from, and a session never outlives the
+generation it started on.
 
 ``rag-query`` exit codes: **0** the session ended normally; **2** it could not start
-(configuration problem, no index yet, an index this config cannot use, the language
-model's server not answering, a model that would not load, Ctrl-C while loading, or a
-command-line usage error). An index it cannot use is a v0.2 one, or one built with another
+(configuration problem, Qdrant unusable, no index yet, an index this config cannot use,
+the language model's server not answering, a model that would not load, Ctrl-C while
+loading, or a command-line usage error). An index it cannot use is one built with another
 embedder (DEC-17): it says to re-run ``rag-ingest``, before loading any model.
 """
 
@@ -42,16 +45,24 @@ import asyncio
 import readline  # noqa: F401  # for its side effect: input() gains line editing and history
 import sys
 from collections.abc import AsyncIterator, Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
 from rag_qa.answering import AnswerEvent, SourceRef, Sources, Token, stream_answer
-from rag_qa.chain import NoIndexError, QueryPipeline, build_query_pipeline, check_index
-from rag_qa.components import OLLAMA_HINT, preflight
-from rag_qa.config import ConfigError, load_config
+from rag_qa.chain import (
+    IncompatibleIndexError,
+    NoIndexError,
+    QueryPipeline,
+    build_query_pipeline,
+    check_index,
+)
+from rag_qa.components import OLLAMA_HINT, build_store, preflight
+from rag_qa.config import ConfigError, load_config, resolve_config_path
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_CONFIG
+from rag_qa.vectorstore import StoreError, StoreUnavailableError
 
 GREEN, YELLOW, BLUE, RED, DIM, RESET = (
     "\033[92m",
@@ -71,6 +82,22 @@ HF_CACHE_HINT = (
     "If this machine is offline, a model may be missing from the Hugging Face cache: run "
     "rag-query once with network to fetch it."
 )
+
+#: Shown under "no index" while v0.3's FAISS folder is still beside the config (DEC-19).
+LEGACY_INDEX_HINT = (
+    "v0.3's FAISS index in {folder} is no longer read: since 1.0 the index lives in "
+    'Qdrant. Run rag-ingest to build it there, then delete {folder} (README, "Upgrading '
+    'from v0.3").'
+)
+
+
+def legacy_index_hint(config_dir: Path | None) -> str | None:
+    """:data:`LEGACY_INDEX_HINT` when v0.3's ``vectorstore/db_faiss*`` is beside the config
+    file, where v0.3's default ``paths.vector_store`` put it; ``None`` otherwise."""
+    folder = None if config_dir is None else config_dir / "vectorstore"
+    if folder is None or not any(folder.glob("db_faiss*")):
+        return None
+    return LEGACY_INDEX_HINT.format(folder=folder)
 
 
 def question_prompt() -> str:
@@ -141,6 +168,8 @@ def describe_failure(error: Exception, llm: BaseChatModel) -> str:
     """A failed answer's error line. A connection error from an Ollama model names Ollama
     and adds :data:`~rag_qa.components.OLLAMA_HINT`: httpx's own text does not say what it
     could not reach."""
+    if isinstance(error, StoreError):  # Qdrant's: worded for the user, the hint included
+        return str(error)
     text = f"{type(error).__name__}: {error}"
     if _connection_failed(error) and type(llm).__module__.startswith("langchain_ollama"):
         return f"the connection to Ollama failed ({text})\n{OLLAMA_HINT}"
@@ -275,9 +304,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="rag-query",
         description="Ask questions about the indexed corpus in an interactive session.",
         epilog="Exit status: 0 session ended normally; 2 could not start "
-        "(configuration error, no index yet, an index this config cannot use, the language "
-        "model's server not answering, a model that would not load, Ctrl-C while loading, "
-        "or usage error).",
+        "(configuration error, Qdrant unusable, no index yet, an index this config cannot "
+        "use, the language model's server not answering, a model that would not load, "
+        "Ctrl-C while loading, or usage error).",
     )
     parser.add_argument(
         "--config",
@@ -287,38 +316,47 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def start(config: RagConfig) -> QueryPipeline | str:
+def start(config: RagConfig, config_dir: Path | None = None) -> QueryPipeline | str:
     """The session's pipeline, or why the session cannot start (exit 2).
 
     Cheapest first, so a refusal never waits on a later step:
 
-    1. the index, from its files alone (:class:`NoIndexError`, or its
-       ``IncompatibleIndexError``): otherwise a missing index would surface as FAISS's
-       "could not open ... for reading", and one from another embedder would answer with
-       wrong chunks;
-    2. the language model's server (:func:`~rag_qa.components.preflight`): Ollama down, or
+    1. Qdrant (:meth:`~rag_qa.vectorstore.QdrantStore.check`), before anything else
+       (DEC-19);
+    2. the index, from its metadata alone (:class:`NoIndexError`, or its
+       ``IncompatibleIndexError``): one from another embedder would answer with wrong
+       chunks. "No index" mentions v0.3's FAISS folder when it is still beside the config
+       file, in ``config_dir``;
+    3. the language model's server (:func:`~rag_qa.components.preflight`): Ollama down, or
        a model it lacks, before the embedder and the reranker take seconds to load;
-    3. the models, in :func:`build_query_pipeline`.
+    4. the models, in :func:`build_query_pipeline`.
 
     Only the start is guarded here; once the session runs, :func:`ask` handles each
     failed answer (ISS-06). A Ctrl-C propagates, for :func:`main` to report.
     """
     try:
-        check_index(config)  # build_query_pipeline checks again; a few small reads
-    except NoIndexError as e:
+        store = build_store(config)
+        store.check()
+    except (ConfigError, StoreUnavailableError) as e:
         return str(e)
-    # The manifest or the link could not be read. Apart from the model catch below, so that
-    # its Hugging Face hint is not shown for a problem with the index (S2-8's review).
-    except OSError as e:
-        return f"cannot read the index: {type(e).__name__}: {e}"
+    try:
+        check_index(config, store=store)  # build_query_pipeline checks again; a few reads
+    except IncompatibleIndexError as e:
+        return str(e)
+    except NoIndexError as e:
+        hint = legacy_index_hint(config_dir)
+        return str(e) if hint is None else f"{e}\n{hint}"
+    # Qdrant's answer could not be used. Apart from the model catch below, so that its
+    # Hugging Face hint is not shown for a problem with the index (S2-8's review).
+    except StoreError as e:
+        return f"cannot read the index: {e}"
     try:
         problem = preflight(config)
         if problem is not None:
             return problem
-        return build_query_pipeline(config)
-    # From the checks that need the embedder: the dimension, and an index that will not
-    # open.
-    except NoIndexError as e:
+        return build_query_pipeline(config, store=store)
+    # From the check that needs the embedder, the dimension; and Qdrant gone since.
+    except (NoIndexError, StoreError) as e:
         return str(e)
     # Deliberately broad, as preflight is: whatever stops the models loading (a model
     # missing from the HF cache offline, Ollama gone since the check) stops the session
@@ -341,7 +379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print("Loading vector store and models...")
     try:
-        started = start(config)
+        started = start(config, resolve_config_path(args.config).resolve().parent)
     # Ctrl-C while the models load: the user chose to leave, so no traceback. During the
     # start-up check's ping, its asyncio.run raises KeyboardInterrupt, or CancelledError as
     # ask() describes; both mean the same.

@@ -13,12 +13,19 @@ answer kept apart:
 
     chain.invoke({"question": q}) -> {"question": str, "context": list[Document], "answer": str}
 
+**Reading a Qdrant index (DEC-19).** A retrieval half binds to the generation it resolved,
+never to the alias, so a switch mid-question cannot mix two generations. A generation is
+deleted two switches later, so a reader that lives longer than that resolves the alias
+again: :func:`build_retrieve`'s, which ``rag-query`` and ``rag-eval`` use, before every
+question, and the API before every request (:mod:`rag_qa.api.state`). A search whose
+generation has gone resolves it once more.
+
 Imports come only from ``langchain_core`` plus our own modules (DEC-1 rule 1). None
 of the legacy chain helpers: the ``RetrievalQA`` this replaces now lives only in the
 maintenance-mode "classic" package, which application code never imports.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from operator import itemgetter
 from pathlib import Path
@@ -31,10 +38,28 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrough
 
-from rag_qa.components import aclose_llm, build_embedder, build_llm, build_reranker
+from rag_qa.components import (
+    aclose_llm,
+    build_embedder,
+    build_llm,
+    build_reranker,
+    build_store,
+)
 from rag_qa.manifest import Manifest, embedder_identity
 from rag_qa.schema import RagConfig
-from rag_qa.vectorstore import NO_INDEX, generation_path, in_the_way, live_index, open_store
+from rag_qa.vectorstore import (
+    NO_INDEX,
+    GenerationGoneError,
+    QdrantStore,
+    in_the_way,
+    live_index,
+    newest_complete,
+    retriever,
+)
+
+#: Where README says how to point the alias at a named generation, which the "no index"
+#: message cites when a complete generation has lost its alias (DEC-19).
+POINT_THE_ALIAS = 'README, "Pointing the alias at a generation"'
 
 
 class NoIndexError(Exception):
@@ -44,77 +69,89 @@ class NoIndexError(Exception):
 class IncompatibleIndexError(NoIndexError):
     """There is an index, but not one this config can use: re-run ``rag-ingest``.
 
-    It was built by v0.2, with no manifest to say which embedder made it, or by a different
-    embedder, whose vectors cannot be compared with the config's (DEC-17). A subclass of
-    :class:`NoIndexError`, so every front end that refuses a missing index refuses this one
-    the same way: ``rag-query`` and ``rag-eval`` exit 2, and the API counts it as no index
-    (DEC-18).
+    It was built by a different embedder, whose vectors cannot be compared with the
+    config's (DEC-17), or its live generation cannot be used, or something in Qdrant takes
+    the alias's name. A subclass of :class:`NoIndexError`, so every front end that refuses
+    a missing index refuses this one the same way: ``rag-query`` and ``rag-eval`` exit 2,
+    and the API counts it as no index (DEC-18).
     """
 
 
-def check_index(config: RagConfig) -> tuple[Path, Manifest]:
-    """The live index generation and its manifest, once the manifest shows the config can
-    use it (DEC-17).
+def check_index(config: RagConfig, *, store: QdrantStore | None = None) -> tuple[str, Manifest]:
+    """The live generation and its manifest, once the manifest shows the config can use it.
 
-    Reads small files only and loads no model, so a front end refuses an unusable index
-    before it builds the embedder, the reranker or the LLM. Raises :class:`NoIndexError`
-    when there is no index, and :class:`IncompatibleIndexError` when there is one this
-    config cannot use: something ``rag-ingest`` will not write over
-    (:func:`rag_qa.vectorstore.in_the_way`), then the rule
+    Reads the alias and one generation's metadata, and loads no model, so a front end
+    refuses an unusable index before it builds the embedder, the reranker or the LLM.
+    Raises :class:`NoIndexError` when there is no index, and :class:`IncompatibleIndexError`
+    when there is one this config cannot use: something ``rag-ingest`` will not switch
+    away from (:func:`rag_qa.vectorstore.in_the_way`), then the rule
     :func:`rag_qa.vectorstore.live_index` shares with ``rag-ingest``, then the embedder's
-    identity. The dimension, the identity's backstop,
-    needs the embedder, so :func:`build_retrieve` checks it.
+    identity. The dimension, the identity's backstop, needs the embedder, so
+    :func:`open_retrieval` checks it. Raises the store's errors when Qdrant cannot be used.
     """
-    store = config.paths.vector_store
+    store = store if store is not None else build_store(config)
     blocked = in_the_way(store)
     if blocked is not None:
-        # Not "re-run rag-ingest": it refuses to write over whatever this is (second review).
+        # Not "re-run rag-ingest": it refuses to touch whatever this is (S2-6's review).
         raise IncompatibleIndexError(
-            f"'{store}' {blocked}, so there is no index to use. Point paths.vector_store "
-            f"or RAG_VECTOR_STORE_PATH at the index rag-ingest wrote, or move this aside "
-            f"and run rag-ingest."
+            f"{store.where} {blocked}, so there is no index to use. Set "
+            f"RAG_QDRANT_COLLECTION to the alias rag-ingest publishes, or remove this from "
+            f"Qdrant and run rag-ingest."
         )
     found = live_index(store)
     if found == NO_INDEX:
-        raise NoIndexError(
-            f"no index at '{store}'. Run rag-ingest first to build it from the corpus "
-            f"(with the same RAG_VECTOR_STORE_PATH, for a scratch index)."
-        )
+        raise NoIndexError(_no_index(store))
     if isinstance(found, str):
         raise IncompatibleIndexError(
-            f"cannot use the index at '{store}': {found}. Re-run rag-ingest to rebuild it."
+            f"cannot use the index in {store.where}: {found}. Re-run rag-ingest to rebuild it."
         )
     generation, manifest = found
     ref = config.pipeline.ingestion.embedder
     if manifest.embedder.identity != embedder_identity(config.component(ref).spec()):
         then = f"{ref} as it was then" if manifest.embedder.ref == ref else manifest.embedder.ref
         raise IncompatibleIndexError(
-            f"the index at '{store}' was built with a different embedder ({then}) than the "
-            f"config's ({ref}), and their vectors cannot be compared. Re-run rag-ingest "
+            f"the index in {store.where} was built with a different embedder ({then}) than "
+            f"the config's ({ref}), and their vectors cannot be compared. Re-run rag-ingest "
             f"--rebuild to rebuild it with {ref}."
         )
     return generation, manifest
 
 
-def live_generation(config: RagConfig) -> Path | None:
-    """The generation the index path links to now, or ``None`` when it links to none.
+def _no_index(store: QdrantStore) -> str:
+    """Why there is no index, and what to do: ingest, or point the alias back at the
+    newest complete generation when one survived its live collection (DEC-19)."""
+    complete = newest_complete(store)
+    if complete is not None:
+        return (
+            f"no index is published as {store.where}, but its generation {complete} is "
+            f"complete: the live collection may have been deleted, which deletes the alias "
+            f"with it. Point the alias at {complete} to serve it again ({POINT_THE_ALIAS}), "
+            f"or run rag-ingest to publish a new one."
+        )
+    return (
+        f"no index in {store.where}. Run rag-ingest first to build it from the corpus "
+        f"(with the same RAG_QDRANT_COLLECTION, for a scratch index)."
+    )
 
-    A few system calls, with no file read: cheap enough for the API to call before every
-    request, to notice that an ingest run outside it flipped a new generation in (DEC-18).
-    The link is read however it is written, so a hand-made one never looks like a change.
+
+def live_generation(store: QdrantStore) -> str | None:
+    """The generation the alias names now, or ``None`` when there is no alias.
+
+    One small request (``GET /aliases``), cheap enough for the API to make before every
+    request, to notice that an ingest run outside it switched a new generation in.
     """
-    return generation_path(config.paths.vector_store)
+    return store.alias_target()
 
 
-def _check_dimension(embeddings: Embeddings, manifest: Manifest, store: Path) -> None:
+def _check_dimension(embeddings: Embeddings, manifest: Manifest, store: QdrantStore) -> None:
     """The identity's backstop (DEC-17): the configured embedder must make vectors of the
     size the index holds. One probe embedding."""
     size = len(embeddings.embed_query("dimension check"))
     if size != manifest.embedder.dimension:
         raise IncompatibleIndexError(
-            f"the index at '{store}' holds {manifest.embedder.dimension}-dimension vectors, "
-            f"but the configured embedder makes {size}-dimension ones. Re-run rag-ingest "
-            f"--rebuild."
+            f"the index in {store.where} holds {manifest.embedder.dimension}-dimension "
+            f"vectors, but the configured embedder makes {size}-dimension ones. Re-run "
+            f"rag-ingest --rebuild."
         )
 
 
@@ -175,8 +212,36 @@ class Retrieval:
     manifest: what the API serves, lists and reports (DEC-18)."""
 
     retrieve: Runnable[str, list[Document]]
-    generation: Path  # the generation folder it opened, as live_generation() names it
+    generation: str  # the generation it is bound to, as live_generation() names it
     manifest: Manifest
+    reranker: BaseDocumentCompressor | None = None  # the one it reranks with, for a reopen
+
+
+def _checked(config: RagConfig, store: QdrantStore, embeddings: Embeddings) -> tuple[str, Manifest]:
+    """The live generation and its manifest, once the config can use them, the dimension
+    included: everything a refusal needs, before any reranker loads."""
+    generation, manifest = check_index(config, store=store)
+    _check_dimension(embeddings, manifest, store)
+    return generation, manifest
+
+
+def _bound(
+    config: RagConfig,
+    store: QdrantStore,
+    generation: str,
+    embeddings: Embeddings,
+    reranker: BaseDocumentCompressor | None,
+) -> Runnable[str, list[Document]]:
+    """A retrieval half bound to ``generation``: the retriever, then the reranker if any."""
+    query = config.pipeline.query
+    spec = config.retriever(query.retriever)
+    # With a reranker, the retriever fetches its candidates in place of its own k (DEC-16);
+    # the schema requires reranker_candidates whenever a reranker is configured.
+    k = spec.k()
+    if reranker is not None and query.reranker_candidates is not None:
+        k = query.reranker_candidates
+    found = retriever(store, generation, embeddings, spec.kwargs(), k=k)
+    return found if reranker is None else _rerank_after(found, reranker)
 
 
 def open_retrieval(
@@ -184,6 +249,7 @@ def open_retrieval(
     embeddings: Embeddings,
     *,
     reranker: BaseDocumentCompressor | None = None,
+    store: QdrantStore | None = None,
 ) -> Retrieval:
     """The retrieval half: the configured retriever over the index, then the reranker if any.
 
@@ -203,31 +269,33 @@ def open_retrieval(
     Raises :class:`NoIndexError` or :class:`IncompatibleIndexError` before the reranker
     loads (:func:`check_index`, then the dimension). ``embeddings`` is built by then, so
     callers that build it run :func:`check_index` first, as :func:`build_query_pipeline`
-    and tier 1 do. It opens the generation it checked, not the symlink, so a flip in
-    between cannot pair one generation's manifest with another's index.
+    and tier 1 do.
+
+    **Bound to the generation it checked**, never to the alias, so a switch in between
+    cannot pair one generation's manifest with another's points (DEC-19). When a search
+    finds that generation gone, deleted two switches later, the half resolves the alias
+    once more, checks the generation it names as above, and searches that; it never
+    retries the search it lost. ``generation`` and ``manifest`` stay what was opened.
     """
-    store = config.paths.vector_store
-    generation, manifest = check_index(config)
-    _check_dimension(embeddings, manifest, store)
-    try:
-        index = open_store(embeddings, generation)
-    # Deliberately broad, and re-raised: whatever stops a generation opening (a corrupt
-    # pickle, FAISS's own errors) has one remedy, rebuilding it, and deserves a refusal
-    # rather than a traceback. rag-ingest rebuilds such an index on its own next run.
-    except Exception as e:
-        raise IncompatibleIndexError(
-            f"cannot open the index at '{store}' ({type(e).__name__}: {e}). Re-run "
-            f"rag-ingest to rebuild it."
-        ) from e
-    query = config.pipeline.query
+    store = store if store is not None else build_store(config)
+    generation, manifest = _checked(config, store, embeddings)
     if reranker is None:
         reranker = build_reranker(config)
-    kwargs = config.retriever(query.retriever).kwargs()  # a fresh copy, so safe to change
-    if reranker is not None:
-        kwargs["search_kwargs"]["k"] = query.reranker_candidates
-    retriever: Runnable[str, list[Document]] = index.as_retriever(**kwargs)
-    retrieve = retriever if reranker is None else _rerank_after(retriever, reranker)
-    return Retrieval(retrieve=retrieve, generation=generation, manifest=manifest)
+    bound = _bound(config, store, generation, embeddings, reranker)
+
+    def retrieve(question: str) -> list[Document]:
+        try:
+            return bound.invoke(question)
+        except GenerationGoneError:
+            again, _ = _checked(config, store, embeddings)
+            return _bound(config, store, again, embeddings, reranker).invoke(question)
+
+    return Retrieval(
+        retrieve=RunnableLambda(retrieve),
+        generation=generation,
+        manifest=manifest,
+        reranker=reranker,
+    )
 
 
 def build_retrieve(
@@ -235,9 +303,33 @@ def build_retrieve(
     embeddings: Embeddings,
     *,
     reranker: BaseDocumentCompressor | None = None,
+    store: QdrantStore | None = None,
+    on_new_generation: Callable[[Manifest], None] | None = None,
 ) -> Runnable[str, list[Document]]:
-    """:func:`open_retrieval`'s retrieval half alone, for callers that need nothing else."""
-    return open_retrieval(config, embeddings, reranker=reranker).retrieve
+    """A retrieval half that resolves the alias again before every question (DEC-19).
+
+    For a reader that may outlive two ingests: ``rag-query``'s session and ``rag-eval``.
+    Each question costs one ``GET /aliases``. When the alias has moved, the new generation
+    is opened as :func:`open_retrieval` opens one: its manifest read once, the embedder
+    and the dimension checked, the reranker reused; and ``on_new_generation`` hears its
+    manifest first, and may refuse it by raising. Otherwise the question searches the
+    generation already open. Raises what :func:`open_retrieval` raises, at the start and
+    whenever the alias has moved.
+    """
+    store = store if store is not None else build_store(config)
+    opened = open_retrieval(config, embeddings, reranker=reranker, store=store)
+    reranker = opened.reranker  # built once, by the first open, and reused on every reopen
+
+    def retrieve(question: str) -> list[Document]:
+        nonlocal opened
+        if store.alias_target() != opened.generation:
+            moved = open_retrieval(config, embeddings, reranker=reranker, store=store)
+            if on_new_generation is not None:
+                on_new_generation(moved.manifest)
+            opened = moved
+        return opened.retrieve.invoke(question)
+
+    return RunnableLambda(retrieve)
 
 
 def _rerank_after(
@@ -269,24 +361,34 @@ def build_prompt(config: RagConfig) -> ChatPromptTemplate:
     )
 
 
-def build_query_pipeline(config: RagConfig) -> QueryPipeline:
+def build_query_pipeline(
+    config: RagConfig,
+    *,
+    store: QdrantStore | None = None,
+    on_new_generation: Callable[[Manifest], None] | None = None,
+) -> QueryPipeline:
     """Build both halves of an answer from a loaded config (the CLI and evaluation).
 
     A missing index raises :class:`NoIndexError`, and one the config cannot use
     :class:`IncompatibleIndexError`. The manifest's refusals come before any model is
-    built. The dimension and an index that will not open need the embedder, but are still
-    refused before the reranker and the LLM: retrieval is built first, so a refusal never
-    waits on Ollama. The API, which must start without an index, composes its pipeline
-    from :func:`open_retrieval`, :func:`build_prompt` and the LLM itself (S2-7).
+    built. The dimension needs the embedder, but is still refused before the reranker and
+    the LLM: retrieval is built first, so a refusal never waits on Ollama. The retrieval
+    half resolves the alias before every question (:func:`build_retrieve`, which
+    ``on_new_generation`` is passed to). The API, which must start without an index,
+    composes its pipeline from :func:`open_retrieval`, :func:`build_prompt` and the LLM
+    itself (S2-7).
 
     Cannot mutate ``config``: it is frozen, and every component dict used here is a
     fresh copy from ``spec()`` / ``kwargs()``. Deliberately silent (no progress
     prints); front ends print their own progress.
     """
-    check_index(config)  # files only, so nothing has loaded when it refuses
+    store = store if store is not None else build_store(config)
+    check_index(config, store=store)  # metadata only, so nothing has loaded when it refuses
     # The same embedder ingestion used — build_embedder is the one place that choice is
     # made (see rag_qa.components).
-    retrieve = build_retrieve(config, build_embedder(config))
+    retrieve = build_retrieve(
+        config, build_embedder(config), store=store, on_new_generation=on_new_generation
+    )
     return QueryPipeline(
         retrieve=retrieve,
         prompt=build_prompt(config),
@@ -309,8 +411,9 @@ def build_rag_chain(config: RagConfig) -> Runnable[dict[str, str], dict[str, Any
     then ``answer`` token by token. Refuses an unusable index as
     :func:`build_query_pipeline` does, before the embedder and the LLM.
     """
-    check_index(config)  # before the embedder: build_retrieve's own check comes after it
-    retrieve = build_retrieve(config, build_embedder(config))
+    store = build_store(config)
+    check_index(config, store=store)  # before the embedder: build_retrieve's comes after it
+    retrieve = build_retrieve(config, build_embedder(config), store=store)
     llm = build_llm(config)
     to_prompt_inputs: RunnableLambda[dict[str, Any], dict[str, str]] = RunnableLambda(
         lambda x: {"context": format_docs(x["context"]), "question": x["question"]}

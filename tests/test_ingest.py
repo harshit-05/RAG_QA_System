@@ -1,9 +1,9 @@
 """rag-ingest's error policy and CLI surface (S1-4: ISS-05, NFR-7).
 
 These run the real ``main()`` end to end — discovery, loading, splitting, embedding,
-saving a FAISS index — with a deterministic fake embedder, so no model download.
-Both RAG_DATA_PATH and RAG_VECTOR_STORE_PATH always point at scratch: the real
-index must never be touched by a test.
+publishing a generation — with a deterministic fake embedder, so no model download.
+RAG_DATA_PATH points at scratch, and the store is the test's own in-memory Qdrant
+(conftest's ``qdrant``): the real index must never be touched by a test.
 """
 
 import logging
@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import MakeConfig, use_fake_embedder
+from conftest import MakeConfig, published, use_fake_embedder
+from qdrant_client import QdrantClient
 
 from rag_qa.config import load_config
 from rag_qa.ingest import (
@@ -28,24 +29,21 @@ from rag_qa.ingest import (
     scan_corpus,
 )
 from rag_qa.loaders import PdfLoader
-from rag_qa.vectorstore import store_exists
 
 
 @pytest.fixture
-def run(make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
-    """Run ``rag-ingest --config <scratch config>`` over ``corpus``; return (status, index dir)."""
+def run(make_config: MakeConfig, qdrant: QdrantClient, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Run ``rag-ingest --config <scratch config>`` over ``corpus``; return (status, store)."""
 
-    def run_ingest(corpus: Path, edit: Any = None) -> tuple[int, Path]:
-        index = tmp_path / "index"
+    def run_ingest(corpus: Path, edit: Any = None) -> tuple[int, QdrantClient]:
         monkeypatch.setenv("RAG_DATA_PATH", str(corpus))
-        monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(index))
 
         def edits(c: dict[str, Any]) -> None:
             use_fake_embedder(c)
             if edit:
                 edit(c)
 
-        return main(["--config", str(make_config(edits))]), index
+        return main(["--config", str(make_config(edits))]), qdrant
 
     return run_ingest
 
@@ -54,9 +52,9 @@ def run(make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
 
 def test_clean_run_exits_0_and_saves_the_index(run: Any, sample_corpus: Path, capsys: Any) -> None:
-    status, index = run(sample_corpus)
+    status, store = run(sample_corpus)
     assert status == EXIT_OK
-    assert store_exists(index)
+    assert published(store)
     assert "Ingestion Complete" in capsys.readouterr().out
 
 
@@ -65,11 +63,11 @@ def test_one_corrupt_document_is_reported_does_not_abort_and_fails_the_run(
 ) -> None:
     # NFR-7: the other documents are still indexed; the run still fails.
     (sample_corpus / "broken.pdf").write_bytes(b"%PDF-1.4 this is not really a pdf")
-    status, index = run(sample_corpus)
+    status, store = run(sample_corpus)
     out, err = capsys.readouterr()
 
     assert status == EXIT_RUN_FAILED
-    assert store_exists(index)  # rebuilt from the rest
+    assert published(store)  # rebuilt from the rest
     assert "Loaded 7 document pages/sections" in out  # 3 PDF pages + 4 single-doc files
     assert "Failed 1 item(s)." in out
     # The exception type is recorded. Which pypdf error it is (PdfStreamError here)
@@ -82,9 +80,9 @@ def test_nothing_to_index_exits_1(run: Any, tmp_path: Path, capsys: Any) -> None
     corpus = tmp_path / "only-images"
     corpus.mkdir()
     (corpus / "diagram.png").write_bytes(b"\x89PNG")
-    status, index = run(corpus)
+    status, store = run(corpus)
     assert status == EXIT_RUN_FAILED
-    assert not store_exists(index)
+    assert not published(store)
     assert "No documents were loaded" in capsys.readouterr().err
 
 
@@ -114,13 +112,13 @@ def test_an_unreadable_corpus_directory_exits_2_like_a_missing_one(
     corpus = tmp_path / "locked"
     corpus.mkdir()
     unreadable(corpus)
-    status, index = run(corpus)
+    status, _ = run(corpus)
     out, err = capsys.readouterr()
     assert status == EXIT_CANNOT_START
     assert f"Error: Corpus directory not readable: {corpus} (Permission denied; set by " in err
     assert "Traceback" not in err
     assert "./" not in out
-    assert not index.parent.joinpath("index.lock").exists()  # refused before the lock
+    assert not (tmp_path / "var" / "ingest.lock").exists()  # refused before the lock
 
 
 def test_a_loader_that_cannot_be_built_is_a_config_error_not_a_document_failure(
@@ -137,13 +135,11 @@ def test_a_loader_that_cannot_be_built_is_a_config_error_not_a_document_failure(
     assert "encodng" in err
 
 
-def test_help_does_no_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any) -> None:
-    index = tmp_path / "index"
-    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(index))
+def test_help_does_no_work(tmp_path: Path, qdrant: QdrantClient, capsys: Any) -> None:
     with pytest.raises(SystemExit) as exc:
         main(["--help"])
     assert exc.value.code == 0
-    assert not index.exists()
+    assert not published(qdrant) and not (tmp_path / "var").exists()
     out = capsys.readouterr().out
     assert "--config" in out and "Exit status" in out
     # A crash also exits 1 (Python's default); the contract says so rather than
@@ -160,17 +156,19 @@ def test_config_flag_beats_rag_config(
 
 
 def test_ctrl_c_is_not_swallowed_as_a_document_failure(
-    sample_corpus: Path, make_config: MakeConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    sample_corpus: Path,
+    make_config: MakeConfig,
+    qdrant: QdrantClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def interrupted(self: PdfLoader) -> list:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(PdfLoader, "load", interrupted)
     monkeypatch.setenv("RAG_DATA_PATH", str(sample_corpus))
-    monkeypatch.setenv("RAG_VECTOR_STORE_PATH", str(tmp_path / "index"))
     with pytest.raises(KeyboardInterrupt):
         ingest(load_config(make_config(use_fake_embedder)))
-    assert not store_exists(tmp_path / "index")  # and nothing was published
+    assert not published(qdrant)  # and nothing was published
 
 
 # --- what the walk passes over is reported, not silent ----------------------------------
@@ -240,10 +238,10 @@ def test_an_unreadable_folder_fails_the_run_and_the_rest_is_indexed(
     (sample_corpus / "locked" / "inside.txt").write_text("never seen\n")
     unreadable(sample_corpus / "locked")
 
-    status, index = run(sample_corpus)
+    status, store = run(sample_corpus)
     out = capsys.readouterr().out
     assert status == EXIT_RUN_FAILED
-    assert store_exists(index)
+    assert published(store)
     assert "Loaded 7 document pages/sections" in out
     assert re.search(r"locked/: PermissionError: ", out)
 

@@ -12,7 +12,10 @@ to the end. It also records the four generation parts of the fingerprint
 computed from the checkout, but the answers come from the index. An index not rebuilt
 since a corpus edit would answer from old chunks under a fingerprint that claims the new
 ones, and ``check`` would pass it (maintainer, 2026-10-06). So the run refuses an index
-whose manifest disagrees with the same corpus scan the fingerprint hashes.
+whose manifest disagrees with the same corpus scan the fingerprint hashes. The retrieval
+half resolves the alias before each question (DEC-19), so a run outlives the ingests made
+during it; a generation it moves to is held to the same scan first, and one that does not
+match stops the run, resumable once the index matches again.
 """
 
 import dataclasses
@@ -38,7 +41,7 @@ from rag_qa.evaluation.gate import (
     ollama_tag,
 )
 from rag_qa.ingest import CorpusScan
-from rag_qa.manifest import CHUNKING_VERSION, diff, spec_identity
+from rag_qa.manifest import CHUNKING_VERSION, Manifest, diff, spec_identity
 from rag_qa.schema import RagConfig
 
 #: The ``_target_`` whose model is an Ollama tag, so has a digest to record.
@@ -49,15 +52,19 @@ class StaleIndexError(Exception):
     """The index is not what the corpus and config would build now: re-run ``rag-ingest``."""
 
 
-def check_index_current(config: RagConfig, scan: CorpusScan) -> None:
+def check_index_current(
+    config: RagConfig, scan: CorpusScan, manifest: Manifest | None = None
+) -> None:
     """Refuse an index that lags the corpus or the config (module docstring).
 
     Raises :class:`~rag_qa.chain.NoIndexError` or its subclass first, as every front end
     does; then :class:`StaleIndexError` when the manifest's documents, splitter or
     chunking version differ from what ``rag-ingest`` would build now. The embedder's
-    identity is :func:`~rag_qa.chain.check_index`'s own check. Reads files only.
+    identity is :func:`~rag_qa.chain.check_index`'s own check. Reads the live
+    generation's metadata only, or nothing when given its ``manifest``.
     """
-    _, manifest = check_index(config)
+    if manifest is None:
+        _, manifest = check_index(config)
     changes = diff(manifest, {file.name: file.state for file in scan.files})
     problems = []
     counts = [
@@ -149,11 +156,16 @@ def prepare(config: RagConfig, golden: Sequence[GoldenItem]) -> dict[str, str]:
     """Everything a run can refuse before a model loads: the four generation parts, and
     an index that lags them. Raises ``FingerprintError``, ``NoIndexError`` (or its
     subclass) or :class:`StaleIndexError`."""
+    return _prepare(config, golden)[0]
+
+
+def _prepare(config: RagConfig, golden: Sequence[GoldenItem]) -> tuple[dict[str, str], CorpusScan]:
+    """:func:`prepare`'s parts, and the corpus scan the index was checked against."""
     scan = corpus_scan(config)
     check_index_current(config, scan)
     parts = fingerprint(config, golden, parts=("query", "ingestion", "questions"))
     parts["corpus"] = corpus_part(scan)  # the scan the index was just checked against
-    return {part: parts[part] for part in GENERATION_PARTS}
+    return {part: parts[part] for part in GENERATION_PARTS}, scan
 
 
 async def generate(
@@ -177,7 +189,7 @@ async def generate(
     otherwise it raises :class:`~.checkpoint.CheckpointError`. ``note`` hears that a run
     resumed.
     """
-    parts = prepare(config, golden)
+    parts, scan = _prepare(config, golden)
     generator = generator_record(config)
     items = list(golden if limit is None else golden[:limit])
     generated_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -219,7 +231,11 @@ async def generate(
                 answers.append(done[item.id])
                 continue
             if pipeline is None:
-                pipeline = build_query_pipeline(config)
+                # A generation switched in mid-run must match the scan the run records.
+                pipeline = build_query_pipeline(
+                    config,
+                    on_new_generation=lambda manifest: check_index_current(config, scan, manifest),
+                )
             answered = await answer(pipeline, item)
             if store is not None:
                 store.append(answered.model_dump(mode="json"), started_at=generated_at)

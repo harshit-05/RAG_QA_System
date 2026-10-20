@@ -14,8 +14,11 @@ htmlcov/
 # NOTE: .python-version is committed on purpose (pins the uv interpreter).
 
 # --- Project artifacts ---
-# FAISS index, rebuilt by `rag-ingest`
+# v0.3's FAISS index; since 1.0 the index lives in Qdrant (DEC-19), and this folder is
+# only ever a leftover to delete
 vectorstore/
+# paths.state: the writer lock, and later the job records (DEC-19, DEC-23)
+var/
 # scratch copies; never a source of truth
 temp/
 # data files no configured loader can read; kept on disk, never tracked

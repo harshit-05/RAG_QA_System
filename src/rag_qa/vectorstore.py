@@ -1,233 +1,432 @@
-"""Vector store persistence: the only place the store implementation appears.
+"""The vector store: the only module that talks to Qdrant (ARCHITECTURE.md §3.1, DEC-19).
 
-This is the Phase 3 swap seam (ARCHITECTURE.md §0.5, DEC-3). Nothing outside this module
-touches FAISS, and its functions take the store's location, never the config. Both sides
-ask :func:`live_index` whether there is an index to use. The query side then calls
-:func:`open_store`; ingestion calls :func:`open_generation`, :func:`write_generation` and
-:func:`recover`. Migrating to Qdrant means rewriting these bodies.
+The Phase 3 seam (§0.5). Nothing else imports ``qdrant_client`` (``tests/test_architecture.py``),
+so every error the client raises is translated here: :class:`StoreUnavailableError` when
+Qdrant cannot be reached or refuses us, :class:`GenerationGoneError` when the generation a
+search names has been deleted, :class:`StoreError` for any other answer. The other modules
+catch those.
 
-**Generations and a symlink flip (DEC-17).** ``paths.vector_store`` (``vectorstore/db_faiss``)
-is a symlink to a generation folder beside it, ``db_faiss.gen-<UTC stamp>-<8 hex>``, which
-holds ``index.faiss``, ``index.pkl`` and ``manifest.json``. FAISS writes its two files
-without any atomicity, so no run ever writes into the live generation. It builds a new
-one, ``fsync``\\ s it, then replaces the symlink in one ``rename(2)``: a reader finds the old
-generation or the new one, never neither and never half of one. The previous generation
-survives one more flip, for readers still opening it; :func:`recover` removes the rest.
+**Generations behind an alias.** A store's ``collection`` names an alias. Each version of
+the index is a collection of its own, a *generation*, named
+``<collection>--gen-<UTC stamp with microseconds>-<8 hex>``, so names sort in the order
+they were made. :func:`write_generation` builds the next one in full, alongside the live
+one, which is only ever read:
 
-Safety invariant (ISS-16): ``allow_dangerous_deserialization=True`` unpickles the index.
-That is only safe because every generation is produced by ``rag-ingest`` on this host.
-Never point this at an index from an untrusted source.
+1. create it: one dense vector, ``dense``, by cosine; a payload index on
+   ``metadata.source``; the manifest in its metadata, beside ``complete: false``;
+2. copy the live generation's points into it, without the deleted ones;
+3. upsert the new points, waiting for each batch, then check the count;
+4. mark it ``complete: true``;
+5. switch the alias to it in one ``update_collection_aliases`` call, which deletes and
+   creates the alias together. Qdrant applies alias actions atomically, so a reader finds
+   the old generation or the new one, never neither and never half of one.
+
+A crash before step 5 publishes nothing. :func:`recover`, run under the writer lock at the
+start of every ingestion and after every switch, keeps the alias's target and the newest
+generation older than it, for readers still on it, and deletes the rest.
+
+**Readers bind to a generation**, never to the alias: :func:`retriever` searches the one
+its caller resolved, so a switch between the check and the search cannot mix two. The
+previous generation survives one more switch; a search whose generation has gone raises
+:class:`GenerationGoneError`, and the caller resolves the alias again
+(:mod:`rag_qa.chain`).
+
+**Every cut is ours.** Search is exact (``SearchParams(exact=True)``), and where points tie
+at a limit, the server keeps a set that depends on the collection's layout, which changes
+with the insertion order and across restarts (design review 2). So :func:`search` asks for
+more than it needs, widens the request while the point at the cut ties the last one
+fetched, then orders by score and point ID itself, and cuts.
+
+**The manifest lives in the generation's metadata**, under one key and written whole, so
+no stale field can survive a merge (Qdrant merges top-level metadata keys, and replaces a
+nested object whole). It is read once per generation, never on a hot path:
+``GET /collections/{name}`` returns all of it, and a request is limited to 32 MiB.
 """
 
-import os
+import json
+import math
 import re
 import secrets
-import shutil
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
-from langchain_community.vectorstores import FAISS
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
-from langchain_core.vectorstores import VectorStore
+from langchain_core.retrievers import BaseRetriever
+from pydantic import ConfigDict, SecretStr
+from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
-from rag_qa.manifest import MANIFEST_FILE, Manifest, ManifestError, load_manifest, save_manifest
+from rag_qa.manifest import Manifest, ManifestError, manifest_payload, parse_manifest
+from rag_qa.schema import SEARCH_TYPES, collection_problem
+from rag_qa.settings import StoreSettings
 
-#: The two files FAISS writes into a generation, beside the manifest.
-INDEX_FILES = ("index.faiss", "index.pkl")
+#: What to try when Qdrant cannot be reached, shown under the error.
+QDRANT_HINT: Final = "Is Qdrant running? docker compose up -d qdrant"
+#: What to check when something answers at the store's URL, but not as Qdrant does.
+URL_HINT: Final = (
+    "Check RAG_QDRANT_URL, or the url of the config's vector store: it names Qdrant's "
+    "REST API, such as http://localhost:6333"
+)
 
 #: What :func:`live_index` says when there is no index at all, as against one that cannot
 #: be used: the query side tells "run rag-ingest first" from "re-run rag-ingest" by it.
-NO_INDEX = "there is no index yet"
+NO_INDEX: Final = "there is no index yet"
 
-#: Generation names start with this stamp, so they sort in the order they were made.
-#: Microseconds, because a second cannot order several runs made in one.
-_STAMP = "%Y%m%dT%H%M%S.%fZ"
+#: The one named vector of a generation (DEC-20 adds a sparse one beside it).
+VECTOR: Final = "dense"
+#: The metadata keys: the manifest, written whole, and whether the generation is complete.
+MANIFEST_KEY: Final = "manifest"
+COMPLETE_KEY: Final = "complete"
+#: Between the alias and the stamp in a generation's name. A collection name has no hyphen
+#: (:data:`rag_qa.schema.COLLECTION_NAME`), so a generation's name parses one way only.
+SEPARATOR: Final = "--gen-"
+#: Generation stamps sort in the order they were made. Microseconds, because a second
+#: cannot order several runs made in one.
+_STAMP: Final = "%Y%m%dT%H%M%S%fZ"
+#: Points per upsert or scroll request: far below the 32 MiB request limit at 384
+#: dimensions and a chunk of text each.
+BATCH: Final = 256
+#: The oldest server with collection metadata, where the manifest lives (Qdrant 1.16).
+MIN_SERVER: Final = (1, 16)
+#: How many points beyond the cut a search asks for first (:func:`search`).
+CUT_MARGIN: Final = 10
 
 
-def _stamp() -> str:
-    return datetime.now(UTC).strftime(_STAMP)
+class StoreError(Exception):
+    """Qdrant answered, but not as the store needs. The message says what it said."""
 
 
-def _generation_name(store: Path) -> re.Pattern[str]:
-    return re.compile(re.escape(store.name) + r"\.gen-(\d{8}T\d{6}\.\d{6}Z)-[0-9a-f]{8}")
+class StoreUnavailableError(StoreError):
+    """Qdrant cannot be reached, did not answer in time, or refused the request. Every
+    command stops on it with exit 2 and :data:`QDRANT_HINT`, having published nothing."""
 
 
-def _live_name(store: Path) -> str | None:
-    """The name of the generation folder beside ``store`` that its symlink points to,
-    however the link is written (bare, ``./name``, absolute, a trailing slash).
+class GenerationGoneError(StoreError):
+    """The generation a search named has been deleted: two switches pruned it, or someone
+    did by hand. Its reader resolves the alias again; the search is never retried as is."""
 
-    ``None`` when ``store`` is not a symlink, or points anywhere but at one of its
-    generations beside it: then nothing beside it can be told live or not.
+
+def connect(url: str, api_key: SecretStr | None, timeout_s: float) -> QdrantClient:
+    """A client for the server at ``url``. Builds no connection and sends no request.
+
+    The tests replace this function, so ingestion and the query side share one in-memory
+    client. ``check_compatibility`` is off: it asks the server for its version in a thread
+    of its own at construction, and warns when Qdrant is down, before any command could
+    say so properly. :meth:`QdrantStore.check` asks instead.
     """
-    if not store.is_symlink():
-        return None
-    target = store.parent / os.readlink(store)  # an absolute target replaces the parent
-    if not _generation_name(store).fullmatch(target.name):
-        return None
-    if target.parent.resolve() != store.parent.resolve():
-        return None
-    return target.name
+    return QdrantClient(
+        url=url,
+        api_key=None if api_key is None else api_key.get_secret_value(),
+        timeout=math.ceil(timeout_s),
+        check_compatibility=False,
+    )
 
 
-def _next_stamp(store: Path) -> str:
+class QdrantStore:
+    """The index's home: a Qdrant server, and the alias that names the live generation.
+
+    The ``_target_`` of ``components.vector_stores.qdrant`` (``rag_qa.components.build_store``).
+    ``RAG_QDRANT_URL`` and ``RAG_QDRANT_COLLECTION`` override ``url`` and ``collection``,
+    and the API key comes from ``RAG_QDRANT_API_KEY`` only, never from a config file (§9).
+    Building one sends no request; :meth:`check` does. ``client`` is for tests.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        collection: str,
+        timeout_s: float = 10.0,
+        *,
+        client: QdrantClient | None = None,
+    ) -> None:
+        settings = StoreSettings()
+        self.url = settings.url or url
+        self.collection = settings.collection or collection
+        problem = collection_problem(self.collection)
+        if problem is not None:
+            raise ValueError(problem)
+        if not timeout_s > 0:
+            raise ValueError(f"timeout_s must be a positive number of seconds, not {timeout_s}")
+        self.timeout_s = timeout_s
+        self.client = (
+            client if client is not None else connect(self.url, settings.api_key, timeout_s)
+        )
+
+    def __repr__(self) -> str:  # never the key
+        return f"QdrantStore(url={self.url!r}, collection={self.collection!r})"
+
+    @property
+    def where(self) -> str:
+        """The index, named for a message: ``the Qdrant collection 'rag_qa' at <url>``."""
+        return f"the Qdrant collection {self.collection!r} at {self.url}"
+
+    def check(self) -> None:
+        """Ask the server for its version: every command's first step (DEC-19).
+
+        Raises :class:`StoreUnavailableError` when it cannot be reached or refuses us, when
+        what answers is not Qdrant's API (a wrong URL, :data:`URL_HINT`), or when it is
+        older than :data:`MIN_SERVER`, which has no collection metadata.
+        """
+        with _as_qdrant(self):
+            version = self.client.info().version
+        parts = tuple(int(part) for part in re.findall(r"\d+", version)[:2])
+        if parts < MIN_SERVER:
+            raise StoreUnavailableError(
+                f"Qdrant at {self.url} is version {version}, but the index needs "
+                f"{'.'.join(map(str, MIN_SERVER))} or newer (collection metadata)"
+            )
+        # The other half of "can we use it": a key Qdrant refuses shows here, not mid-run.
+        with _as_qdrant(self):
+            self.client.get_aliases()
+
+    def alias_target(self) -> str | None:
+        """The collection the alias names now, or ``None`` when there is no alias.
+
+        One small request (``GET /aliases``), cheap enough for the API to make on every
+        request and ``rag-query`` before every question (DEC-19).
+        """
+        with _translated(self):
+            aliases = self.client.get_aliases().aliases
+        return next((a.collection_name for a in aliases if a.alias_name == self.collection), None)
+
+    def close(self) -> None:
+        """Close the client's connections."""
+        self.client.close()
+
+
+@contextmanager
+def _translated(store: QdrantStore, generation: str | None = None) -> Iterator[None]:
+    """Turn the client's errors into this module's, worded for the person running the command.
+
+    A 404 becomes :class:`GenerationGoneError` when ``generation`` names what was asked for.
+    """
+    try:
+        yield
+    except ResponseHandlingException as e:  # refused, reset, timed out: no answer at all
+        raise StoreUnavailableError(
+            f"cannot use Qdrant at {store.url} ({type(e.source).__name__}: {e.source}). "
+            f"{QDRANT_HINT}"
+        ) from e
+    except UnexpectedResponse as e:
+        if e.status_code in (401, 403):
+            raise StoreUnavailableError(
+                f"Qdrant at {store.url} refused the request ({e.status_code}): check "
+                f"RAG_QDRANT_API_KEY"
+            ) from e
+        if e.status_code == 404 and generation is not None:
+            raise GenerationGoneError(f"the index generation {generation} is gone") from e
+        raise StoreError(
+            f"Qdrant at {store.url} answered {e.status_code}: {_server_error(e)}"
+        ) from e
+
+
+@contextmanager
+def _as_qdrant(store: QdrantStore) -> Iterator[None]:
+    """:func:`_translated`, for :meth:`QdrantStore.check`, where any answer but Qdrant's
+    means a store that cannot be used. A wrong URL can reach another server: a path Qdrant
+    does not serve (a 404), or another service on the port (a body that is not Qdrant's
+    JSON). Every command must stop on it with exit 2 and a hint, never a traceback (S3-2's
+    second review)."""
+    try:
+        with _translated(store):
+            yield
+    except StoreUnavailableError as e:
+        source = getattr(e.__cause__, "source", None)
+        if isinstance(source, ValueError):  # JSON of another shape: the client wraps it
+            raise _not_qdrant(store, source) from e
+        raise
+    except StoreError as e:  # an HTTP answer Qdrant does not give to these requests
+        raise StoreUnavailableError(f"{e}. {URL_HINT}") from e
+    except ValueError as e:  # a body that is not JSON at all: the client does not wrap it
+        raise _not_qdrant(store, e) from e
+
+
+def _not_qdrant(store: QdrantStore, error: ValueError) -> StoreUnavailableError:
+    """The refusal of an answer that is not Qdrant's, with the error's first line only:
+    pydantic's runs to many."""
+    shown = str(error).splitlines()[0] if str(error) else ""
+    return StoreUnavailableError(
+        f"{store.url} does not answer as Qdrant does ({type(error).__name__}: {shown}). {URL_HINT}"
+    )
+
+
+def _server_error(error: UnexpectedResponse) -> str:
+    """The server's own error text, from its JSON body, or the HTTP reason."""
+    try:
+        return str(json.loads(error.content)["status"]["error"])
+    except (ValueError, KeyError, TypeError):
+        return error.reason_phrase or "no reason given"
+
+
+# ---- names --------------------------------------------------------------------------------
+
+
+def generation_pattern(store: QdrantStore) -> re.Pattern[str]:
+    """The names of ``store``'s generations; group 1 is the stamp."""
+    return re.compile(re.escape(store.collection + SEPARATOR) + r"(\d{8}T\d{12}Z)-[0-9a-f]{8}")
+
+
+def _next_stamp(store: QdrantStore, live: str | None) -> str:
     """A stamp for a new generation, sorting after the live one's even if the clock has
     stepped back: recovery keeps "the newest generation older than the live one" by name,
     so a new generation that sorted first would cost the previous one its place."""
-    stamp = _stamp()
-    live_name = _live_name(store)
-    live = _generation_name(store).fullmatch(live_name) if live_name else None
-    if live is not None and live.group(1) >= stamp:
-        after = datetime.strptime(live.group(1), _STAMP).replace(tzinfo=UTC)
+    stamp = datetime.now(UTC).strftime(_STAMP)
+    found = generation_pattern(store).fullmatch(live) if live else None
+    if found is not None and found.group(1) >= stamp:
+        after = datetime.strptime(found.group(1), _STAMP).replace(tzinfo=UTC)
         stamp = (after + timedelta(microseconds=1)).strftime(_STAMP)
     return stamp
 
 
-def _temporary_link_name(store: Path) -> re.Pattern[str]:
-    return re.compile(re.escape(store.name) + r"\.tmp-[0-9a-f]{8}")
+def _collections(store: QdrantStore) -> set[str]:
+    """Every real collection on the server. Aliases are not listed: ``get_collections``
+    omits them, where ``collection_exists`` resolves an alias to its target."""
+    with _translated(store):
+        return {c.name for c in store.client.get_collections().collections}
 
 
-def generation_path(store: Path) -> Path | None:
-    """The live generation: the folder beside ``store`` that it links to, whether or not
-    that folder still exists.
+def _generations(store: QdrantStore) -> list[str]:
+    """``store``'s generations, oldest first."""
+    pattern = generation_pattern(store)
+    return sorted(name for name in _collections(store) if pattern.fullmatch(name))
 
-    ``None`` when ``store`` is not a symlink to one of its generations: no index yet, a
-    v0.2 directory, or something else in the way (:func:`in_the_way`).
+
+# ---- what is published ---------------------------------------------------------------------
+
+
+def in_the_way(store: QdrantStore) -> str | None:
+    """What stops ``store``'s alias being managed here, phrased to follow
+    :attr:`QdrantStore.where`; ``None`` when nothing is in the way.
+
+    A real collection named like the alias, or an alias naming anything but one of its
+    generations: someone's own data, which ``rag-ingest`` must never switch away from or
+    delete (S2-6's second review). The server would refuse the clash anyway, a collection
+    named like an alias and an alias like a collection, but only once a run had embedded.
     """
-    name = _live_name(store)
-    return None if name is None else store.parent / name
-
-
-def is_legacy_store(store: Path) -> bool:
-    """Whether ``store`` is an index written by v0.2: a real folder holding FAISS's two
-    files and nothing else. Any other folder is not one, and is never renamed aside."""
-    if not store.is_dir() or store.is_symlink():
-        return False
-    try:
-        return {path.name for path in store.iterdir()} == set(INDEX_FILES)
-    except OSError:
-        return False
-
-
-def in_the_way(store: Path) -> str | None:
-    """What sits at the store path that is neither nothing, nor an index this code wrote or
-    can migrate, phrased to follow the path; ``None`` when nothing is in the way.
-
-    ``rag-ingest`` refuses to touch any of these: a file, a folder that is not a v0.2
-    index (a mis-set path can name the corpus itself), or a link to anything but one of
-    the index's generations beside it (someone's own link to another disk, say).
-    """
-    if store.is_symlink():
-        if _live_name(store) is None:
-            return f"is a link to {os.readlink(store)!r}, not to one of the index's generations"
-        return None
-    if store.is_dir():
-        if is_legacy_store(store):
-            return None
-        if all((store / name).is_file() for name in (*INDEX_FILES, MANIFEST_FILE)):
-            # One generation named directly, or a copy of one (`cp -rL`): an index, but the
-            # path must name the link to it, which the next flip moves (second review).
-            return (
-                "is an index generation folder, not the link that rag-ingest points at the "
-                "live generation"
-            )
-        return "is a folder that is not an index (v0.2's held only index.faiss and index.pkl)"
-    if store.exists():
-        return "is a file, not an index"
+    if store.collection in _collections(store):
+        return "is a collection of its own, not the alias rag-ingest switches between generations"
+    target = store.alias_target()
+    if target is not None and not generation_pattern(store).fullmatch(target):
+        return f"is an alias of {target!r}, which is not one of its generations"
     return None
 
 
-def live_index(store: Path) -> tuple[Path, Manifest] | str:
+class _Gone:
+    """A generation that disappeared between two requests."""
+
+
+_GONE: Final = _Gone()
+
+
+def _metadata(store: QdrantStore, generation: str) -> dict[str, Any] | _Gone:
+    """A generation's metadata: one ``GET /collections/{name}``, which returns all of it."""
+    try:
+        with _translated(store, generation):
+            info = store.client.get_collection(generation)
+    except GenerationGoneError:
+        return _GONE
+    except ValueError:  # local mode's "Collection … not found"
+        if generation not in _collections(store):
+            return _GONE
+        raise
+    return dict(info.config.metadata or {})
+
+
+def _complete(generation: str, metadata: Mapping[str, Any]) -> Manifest | str:
+    """The generation's manifest when it is complete, else why it is not.
+
+    Complete means marked so, after its count was checked, and with a manifest that names
+    the generation itself: a copy restored under another name is not complete until its
+    manifest is rewritten (DEC-25).
+    """
+    if metadata.get(COMPLETE_KEY) is not True:
+        return "it is incomplete: the run that built it stopped before publishing it"
+    try:
+        manifest = parse_manifest(metadata.get(MANIFEST_KEY))
+    except ManifestError as e:
+        return f"its manifest cannot be used: {e}"
+    if manifest.generation != generation:
+        return f"its manifest describes {manifest.generation!r}, not this collection"
+    return manifest
+
+
+def live_index(store: QdrantStore) -> tuple[str, Manifest] | str:
     """The live generation and its manifest, or why there is none to use.
 
-    The one rule for "a usable index" that ``rag-ingest`` (to update it) and the query
-    side (to answer from it) share, so that the two never disagree. It reads files only,
-    loading no model and no index: the index files must be there, and the manifest must
-    load. Whether the index opens, and whether its embedder matches the config, are the
-    callers' to check. Lives here because what "an index exists" means is store-specific.
+    The one rule for "a usable index" that ``rag-ingest`` (to update it) and the query side
+    (to answer from it) share. It reads the alias and the target's metadata, and loads no
+    model. Whether the embedder matches the config is the callers' to check.
     """
     blocked = in_the_way(store)
     if blocked is not None:
-        return f"the index path {blocked}"
-    if is_legacy_store(store):
-        return "the index was built by v0.2 and has no manifest"
-    generation = generation_path(store)
-    if generation is None:
-        return NO_INDEX
-    missing = [name for name in INDEX_FILES if not (generation / name).is_file()]
-    if missing:
-        return f"the index is missing {' and '.join(missing)}"
-    try:
-        manifest = load_manifest(generation / MANIFEST_FILE)
-    except ManifestError as e:
-        return f"its manifest cannot be used: {e}"
-    if manifest is None:
-        return "the index has no manifest"
-    return generation, manifest
+        return f"{store.where} {blocked}"
+    for _ in range(2):
+        target = store.alias_target()
+        if target is None:
+            return NO_INDEX
+        metadata = _metadata(store, target)
+        if isinstance(metadata, _Gone):
+            # Switched and pruned between the two requests: look once more.
+            continue
+        found = _complete(target, metadata)
+        if isinstance(found, str):
+            return f"its live generation {target} cannot be used: {found}"
+        return target, found
+    return "the alias moved twice while it was read; try again"
 
 
-def store_exists(store: Path) -> bool:
-    """Whether a usable published index is at ``store`` (:func:`live_index`). A v0.2
-    directory is not one: it has no manifest, so nothing shows which embedder built it."""
-    return not isinstance(live_index(store), str)
+def newest_complete(store: QdrantStore) -> str | None:
+    """The newest complete generation, whatever the alias says: the one to point the alias
+    back at when its live collection was deleted and took the alias with it (DEC-19)."""
+    for name in reversed(_generations(store)):
+        metadata = _metadata(store, name)
+        if not isinstance(metadata, _Gone) and isinstance(_complete(name, metadata), Manifest):
+            return name
+    return None
 
 
-def open_store(embeddings: Embeddings, path: Path) -> VectorStore:
-    """Open the persisted index a previous ingestion run wrote to ``path``: a generation
-    folder, or the symlink to one."""
-    return FAISS.load_local(
-        str(path),
-        embeddings,
-        allow_dangerous_deserialization=True,
-    )
-
-
-class _NoEmbedder(Embeddings):
-    """Stands in where FAISS requires an embedder and nothing is embedded.
-
-    Writing a generation adds vectors embedded already and deletes by ID, and saving
-    writes no embedder, so it never embeds. With this in place of the configured embedder,
-    a run that only deletes never loads the model.
-    """
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        raise RuntimeError("nothing is embedded while an index generation is written")
-
-    def embed_query(self, text: str) -> list[float]:
-        raise RuntimeError("an index generation being written is never queried")
+# ---- writing a generation ------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class OpenGeneration:
-    """A generation loaded into memory for an update, with the chunk IDs it holds.
+    """The live generation, as an update starts from it: its name and its point IDs."""
 
-    Only :func:`write_generation` changes it, and only in memory: the files it came from
-    are never written to.
-    """
-
-    path: Path
+    name: str
     ids: frozenset[str]
-    db: FAISS = field(repr=False)
 
 
-def open_generation(generation: Path) -> OpenGeneration:
-    """Load a generation for an update, once: its IDs are checked, then the same object is
-    updated and saved as the next generation.
+def _scroll(store: QdrantStore, generation: str, *, everything: bool) -> Iterator[list[Any]]:
+    """A generation's points, a page at a time, in point ID order."""
+    offset = None
+    while True:
+        with _translated(store, generation):
+            page, offset = store.client.scroll(
+                generation,
+                limit=BATCH,
+                offset=offset,
+                with_payload=everything,
+                with_vectors=everything,
+            )
+        yield page
+        if offset is None:
+            return
 
-    Raises whatever opening it raises (a missing file, a corrupt pickle, FAISS's own
-    errors), and ``ValueError`` when the FAISS index and its docstore disagree on how many
-    chunks there are.
+
+def open_generation(store: QdrantStore, generation: str) -> OpenGeneration:
+    """The point IDs ``generation`` holds, for an update to check against its manifest.
+
+    Raises :class:`GenerationGoneError` when it has gone, and the store's other errors.
     """
-    db = FAISS.load_local(str(generation), _NoEmbedder(), allow_dangerous_deserialization=True)
-    mapped = db.index_to_docstore_id
-    ids = frozenset(mapped.values())
-    if not db.index.ntotal == len(mapped) == len(ids):
-        raise ValueError(
-            f"its FAISS index holds {db.index.ntotal} vectors, mapped to {len(ids)} chunk IDs"
-        )
-    return OpenGeneration(path=generation, ids=ids, db=db)
+    ids = frozenset(
+        str(point.id) for page in _scroll(store, generation, everything=False) for point in page
+    )
+    return OpenGeneration(name=generation, ids=ids)
 
 
 @dataclass(frozen=True)
@@ -244,135 +443,248 @@ class Embedded:
 class Published:
     """What :func:`write_generation` published."""
 
-    generation: str  # the new generation's folder name, which its manifest records
-    legacy: str | None = None  # where a v0.2 directory at the store path was moved, if any
+    generation: str  # the new generation's collection, which its manifest names
 
 
 def write_generation(
-    store: Path,
+    store: QdrantStore,
     manifest: Manifest,
     *,
     base: OpenGeneration | None,
     delete: Sequence[str],
     add: Embedded,
 ) -> Published:
-    """Build the next generation of the index and publish it with one atomic flip (DEC-17).
+    """Build the next generation and publish it with one alias switch (the module docstring).
 
-    With ``base`` (the live generation, in memory), ``delete`` is applied to it, then
-    ``add``. Delete comes first, because a document whose loader changed gets the same
-    chunk IDs back. Without ``base``, a fresh index is built from ``add``, which must not
-    be empty (a full rebuild). Either way, the live generation on disk is only ever read.
-    That matters: FAISS's own add is not atomic, and puts the vectors in before its
-    docstore rejects a duplicate ID.
+    With ``base`` (the live generation), its points are copied, all but ``delete``, then
+    ``add`` is upserted: so a document whose loader changed gets its old chunk IDs back with
+    new content. Without it, the generation holds ``add`` alone, which must not be empty
+    (a full rebuild). The vectors' size is the manifest's embedder dimension.
 
-    Then, in order:
-
-    1. a fresh folder, with the index and ``manifest`` written into it (the manifest's
-       ``generation`` set to the folder's name);
-    2. every file in it, then the folder itself, ``fsync``\\ ed;
-    3. a v0.2 directory at ``store`` moved aside to ``<name>.v02-<stamp>``: the one moment
-       with no index at ``store``, once, on the first run after the upgrade;
-    4. a temporary symlink to the new folder, ``os.replace``\\ d over ``store``, and the
-       parent folder ``fsync``\\ ed.
-
-    An exception before step 4 publishes nothing. A half-built folder is left for
-    :func:`recover`, which the next run calls under the writer lock. Pruning old
-    generations after a flip is the caller's job, also through :func:`recover`.
+    Nothing is published until the last request, the switch. An exception before it
+    leaves an incomplete generation for :func:`recover`, which the next run calls under
+    the writer lock. A switch request that fails is read back: when the alias names the
+    new generation, the server applied it and only its answer was lost, so the generation
+    is published and returned. Pruning after the switch is the caller's job, through
+    :func:`recover`.
     """
-    pairs = list(zip(add.texts, add.vectors, strict=True))
-    if base is None:
-        if not pairs:
-            raise ValueError("a new index needs at least one chunk")
-        db = FAISS.from_embeddings(pairs, _NoEmbedder(), metadatas=add.metadatas, ids=add.ids)
-    else:
-        db = base.db
-        if delete:
-            db.delete(list(delete))
-        if pairs:
-            db.add_embeddings(pairs, metadatas=add.metadatas, ids=add.ids)
-
-    name = f"{store.name}.gen-{_next_stamp(store)}-{secrets.token_hex(4)}"
-    folder = store.parent / name
-    folder.mkdir()
-    db.save_local(str(folder))
-    save_manifest(manifest.model_copy(update={"generation": name}), folder / MANIFEST_FILE)
-    for path in folder.iterdir():
-        _fsync(path)
-    _fsync(folder, directory=True)
-    # The new folder's own entry in its parent, durable before any link can name it: an
-    # fsync after the flip alone would let a crash keep the link and lose the folder.
-    _fsync(store.parent, directory=True)
-
-    legacy = None
-    if is_legacy_store(store):
-        legacy = f"{store.name}.v02-{_stamp()}"
-        os.rename(store, store.with_name(legacy))
-        _fsync(store.parent, directory=True)
-    _flip(store, name)
-    return Published(generation=name, legacy=legacy)
-
-
-def _flip(store: Path, generation: str) -> None:
-    """Point ``store`` at ``generation`` in one ``rename(2)``, then make that durable."""
-    link = store.with_name(f"{store.name}.tmp-{secrets.token_hex(4)}")
-    # Relative, so the folder holding the store can be moved or renamed as a whole.
-    os.symlink(generation, link)
-    os.replace(link, store)
-    _fsync(store.parent, directory=True)
-
-
-def _fsync(path: Path, *, directory: bool = False) -> None:
-    fd = os.open(path, os.O_RDONLY | (os.O_DIRECTORY if directory else 0))
+    if base is None and not add.ids:
+        raise ValueError("a new index needs at least one chunk")
+    live = store.alias_target()
+    name = f"{store.collection}{SEPARATOR}{_next_stamp(store, live)}-{secrets.token_hex(4)}"
+    written = manifest.model_copy(update={"generation": name})
+    expected = sum(record.chunks for record in written.documents.values())
+    client = store.client
+    with _translated(store):
+        client.create_collection(
+            name,
+            vectors_config={
+                VECTOR: models.VectorParams(
+                    size=written.embedder.dimension, distance=models.Distance.COSINE
+                )
+            },
+            metadata={MANIFEST_KEY: manifest_payload(written), COMPLETE_KEY: False},
+        )
+        client.create_payload_index(
+            name, "metadata.source", models.PayloadSchemaType.KEYWORD, wait=True
+        )
+    if base is not None:
+        dropped = set(delete)
+        for page in _scroll(store, base.name, everything=True):
+            kept = [
+                models.PointStruct(id=point.id, vector=point.vector, payload=point.payload)
+                for point in page
+                if str(point.id) not in dropped
+            ]
+            if kept:
+                with _translated(store):
+                    client.upsert(name, points=kept, wait=True)
+    for start in range(0, len(add.ids), BATCH):
+        batch = slice(start, start + BATCH)
+        points = [
+            models.PointStruct(
+                id=chunk,
+                vector={VECTOR: vector},
+                payload={"page_content": text, "metadata": metadata},
+            )
+            for chunk, text, metadata, vector in zip(
+                add.ids[batch],
+                add.texts[batch],
+                add.metadatas[batch],
+                add.vectors[batch],
+                strict=True,
+            )
+        ]
+        with _translated(store):
+            client.upsert(name, points=points, wait=True)
+    with _translated(store):
+        count = client.count(name, exact=True).count
+    if count != expected:
+        raise StoreError(
+            f"the new generation {name} holds {count} chunks, but its manifest lists "
+            f"{expected}; nothing was published"
+        )
+    with _translated(store):
+        client.update_collection(name, metadata={COMPLETE_KEY: True})
     try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+        with _translated(store):
+            _switch(store, name)
+    except StoreError:
+        if not _switched_to(store, name):
+            raise
+    return Published(generation=name)
 
 
-def recover(store: Path) -> list[str]:
-    """Delete what earlier runs left beside ``store``, and return the names deleted.
+def _switched_to(store: QdrantStore, generation: str) -> bool:
+    """Whether the alias names ``generation``, read back after its switch request failed.
 
-    Keeps the generation ``store`` links to, and the newest generation older than it: the
-    previous one, which a reader may still be opening. Deletes every other generation
-    folder, and every temporary link. An unreferenced generation newer than the live one
-    is a crash before the flip, so it is incomplete by definition and goes too. With no
-    symlink, nothing is published, and every generation goes. With a symlink pointing
-    anywhere else, nothing can be told live, and no generation is touched. Names outside
-    those two patterns, such as a ``.v02-`` directory or the lock file, are never touched.
-
-    The link is read however it is written (:func:`_live_name`): a hand-made rollback such
-    as ``ln -sfn "$PWD/vectorstore/db_faiss.gen-…" vectorstore/db_faiss`` must not read as
-    "no generation is live".
-
-    Call it under the writer lock: at the start of a run, and after a flip to prune.
+    The server may have applied the switch and lost only the answer (a read timeout, a
+    reset connection). Then the run published, and must say so rather than "published
+    nothing" with exit 2 (S3-2's second review). A read that fails too leaves the
+    failure as it was: the next run's :func:`recover` keeps whichever generation is live.
     """
-    parent = store.parent
-    if not parent.is_dir():
-        return []
-    pattern = _generation_name(store)
-    generations = sorted(
-        path.name
-        for path in parent.iterdir()
-        if pattern.fullmatch(path.name) and path.is_dir() and not path.is_symlink()
+    try:
+        return store.alias_target() == generation
+    except StoreError:
+        return False
+
+
+def _switch(store: QdrantStore, generation: str) -> None:
+    """Point the alias at ``generation``: delete and create in one request, which Qdrant
+    applies atomically. The delete is sent on the first publish too, with no alias to
+    delete; the server accepts that (checked on 1.19.2)."""
+    store.client.update_collection_aliases(
+        change_aliases_operations=[
+            models.DeleteAliasOperation(
+                delete_alias=models.DeleteAlias(alias_name=store.collection)
+            ),
+            models.CreateAliasOperation(
+                create_alias=models.CreateAlias(
+                    collection_name=generation, alias_name=store.collection
+                )
+            ),
+        ]
     )
-    target = _live_name(store)
-    if store.is_symlink() and target is None:
-        generations = []  # a link elsewhere: nothing here can be told live or not
-    keep = set()
+
+
+def recover(store: QdrantStore) -> list[str]:
+    """Delete what earlier runs left among ``store``'s generations; return the names deleted.
+
+    - **The alias names a generation:** keep it and the newest generation older than it,
+      the previous one, which a reader may still be searching. Every other goes, newer ones
+      included: a generation newer than the live one is a run that stopped before its
+      switch, so it is incomplete by definition.
+    - **The alias names anything else:** nothing here can be told live; touch nothing.
+    - **No alias:** delete only the incomplete generations (design review 2). Qdrant deletes
+      an alias with its target, so a lost live collection leaves no alias, and the
+      previous generation, by then the last usable copy, must survive it.
+
+    Call it under the writer lock: at the start of a run, and after a switch to prune.
+    """
+    generations = _generations(store)
+    target = store.alias_target()
     if target is not None:
-        keep.add(target)
-        # The names start with a fixed-width UTC stamp, so string order is creation order.
+        if target not in generations:
+            return []
         older = [name for name in generations if name < target]
-        if older:
-            keep.add(older[-1])
+        keep = {target, *older[-1:]}
+    else:
+        keep = set()
+        for name in generations:
+            metadata = _metadata(store, name)
+            if not isinstance(metadata, _Gone) and isinstance(_complete(name, metadata), Manifest):
+                keep.add(name)
     deleted = []
     for name in generations:
         if name not in keep:
-            shutil.rmtree(parent / name)
+            with _translated(store):
+                store.client.delete_collection(name)  # one already gone counts as deleted
             deleted.append(name)
-    temporary = _temporary_link_name(store)
-    for path in sorted(parent.iterdir()):
-        if temporary.fullmatch(path.name) and path.is_symlink():
-            path.unlink()
-            deleted.append(path.name)
     return deleted
+
+
+# ---- reading -------------------------------------------------------------------------------
+
+
+def search(store: QdrantStore, generation: str, vector: list[float], k: int) -> list[Any]:
+    """The ``k`` points nearest ``vector`` in ``generation``, by exact cosine search, cut by
+    our own rule: score, then point ID (the module docstring).
+
+    The request asks for :data:`CUT_MARGIN` more than ``k``, and doubles its limit while
+    the last point it got ties the point at the cut: then more tied points may lie beyond
+    the limit, and the server would have chosen among them by layout. Once the last point
+    scores below the cut, every point tied with the cut is in hand.
+    """
+    limit = k + CUT_MARGIN
+    while True:
+        try:
+            with _translated(store, generation):
+                points = store.client.query_points(
+                    generation,
+                    query=vector,
+                    using=VECTOR,
+                    limit=limit,
+                    with_payload=True,
+                    search_params=models.SearchParams(exact=True),
+                ).points
+        except ValueError as e:  # local mode's "Collection … not found"
+            if generation not in _collections(store):
+                raise GenerationGoneError(f"the index generation {generation} is gone") from e
+            raise
+        if len(points) < limit or points[-1].score < points[k - 1].score:
+            break
+        limit *= 2
+    return sorted(points, key=lambda point: (-point.score, str(point.id)))[:k]
+
+
+class QdrantRetriever(BaseRetriever):
+    """Dense retrieval from one generation, as FAISS's retriever returned it.
+
+    The same ``page_content``, metadata and ``id`` for each chunk, and nothing else: no
+    score or collection keys in the metadata, which the prompt and the sources read.
+    Synchronous only, so awaiting it runs this same code in an executor, as every answer
+    and tier 1 do (``ainvoke``).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    store: QdrantStore
+    generation: str
+    embeddings: Embeddings
+    k: int
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> list[Document]:
+        vector = self.embeddings.embed_query(query)
+        docs = []
+        for point in search(self.store, self.generation, vector, self.k):
+            payload = point.payload or {}
+            docs.append(
+                Document(
+                    id=str(point.id),
+                    page_content=payload["page_content"],
+                    metadata=payload["metadata"],
+                )
+            )
+        return docs
+
+
+def retriever(
+    store: QdrantStore,
+    generation: str,
+    embeddings: Embeddings,
+    spec: Mapping[str, Any],
+    *,
+    k: int,
+) -> BaseRetriever:
+    """A retriever over ``generation``, bound to it, returning ``k`` chunks.
+
+    ``spec`` is the config's retriever settings (``RetrieverSpec.kwargs()``); the schema
+    has refused any search but similarity already. ``k`` is the caller's: the spec's own,
+    or the reranker's candidates (DEC-16).
+    """
+    search_type = spec.get("search_type")
+    if search_type is not None and search_type not in SEARCH_TYPES:
+        raise ValueError(f"search_type {search_type!r} is not supported by the store")
+    return QdrantRetriever(store=store, generation=generation, embeddings=embeddings, k=k)

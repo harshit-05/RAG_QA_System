@@ -24,7 +24,7 @@ from rag_qa.evaluation import ragas_scoring as rs
 from rag_qa.evaluation.cli import EXIT_CANNOT_RUN, EXIT_OK, main
 from rag_qa.evaluation.dataset import GoldenItem, load_golden
 from rag_qa.evaluation.gate import AnswerItem, AnswersRun, Generator, load_scores, write_run
-from rag_qa.settings import ENV_DATA_PATH, ENV_VECTOR_STORE_PATH
+from rag_qa.settings import ENV_DATA_PATH
 
 MARKER = "could not find the answer"
 REFUSAL = "I could not find the answer in the provided documents."
@@ -187,7 +187,6 @@ def scoring(
     """A checkout whose answers file is fresh and whose judge is served right, by the fake
     Ollama: every refusal passes until the one a test breaks. Returns the config file."""
     monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
     return checkout(tmp_path, fake_ollama, GOLDEN)
 
 
@@ -563,7 +562,6 @@ def judged(
     """``scoring``'s checkout over :data:`GOLDEN_3`, with the eval extra's versions
     reported as pinned, whether or not it is installed."""
     monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
     pinned = {"ragas": fp.RAGAS_VERSION, "instructor": fp.INSTRUCTOR_VERSION, "openai": "x"}
     monkeypatch.setattr(rs, "check_ragas", lambda: pinned)
     return checkout(tmp_path, fake_ollama, GOLDEN_3)

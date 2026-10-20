@@ -42,7 +42,7 @@ from rag_qa.evaluation.gate import (
     too_many_unscored,
     write_run,
 )
-from rag_qa.settings import ENV_DATA_PATH, ENV_VECTOR_STORE_PATH
+from rag_qa.settings import ENV_DATA_PATH, ENV_QDRANT_PREFIX, ENV_STATE_PATH
 
 GOLDEN: list[dict[str, Any]] = [
     {
@@ -112,7 +112,6 @@ class World:
 @pytest.fixture
 def world(tmp_path: Path, sample_corpus: Path, monkeypatch: pytest.MonkeyPatch) -> World:
     monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(tmp_path / "index"))
     return World(
         root=tmp_path,
         corpus=sample_corpus,
@@ -181,7 +180,10 @@ def move_corpus(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     copy_ = w.root / "elsewhere" / "corpus"
     shutil.copytree(w.corpus, copy_, symlinks=True)
     monkeypatch.setenv(ENV_DATA_PATH, str(copy_))
-    monkeypatch.setenv(ENV_VECTOR_STORE_PATH, str(w.root / "another" / "index"))
+    # And another store and state folder: where the index lives is never hashed (DEC-19).
+    monkeypatch.setenv(ENV_STATE_PATH, str(w.root / "another" / "var"))
+    monkeypatch.setenv(f"{ENV_QDRANT_PREFIX}URL", "http://elsewhere:6333")
+    monkeypatch.setenv(f"{ENV_QDRANT_PREFIX}COLLECTION", "elsewhere")
 
 
 def first(edit: Callable[[dict[str, Any]], None]) -> Change:

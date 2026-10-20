@@ -4,9 +4,10 @@ The only reader of the ``RAG_*`` environment variables (ARCHITECTURE.md §1.2). 
 empty variable counts as unset, so ``RAG_DATA_PATH= rag-ingest`` means "use the config
 file's value", as it always has.
 
-Two groups: :class:`EnvSettings`, the overrides every command reads, and
+Three groups: :class:`EnvSettings`, the overrides every command reads;
+:class:`StoreSettings`, the ``RAG_QDRANT_*`` ones the vector store reads (DEC-19); and
 :class:`ServerSettings`, the ``RAG_API_*`` settings only ``rag-serve`` reads (DEC-18).
-``config.yaml`` stays about the pipeline.
+``config.yaml`` stays about the pipeline, and a secret never lives in it.
 """
 
 import ipaddress
@@ -14,18 +15,28 @@ import ipaddress
 from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from rag_qa.schema import collection_problem
+
 #: Selects which config file to load.
 ENV_CONFIG = "RAG_CONFIG"
 #: Overrides ``paths.data`` (the document corpus).
 ENV_DATA_PATH = "RAG_DATA_PATH"
-#: Overrides ``paths.vector_store`` (the index directory).
+#: Overrides ``paths.state``: the writer lock, which is not part of the index (DEC-19).
+ENV_STATE_PATH = "RAG_STATE_PATH"
+#: v0.3's index folder. Refused while set, never ignored (DEC-19): a scratch ingest that set
+#: it to stay off the real index (caveat 9) would otherwise write the real index.
 ENV_VECTOR_STORE_PATH = "RAG_VECTOR_STORE_PATH"
 
 #: Each ``paths`` key, and the variable that overrides it.
 PATH_ENV_VARS = {
     "data": ENV_DATA_PATH,
-    "vector_store": ENV_VECTOR_STORE_PATH,
+    "state": ENV_STATE_PATH,
 }
+
+#: The prefix of the vector store's settings: ``RAG_QDRANT_URL``, ``RAG_QDRANT_COLLECTION``,
+#: ``RAG_QDRANT_API_KEY``.
+ENV_QDRANT_PREFIX = "RAG_QDRANT_"
+ENV_QDRANT_COLLECTION = f"{ENV_QDRANT_PREFIX}COLLECTION"
 
 
 class EnvSettings(BaseSettings):
@@ -39,11 +50,38 @@ class EnvSettings(BaseSettings):
 
     config: str | None = None
     data_path: str | None = None
-    vector_store_path: str | None = None
+    state_path: str | None = None
+    vector_store_path: str | None = None  # read only to be refused
 
     def path_overrides(self) -> dict[str, str | None]:
         """Each ``paths`` key mapped to its override, ``None`` when unset."""
-        return {"data": self.data_path, "vector_store": self.vector_store_path}
+        return {"data": self.data_path, "state": self.state_path}
+
+
+class StoreSettings(BaseSettings):
+    """The vector store's overrides and its key (DEC-19), from the environment only.
+
+    ``url`` and ``collection`` override the store component's own. A scratch index is
+    another ``collection``: the name of the alias its generations are published under. The
+    API key has no config counterpart at all, so it can never be committed (§9). Like
+    :class:`EnvSettings`, read on every use, never at import.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix=ENV_QDRANT_PREFIX, env_ignore_empty=True, frozen=True
+    )
+
+    url: str | None = None
+    collection: str | None = None
+    api_key: SecretStr | None = None
+
+    @field_validator("collection")
+    @classmethod
+    def check_collection(cls, collection: str | None) -> str | None:
+        problem = None if collection is None else collection_problem(collection)
+        if problem is not None:
+            raise ValueError(problem)
+        return collection
 
 
 #: The prefix of the HTTP server's settings: ``RAG_API_TOKEN``, ``RAG_API_MAX_CONCURRENT``,
@@ -97,11 +135,11 @@ def is_loopback(host: str) -> bool:
         return False
 
 
-def describe_settings_error(error: ValidationError) -> str:
-    """One ``RAG_API_<NAME>: problem`` line per error, never echoing a value: the token's
-    own value must not reach a terminal or a log."""
+def describe_settings_error(error: ValidationError, prefix: str = ENV_API_PREFIX) -> str:
+    """One ``<PREFIX><NAME>: problem`` line per error, never echoing a value: a token's or
+    a key's own value must not reach a terminal or a log."""
     lines = []
     for detail in error.errors():
-        name = ENV_API_PREFIX + "_".join(str(part) for part in detail["loc"]).upper()
+        name = prefix + "_".join(str(part) for part in detail["loc"]).upper()
         lines.append(f"{name}: {detail['msg'].removeprefix('Value error, ')}")
     return "\n".join(lines)

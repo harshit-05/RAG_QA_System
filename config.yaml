@@ -117,7 +117,8 @@ components:
 
   retrievers:
     vector_search:
-      # Kwargs passed straight to VectorStore.as_retriever().
+      # How the store's retriever searches: by similarity, for k chunks. The only search
+      # it runs, and the only option it takes; anything else is refused at load.
       search_kwargs: {"k": 5}
 
   rerankers:
@@ -139,6 +140,22 @@ components:
       model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
       top_n: 5
       device: cuda
+
+  vector_stores:
+    # Where the index lives (DEC-19): a Qdrant server. Start it before the first
+    # rag-ingest with `docker compose up -d qdrant` (compose.yaml).
+    # `collection` names an alias: rag-ingest builds each version of the index as a
+    # collection of its own, <collection>--gen-<stamp>-<hex>, and then points the alias
+    # at it in one atomic switch, so a reader sees the old index or the new one, never
+    # half. 1 to 48 lowercase letters, digits or _.
+    # RAG_QDRANT_URL and RAG_QDRANT_COLLECTION override these two; a scratch index is
+    # another collection. The API key, once there is one (S3-9), comes from
+    # RAG_QDRANT_API_KEY only, never from this file.
+    qdrant:
+      _target_: rag_qa.vectorstore.QdrantStore
+      url: "http://localhost:6333"
+      collection: rag_qa
+      timeout_s: 10
 
 # ----------------- 2. Pipeline assembly -----------------
 pipeline:
@@ -195,13 +212,21 @@ pipeline:
 
         Question: {question}
 
+  # The store both halves share: rag-ingest writes it, every query reads it.
+  vector_store: components.vector_stores.qdrant
+
 # ----------------- 3. Paths -----------------
 # Relative to THIS FILE's directory, so a fresh clone works anywhere (NFR-11).
-# Override either with RAG_DATA_PATH / RAG_VECTOR_STORE_PATH; point at a
-# different config file with RAG_CONFIG.
+# Override either with RAG_DATA_PATH / RAG_STATE_PATH; point at a different config
+# file with RAG_CONFIG.
+#   data:  the corpus rag-ingest reads.
+#   state: what this host keeps beside the index, never the index itself: the writer
+#          lock (ingest.lock), so one ingestion runs at a time.
+# v0.3's vector_store key, and RAG_VECTOR_STORE_PATH, are refused: the index is in
+# Qdrant now (README, "Upgrading from v0.3").
 paths:
   data: corpus
-  vector_store: vectorstore/db_faiss
+  state: var
 
 # ----------------- 4. Evaluation -----------------
 # Read by rag-eval only: tier 2 of the quality bar (DEC-15, S2-5). rag-ingest, rag-query

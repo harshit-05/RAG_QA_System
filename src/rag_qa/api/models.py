@@ -42,7 +42,7 @@ class IngestRequest(_Request):
 
 class IndexHealth(BaseModel):
     ready: bool
-    generation: str | None  # the index generation served, e.g. db_faiss.gen-…
+    generation: str | None  # the index generation served, e.g. rag_qa--gen-…
     documents: int | None
     detail: str
 

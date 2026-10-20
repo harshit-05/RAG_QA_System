@@ -328,7 +328,7 @@ async def documents(serving: Annotated[Serving, Depends(get_serving)]) -> Docume
             DocumentInfo(
                 source=name,
                 sha256=record.sha256,
-                chunks=len(record.chunk_ids),
+                chunks=record.chunks,
                 loader=record.loader,
                 ingested_at=record.ingested_at,
             )
@@ -348,7 +348,7 @@ async def readiness(
     if served.ready and served.generation is not None and served.manifest is not None:
         index = IndexHealth(
             ready=True,
-            generation=served.generation.name,
+            generation=served.generation,
             documents=len(served.manifest.documents),
             detail="serving",
         )
