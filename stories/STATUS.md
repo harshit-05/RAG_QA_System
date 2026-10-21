@@ -5,14 +5,18 @@
 
 ## Now
 
-**Next action: commit the certifi bump and its record on `feat/s3-4-ingestion-config`,
-push, and check `gh pr checks` on the new head.** S3-4's PR went red on `0e210a8` (run
-39487923435) in Audit alone: GHSA-6q48-6c7w-9gw2, a critical certifi advisory (compromised
-emSign intermediate CA keys) published at 19:35 UTC on 2026-10-20, after `main`'s last
-green run. `main`'s lock fails it too. `uv lock --upgrade-package certifi` moves certifi
-alone, 2026.7.22 → 2026.10.19, from the same Trusted Publisher as before; the audit is
-then clean, and the suite and `rag-eval check` are unchanged. As S3-2's aiohttp bump did,
-a `build(deps)` commit on the PR, so the merge clears `main` as well.
+**Next action: commit the first review's record, push, and merge PR #22 with a merge
+commit.** CI is green on `d1e747f` (run 39551082170, both jobs; suite 1068 passed, audit
+"No known vulnerabilities found", tier 1 0.950 / 0.796 / 0.858), and the first review
+(2026-10-21) found no defect in the code.
+
+S3-4's PR went red on `0e210a8` (run 39487923435) in Audit alone: GHSA-6q48-6c7w-9gw2, a
+critical certifi advisory (compromised emSign intermediate CA keys) published at 19:35 UTC
+on 2026-10-20, after `main`'s last green run. `main`'s lock fails it too. `uv lock
+--upgrade-package certifi` moves certifi alone, 2026.7.22 → 2026.10.19, from the same
+Trusted Publisher as before; the audit is then clean, and the suite and `rag-eval check`
+are unchanged. As S3-2's aiohttp bump did, a `build(deps)` commit (`a27d98a`) on the PR, so
+the merge clears `main` as well.
 
 **S3-4 (2026-10-21): a file type can have its own splitter, and the corpus a maximum file
 size; the real index, tier 2 and every answer are unchanged.**
@@ -36,6 +40,11 @@ size; the real index, tier 2 and every answer are unchanged.**
   missed the decimal one by a byte, and a rounded size could read as under the limit;
   both are fixed with tests. The fingerprint's relative tests could not see a change to a
   part's shape, so a new test pins `ingestion` to the committed run. Detail in the story.
+- **First review (2026-10-21):** everything reproduced on `d1e747f`, including a drill on a
+  throwaway Qdrant (overlapping chunk IDs after a splitter change on the same bytes, the
+  size limit's three cases), a fuzz of the size line, and the fingerprint under nine edits.
+  No defect in the code; this record was the one stale thing, and one cosmetic line went to
+  the backlog (`exit_status` on a run the limit emptied). Detail in the story.
 
 **S3-3 is merged** (2026-10-20, PR #21, merge commit `9542c9b`). CI was green on the PR's
 last head, `72ca896` (run 39464788422, both jobs), and is green on `main` after the merge
@@ -1246,7 +1255,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | [S3-1](phase-3/S3-1-open-phase-3.md) | Open Phase 3: 1.0.0.dev0, format the code once and gate it | DEC-28, backlog: `ruff format` | — | Done 2026-10-16 (PR #19) |
 | [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19 (PR #20, merged 2026-10-20) |
 | [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Done 2026-10-20 (PR #21, merged 2026-10-20) |
-| [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | In review 2026-10-21 (PR #22) |
+| [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Reviewed 2026-10-21 (PR #22) |
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Todo |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Todo |
 | [S3-7](phase-3/S3-7-observability.md) | Structured logs, traces, metrics and alerts | NFR-10, NFR-1, NFR-3, DEC-22 | S3-6 | Todo |
@@ -1380,6 +1389,11 @@ diffed this backlog against `main`'s: no line was dropped.
 - **Any story touching ingestion's log — "Published …: 1 documents"** (found in S3-4's
   drill). `_update`'s publish line does not agree in number for one document, where S2-8
   fixed the other lines. Cosmetic; no hashed input.
+
+- **Any story touching `exit_status` — name `max_file_mb` when it emptied the run** (found
+  in S3-4's first review). When every file is above the limit, the run exits 1 with "No
+  documents were loaded."; the cause is only in the log lines above it. The line is shared
+  with the API's job report, so the wording is a small contract. Cosmetic; no hashed input.
 
 - **S3-8 — the Qdrant URL in an ingest job's error text** (found in S3-2's second review).
   `describe_error` passes `cannot use Qdrant at http://host:6333 (…)` through to
