@@ -309,8 +309,10 @@ def test_a_manifest_off_the_strict_shape_is_refused_not_coerced(edit: Any, where
 # --- the diff ----------------------------------------------------------------------------
 
 
-def state(sha256: str, identity: str = "loader-1") -> FileState:
-    return FileState(sha256=sha256, loader="components.loaders.txt", loader_identity=identity)
+def state(sha256: str, identity: str = "loader-1", splitter: str = "s") -> FileState:
+    return FileState(
+        sha256=sha256, loader="components.loaders.txt", loader_identity=identity, splitter=splitter
+    )
 
 
 def test_diff_sorts_the_corpus_into_added_changed_removed_and_unchanged() -> None:
@@ -319,6 +321,7 @@ def test_diff_sorts_the_corpus_into_added_changed_removed_and_unchanged() -> Non
             "same.txt": record("1" * 64),
             "edited.txt": record("1" * 64),
             "moved.md": record("1" * 64),
+            "resplit.md": record("1" * 64),
             "gone.txt": record("1" * 64),
         }
     )
@@ -326,11 +329,12 @@ def test_diff_sorts_the_corpus_into_added_changed_removed_and_unchanged() -> Non
         "same.txt": state("1" * 64),
         "edited.txt": state("2" * 64),  # new bytes
         "moved.md": state("1" * 64, identity="loader-2"),  # same bytes, another loader
+        "resplit.md": state("1" * 64, splitter="s2"),  # same bytes, another splitter (S3-4)
         "new.txt": state("3" * 64),
     }
     assert diff(old, files) == Changes(
         added=("new.txt",),
-        changed=("edited.txt", "moved.md"),
+        changed=("edited.txt", "moved.md", "resplit.md"),
         removed=("gone.txt",),
         unchanged=("same.txt",),
     )

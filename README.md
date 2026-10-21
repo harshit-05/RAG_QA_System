@@ -326,6 +326,26 @@ Common changes:
 - **Another file type:** `pipeline.ingestion.loaders` maps each file extension to a
   loader, for example `".md": components.loaders.txt`. Files with an unlisted
   extension are skipped and reported.
+- **Chunking per file type:** `pipeline.ingestion.splitter` chunks every file, unless
+  `pipeline.ingestion.splitters` names another splitter for its extension. Each key there
+  must also be in `loaders`:
+
+  ```yaml
+  pipeline:
+    ingestion:
+      splitter: components.splitters.english_recursive
+      splitters:
+        ".md": components.splitters.markdown   # cuts at headings first
+  ```
+
+  The map is empty by default. Edit it, or either splitter's entry, and the next
+  `rag-ingest` re-embeds only the files whose chunking changed: each document records the
+  splitter that chunked it.
+- **A maximum file size:** `pipeline.ingestion.max_file_mb`, in MB of 1,000,000 bytes, is
+  50 in `config.yaml`, above the largest corpus file (25.4 MB). A larger file is skipped
+  and reported with its size, as an unlisted extension is, and never read. A file indexed
+  earlier that a lowered limit now skips is removed from the index, as a deleted file is.
+  Leave the key out for no limit.
 
 The whole config is checked when it loads. A typo in a key, a reference to a component
 that does not exist, or a `_target_` outside the allowed packages stops the command
@@ -360,8 +380,8 @@ run where little changed takes seconds. Embedding the whole sample corpus (three
 
 - A file that fails to load keeps the chunks it had, and the run exits 1 naming it. The
   next run tries it again.
-- `rag-ingest --rebuild` re-embeds everything into a fresh index. A changed embedder or
-  splitter does that by itself.
+- `rag-ingest --rebuild` re-embeds everything into a fresh index. A changed embedder does
+  that by itself; a changed splitter re-embeds the files it chunks.
 - Each run that changes something builds a new version of the index, a *generation*, as a
   Qdrant collection of its own: `rag_qa--gen-<time>-<id>`. Then it points the alias
   `rag_qa` at it, in one atomic step. So a crash or an error never leaves a half-written
@@ -424,8 +444,8 @@ together on a 16 GB machine: `ollama stop mistral` before scoring locally.
 produced it, and `check` fails on any part that moved, naming the re-run that fixes it:
 
 - **generate and score:** the prompt, an llm, retriever or reranker setting,
-  `reranker_candidates`, a corpus file, the embedder, the splitter, the loaders or a
-  golden question;
+  `reranker_candidates`, a corpus file, the embedder, a splitter in use, the loaders or a
+  golden question. `max_file_mb` counts only through the files it skips;
 - **score only:** a reference answer, the decline marker or the judge's Modelfile;
 - **nothing:** comments, a question's `notes` or `expected_sources`, and runtime-only llm
   keys such as `keep_alive`.

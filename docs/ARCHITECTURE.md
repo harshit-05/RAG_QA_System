@@ -1168,6 +1168,13 @@ Python, with no LangChain.
   - the embedder identity or the splitter spec changed;
   - `rag-ingest --rebuild` asks for it.
 
+  _S3-4 (2026-10-21): a splitter change no longer rebuilds in full._ Each document records
+  the splitter that chunked it, its extension's own (`pipeline.ingestion.splitters`) or the
+  default, and `diff` counts a document whose splitter changed as changed, as it does a
+  changed loader. So a changed splitter re-embeds the documents it chunks, and the rest
+  keep theirs. The manifest's top-level splitter names the default and decides nothing
+  (§3.1, manifest version 2).
+
   _S2-6's third review (2026-10-06): the code that makes chunks is versioned too._ The
   identities see the config only. A change to `rag_qa.loaders` or to the metadata
   `ingest` adds, or a pypdf, docx2txt or text-splitters upgrade that changes their output,
@@ -3051,6 +3058,13 @@ Every new key is optional, and is either absent from the real config, left out o
 while unset, or never hashed: `max_file_mb` reaches `corpus` only through the walk, so a limit
 that skips nothing moves nothing. A unit test holds the real config's six fingerprint parts
 unchanged from S3-1 to S3-11.
+
+_As built in S3-4 (2026-10-21):_ `ingestion` hashes the `splitters` entries whose spec differs
+from the default's, and only when there is one. An entry with the default's spec makes the
+default's chunks and re-embeds nothing, so it moves nothing either (ADR-026's rule: what
+determines the chunks). The real config's `ingestion` part is pinned to the committed run's
+by a unit test, which a change to the part's shape fails, and the six parts by
+`rag-eval check`.
 
 ### 3.4 Interfaces
 

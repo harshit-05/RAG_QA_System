@@ -41,7 +41,7 @@ from rag_qa.evaluation.gate import (
     ollama_tag,
 )
 from rag_qa.ingest import CorpusScan
-from rag_qa.manifest import CHUNKING_VERSION, Manifest, diff, spec_identity
+from rag_qa.manifest import CHUNKING_VERSION, Manifest, diff
 from rag_qa.schema import RagConfig
 
 #: The ``_target_`` whose model is an Ollama tag, so has a digest to record.
@@ -58,10 +58,12 @@ def check_index_current(
     """Refuse an index that lags the corpus or the config (module docstring).
 
     Raises :class:`~rag_qa.chain.NoIndexError` or its subclass first, as every front end
-    does; then :class:`StaleIndexError` when the manifest's documents, splitter or
-    chunking version differ from what ``rag-ingest`` would build now. The embedder's
-    identity is :func:`~rag_qa.chain.check_index`'s own check. Reads the live
-    generation's metadata only, or nothing when given its ``manifest``.
+    does; then :class:`StaleIndexError` when the manifest's documents (their bytes, loader
+    or splitter, :func:`~rag_qa.manifest.diff`) or chunking version differ from what
+    ``rag-ingest`` would build now. The manifest's top-level splitter decides nothing, as
+    in ``rag-ingest`` (S3-4). The embedder's identity is :func:`~rag_qa.chain.check_index`'s
+    own check. Reads the live generation's metadata only, or nothing when given its
+    ``manifest``.
     """
     if manifest is None:
         _, manifest = check_index(config)
@@ -79,9 +81,6 @@ def check_index_current(
     if counts:
         named = [*changes.added, *changes.changed, *changes.removed][:3]
         problems.append(f"documents {', '.join(counts)} (e.g. {', '.join(named)})")
-    splitter = config.pipeline.ingestion.splitter
-    if manifest.splitter.identity != spec_identity(config.component(splitter).spec()):
-        problems.append("the splitter is not the one that built it")
     if manifest.chunking != CHUNKING_VERSION:
         problems.append(f"it was chunked by version {manifest.chunking}, not {CHUNKING_VERSION}")
     if problems:

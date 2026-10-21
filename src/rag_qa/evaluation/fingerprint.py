@@ -10,9 +10,11 @@ part           hashes                                                           
 ``query``      the llm, retriever and reranker specs, ``reranker_candidates``,  generate, score
                the prompt template, and the prompt rendered over two fixed
                documents (the *probe*)
-``ingestion``  the embedder identity, the splitter, the loader map and          generate, score
-               :data:`~rag_qa.manifest.CHUNKING_VERSION`
-``corpus``     the sha256 of every file ``rag-ingest`` would index              generate, score
+``ingestion``  the embedder identity, the splitter, the loader map,             generate, score
+               :data:`~rag_qa.manifest.CHUNKING_VERSION`, and the
+               per-extension splitters that differ from the default (S3-4)
+``corpus``     the sha256 of every file ``rag-ingest`` would index (the         generate, score
+               same walk: ``max_file_mb``'s limit reaches it through it)
 ``questions``  each golden record's id, question, answerable flag and           generate, score
                ``must_not_contain``
 ``references`` each golden record's ``ground_truth``                            score
@@ -69,7 +71,7 @@ RERUN: Final[Mapping[str, str]] = {
 #: What a part covers, in a stale message.
 COVERS: Final[Mapping[str, str]] = {
     "query": "the llm, retriever, reranker, prompt, or how the prompt is assembled",
-    "ingestion": "the embedder, splitter, loader map, or chunking version",
+    "ingestion": "the embedder, a splitter, the loader map, or chunking version",
     "corpus": "a file rag-ingest indexes",
     "questions": "a golden record's id, question, answerable flag or must_not_contain",
     "references": "a golden record's ground_truth",
@@ -172,19 +174,30 @@ def query_part(config: RagConfig) -> str:
 
 def ingestion_part(config: RagConfig) -> str:
     ingestion = config.pipeline.ingestion
-    return spec_identity(
-        {
-            "embedder": embedder_identity(config.component(ingestion.embedder).spec()),
-            "splitter": spec_identity(config.component(ingestion.splitter).spec()),
-            "loaders": {
-                extension: spec_identity(config.component(ref).spec())
-                for extension, ref in ingestion.loaders.items()
-            },
-            # The code that makes chunks, versioned (S2-6's third review): a bump changes
-            # the chunks, so the contexts, so the answers.
-            "chunking": CHUNKING_VERSION,
-        }
-    )
+    splitter = spec_identity(config.component(ingestion.splitter).spec())
+    part: dict[str, Any] = {
+        "embedder": embedder_identity(config.component(ingestion.embedder).spec()),
+        "splitter": splitter,
+        "loaders": {
+            extension: spec_identity(config.component(ref).spec())
+            for extension, ref in ingestion.loaders.items()
+        },
+        # The code that makes chunks, versioned (S2-6's third review): a bump changes
+        # the chunks, so the contexts, so the answers.
+        "chunking": CHUNKING_VERSION,
+    }
+    # The per-extension splitters (S3-4), only those that chunk otherwise than the default.
+    # An empty map, or an entry with the default's spec, makes the chunks the default
+    # makes, re-embeds nothing in rag-ingest, and so moves nothing here (ADR-026). Left out
+    # rather than hashed as {}, so the part every earlier run recorded stands.
+    overrides = {
+        extension: identity
+        for extension, ref in ingestion.splitters.items()
+        if (identity := spec_identity(config.component(ref).spec())) != splitter
+    }
+    if overrides:
+        part["splitters"] = overrides
+    return spec_identity(part)
 
 
 def corpus_scan(config: RagConfig) -> CorpusScan:

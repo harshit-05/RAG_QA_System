@@ -89,6 +89,9 @@ class IngestReportOut(BaseModel):
     rebuild: str | None
     published: str | None
     skipped: list[str]
+    #: ``[name, size in bytes]`` for each file above ``max_file_mb``, the limit applied.
+    too_large: list[tuple[str, int]]
+    max_file_mb: float | None
     symlinks: list[str]
     ignored: int
     failed: list[tuple[str, str]]

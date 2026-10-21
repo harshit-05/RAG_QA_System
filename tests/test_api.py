@@ -678,6 +678,27 @@ def test_the_job_report_mirrors_rag_ingests_report() -> None:
     assert list(IngestReportOut.model_fields) == list(IngestReport.__dataclass_fields__)
 
 
+def test_an_ingest_job_reports_a_file_above_max_file_mb_with_its_size(
+    make_config: MakeConfig, sample_corpus: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # S3-4: the same as rag-ingest's report and line, path-free.
+    (sample_corpus / "big.txt").write_text("x" * 4999 + "\n")  # 5,000 bytes
+    monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
+
+    def with_a_limit(c: dict[str, Any]) -> None:
+        use_fakes(c)
+        c["pipeline"]["ingestion"]["max_file_mb"] = 0.004
+
+    with serve(load_config(make_config(with_a_limit)), tmp_path) as (client, _):
+        job = run_job(client)
+    assert (job["status"], job["exit_code"]) == ("succeeded", 0)
+    assert (job["report"]["too_large"], job["report"]["max_file_mb"]) == (
+        [["big.txt", 5000]],
+        0.004,
+    )
+    assert "  - Skipped big.txt (0.005 MB, above the 0.004 MB limit)" in job["log"]
+
+
 def test_a_real_job_over_an_unreadable_file_reports_it_without_a_host_path(
     scratch_config: RagConfig, sample_corpus: Path, tmp_path: Path
 ) -> None:

@@ -48,7 +48,13 @@ from rag_qa.ingest import (
     scan_corpus,
 )
 from rag_qa.loaders import TextLoader
-from rag_qa.manifest import CHUNKING_VERSION, Manifest, file_sha256, parse_manifest
+from rag_qa.manifest import (
+    CHUNKING_VERSION,
+    Manifest,
+    file_sha256,
+    parse_manifest,
+    spec_identity,
+)
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_DATA_PATH, ENV_VECTOR_STORE_PATH
 from rag_qa.vectorstore import StoreError, StoreUnavailableError
@@ -400,23 +406,214 @@ def test_a_failure_leaves_no_absolute_path_in_the_report_or_the_log(
             "the embedder is not the one that built the index",
             id="embedder",
         ),
-        pytest.param(
-            lambda c: c["components"]["splitters"]["english_recursive"].update(chunk_size=500),
-            False,
-            "the splitter is not the one that built the index",
-            id="splitter",
-        ),
     ],
 )
-def test_the_flag_or_a_new_embedder_or_splitter_rebuilds_in_full(
+def test_the_flag_or_a_new_embedder_rebuilds_in_full(
     scratch: Scratch, embedded: list[int], edit: Edit | None, rebuild: bool, reason: str
 ) -> None:
+    # A new splitter did too, until S3-4: it now re-embeds the documents it chunks (below).
     scratch.ingest()
     embedded.clear()
     report = scratch.ingest(edit, rebuild=rebuild)
     assert report.rebuild is not None and report.rebuild.startswith(reason)
     assert embedded == [7]
     assert (report.added, report.unchanged) == (5, 0)
+
+
+# --- a splitter per extension (S3-4) -------------------------------------------------------
+
+MARKDOWN = "components.splitters.markdown"
+
+
+def markdown_for_md(c: dict[str, Any]) -> None:
+    c["pipeline"]["ingestion"]["splitters"] = {".md": MARKDOWN}
+
+
+def resized(splitter: str, chunk_size: int, then: Edit | None = None) -> Edit:
+    """Config edit: ``then``, and the splitter entry ``splitter`` cut at ``chunk_size``."""
+
+    def edit(c: dict[str, Any]) -> None:
+        if then is not None:
+            then(c)
+        c["components"]["splitters"][splitter]["chunk_size"] = chunk_size
+
+    return edit
+
+
+def identity_of(config: RagConfig, ref: str) -> str:
+    return spec_identity(config.component(ref).spec())
+
+
+def test_each_document_records_the_splitter_that_chunked_it(scratch: Scratch) -> None:
+    config = scratch.config(markdown_for_md)
+    ingest(config)
+    default = identity_of(config, config.pipeline.ingestion.splitter)
+    markdown = identity_of(config, MARKDOWN)
+    assert markdown != default
+    assert {name: record["splitter"] for name, record in scratch.documents().items()} == {
+        name: markdown if name == "README.md" else default for name in DOCUMENTS
+    }
+    # The top level names the default, and decides nothing.
+    assert scratch.manifest().splitter.identity == default
+
+
+def test_a_md_file_is_chunked_by_its_own_splitter(scratch: Scratch) -> None:
+    paragraph = " ".join(f"word{i:04d}" for i in range(60))  # 539 characters
+    text = f"# First\n{paragraph}\n## Second\n{paragraph}\n"
+    (scratch.corpus / "README.md").write_text(text, encoding="utf-8")
+    scratch.ingest(markdown_for_md)
+    readme = [c.page_content for c in scratch.chunks() if c.metadata["source"] == "README.md"]
+    # Cut at the heading. The default splitter keeps "## Second" at the end of the first
+    # chunk too (tests/test_components.py), and its 150-character overlap starts the second
+    # with it as well: so the first chunk's end is what tells the two apart.
+    assert sorted(chunk.split("\n")[0] for chunk in readme) == ["# First", "## Second"]
+    assert not any(chunk.endswith("## Second") for chunk in readme)
+
+
+def test_changing_the_md_splitter_re_embeds_the_md_files_only(
+    scratch: Scratch, embedded: list[int]
+) -> None:
+    # The exit's evidence for SRS §7.2 (ARCHITECTURE.md's gap-closure table).
+    scratch.ingest(markdown_for_md)
+    before = scratch.documents()
+    embedded.clear()
+
+    report = scratch.ingest(resized("markdown", 500, then=markdown_for_md))
+    assert report.rebuild is None
+    assert (report.changed, report.unchanged) == (1, 4)
+    assert embedded == [1]  # README.md's one chunk
+    after = scratch.documents()
+    assert after["README.md"]["splitter"] != before["README.md"]["splitter"]
+    for name in DOCUMENTS - {"README.md"}:
+        assert after[name] == before[name]  # untouched: the same splitter and ingested_at
+    assert scratch.ids() == scratch.listed()
+
+
+def test_a_new_default_splitter_re_embeds_the_documents_it_chunks_and_rebuilds_nothing(
+    scratch: Scratch, embedded: list[int]
+) -> None:
+    # Where DEC-17 rebuilt in full, each document's own splitter decides (S3-4).
+    scratch.ingest(markdown_for_md)
+    before = scratch.documents()["README.md"]
+    embedded.clear()
+
+    edit = resized("english_recursive", 500, then=markdown_for_md)
+    report = scratch.ingest(edit)
+    assert report.rebuild is None
+    assert (report.changed, report.unchanged) == (4, 1)
+    assert embedded == [6]  # the PDF's 3 pages and one chunk each for the other 3
+    assert scratch.documents()["README.md"] == before
+    # The top level follows the default, at the publish.
+    assert scratch.manifest().splitter.identity == identity_of(
+        scratch.config(edit), "components.splitters.english_recursive"
+    )
+    assert scratch.ids() == scratch.listed()
+
+
+def test_with_no_map_a_new_default_splitter_re_embeds_every_document(
+    scratch: Scratch, embedded: list[int]
+) -> None:
+    scratch.ingest()
+    embedded.clear()
+    report = scratch.ingest(resized("english_recursive", 500))
+    assert (report.rebuild, report.changed, report.unchanged) == (None, 5, 0)
+    assert embedded == [7]
+
+
+def test_an_override_with_the_default_s_spec_re_embeds_nothing(
+    scratch: Scratch, embedded: list[int]
+) -> None:
+    # The identity is the spec, never the entry's name (ADR-026): the chunks are the same.
+    scratch.ingest()
+    embedded.clear()
+
+    def a_copy_for_md(c: dict[str, Any]) -> None:
+        splitters = c["components"]["splitters"]
+        splitters["copy"] = dict(splitters["english_recursive"])
+        c["pipeline"]["ingestion"]["splitters"] = {".md": "components.splitters.copy"}
+
+    report = scratch.ingest(a_copy_for_md)
+    assert (report.unchanged, report.published) == (5, None)
+    assert embedded == []
+
+
+def test_dropping_an_override_re_embeds_its_files_with_the_default(
+    scratch: Scratch, embedded: list[int]
+) -> None:
+    scratch.ingest(markdown_for_md)
+    embedded.clear()
+    report = scratch.ingest()
+    assert (report.changed, report.unchanged) == (1, 4)
+    assert embedded == [1]
+    config = scratch.config()
+    default = identity_of(config, config.pipeline.ingestion.splitter)
+    assert scratch.documents()["README.md"]["splitter"] == default
+
+
+# --- a maximum file size (S3-4) ------------------------------------------------------------
+
+
+def max_file_mb(limit: float | None) -> Edit:
+    return lambda c: c["pipeline"]["ingestion"].update(max_file_mb=limit)
+
+
+def add_big_txt(scratch: Scratch) -> None:
+    """5,000 bytes: above 0.004 MB, which every sample corpus file is below (1,327 at most)."""
+    (scratch.corpus / "big.txt").write_text("x" * 4999 + "\n", encoding="utf-8")
+
+
+def test_a_file_above_max_file_mb_is_skipped_reported_and_never_read(
+    scratch: Scratch, capsys: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_big_txt(scratch)
+    hashed: list[str] = []
+
+    def recording(path: Path) -> str:
+        hashed.append(path.name)
+        return file_sha256(path)
+
+    monkeypatch.setattr("rag_qa.ingest.file_sha256", recording)
+    path = scratch.config_path(max_file_mb(0.004))
+    assert main(["--config", str(path)]) == EXIT_OK  # skipped, as an unmapped file is
+    out = capsys.readouterr().out
+    assert "  - Skipped big.txt (0.005 MB, above the 0.004 MB limit)" in out
+    assert "Skipped 1 file(s) above the 0.004 MB limit (max_file_mb)." in out
+    assert "big.txt" not in hashed  # a limit is there so that the file is never read
+    assert set(scratch.documents()) == DOCUMENTS
+
+    report = scratch.ingest(max_file_mb(0.004))
+    assert (report.too_large, report.max_file_mb) == ([("big.txt", 5000)], 0.004)
+    assert report.found == len(DOCUMENTS)  # mapped to a loader, but not admitted
+
+
+@pytest.mark.parametrize(("limit", "admitted"), [(0.000249, True), (0.000248, False)])
+def test_a_file_at_the_limit_is_admitted_and_one_byte_more_is_not(
+    scratch: Scratch, limit: float, admitted: bool
+) -> None:
+    # 0.000249 MB is 248.99999999999997 bytes as a float product, which would turn the
+    # 249-byte file away: the limit is compared exactly, as written.
+    (scratch.corpus / "edge.txt").write_text("x" * 248 + "\n", encoding="utf-8")
+    report = scratch.ingest(max_file_mb(limit))
+    assert ("edge.txt" in scratch.documents()) is admitted
+    assert ("edge.txt" in dict(report.too_large)) is not admitted
+
+
+def test_a_file_indexed_before_a_lowered_limit_is_removed_like_a_deleted_one(
+    scratch: Scratch, embedded: list[int]
+) -> None:
+    add_big_txt(scratch)
+    scratch.ingest(max_file_mb(None))  # no limit
+    assert "big.txt" in scratch.documents()
+    embedded.clear()
+
+    report = scratch.ingest(max_file_mb(0.004))
+    assert (report.removed, report.unchanged) == (1, 5)
+    assert embedded == []  # its chunks only go
+    assert "big.txt" not in scratch.documents()
+    assert scratch.ids() == scratch.listed()
+
+    report = scratch.ingest(max_file_mb(None))  # the limit lifted: it comes back
+    assert (report.added, report.unchanged) == (1, 5)
 
 
 def drop_a_point(scratch: Scratch) -> None:

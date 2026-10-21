@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | Done (2026-10-21): PR #22 on `feat/s3-4-ingestion-config`. `3f3b1a8` the feature; `a27d98a` a certifi bump; `ef07b17` a `config.yaml` comment from the second review; `0e210a8`, `d1e747f`, `fbf3d8d`, `e0ee166` and the commit recording CI on it, this record. Verification 1–8 are run and shown below, all as expected. CI went red on `0e210a8` (run 39487923435), in Audit alone, on a certifi advisory published after `main`'s last green run; the bump fixed it. Green since: `d1e747f` (run 39551082170), `fbf3d8d` (run 39565294829), and `e0ee166` (run 39588185690, both jobs: 1068 passed, coverage 98.40%, the audit clean, tier 1 0.950 / 0.796 / 0.858, the 8 Qdrant server tests). Reviewed twice; neither review found a defect in the code ("First review", "Second review"). Check `gh pr checks` on the head after this record's commit, then merge it with a merge commit. |
 | **Closes** | SRS §7.2 (chunking configurable per document type); SRS §7.1 (a declared maximum file size); backlog: per-loader splitter strategies |
 | **Depends on** | S3-2 (manifest version 2) |
 | **Model** | opus (not fast: it changes identity rules that tier 2's fingerprint reuses) |
@@ -90,11 +90,263 @@ gh pr checks
 - Two rules carry the risk: the per-document splitter identity in `diff`, and the
   fingerprint leaving out the empty map and `max_file_mb`. Check both against ADR-026's rule: nothing more
   and nothing less than what determines the chunks.
+- **As built, against that rule:**
+  - **`diff`** compares a document's bytes, loader identity and splitter identity: the
+    three config-side inputs of its chunks. The embedder and `CHUNKING_VERSION`, the other
+    two, still rebuild in full. The splitter identity is the effective one, the extension's
+    own or the default, as `spec_identity` of its spec, so renaming an entry, or an entry
+    with the default's spec, re-embeds nothing.
+  - **The fingerprint** hashes only the entries whose spec differs from the default's
+    (Deviation). Its one over-inclusion is kept on purpose: the default is hashed even when
+    every extension has its own, which costs a needless re-run, never a stale pass, and
+    keeps the part's shape. A test says so.
+  - **`max_file_mb`** is never hashed; the walk leaves the file out, so `corpus` moves only
+    when a file is skipped.
+- **One record decides nothing, and can lag.** An edit of the default splitter that no
+  document uses re-embeds nothing and publishes nothing, so the live manifest's top-level
+  record still names the old default until the next publish. It is documented as "the
+  default when this generation was published". Nothing reads it to decide since this
+  story: `rag-ingest`'s full rebuild on it and `generate`'s staleness check on it are both
+  gone.
+
+## Verification record (2026-10-21)
+
+Run on the working tree, on `main` at `9542c9b` plus this story's changes, with Qdrant up
+and the live index under `rag_qa` (`rag_qa--gen-20261019T153834837765Z-7f20891e`).
+
+1. **`rag-eval check`:** exit **0**; all six fingerprint parts ok, every floor met.
+2. **`rag-ingest`:** "Nothing changed: the index is up to date.", "Documents: 3
+   unchanged.", the two parquet files skipped for want of a loader, exit **0**. The
+   per-document splitter identities S3-2 wrote are the ones the new rule computes, and the
+   50 MB limit skips nothing.
+3. **`rag-eval retrieval --contexts-out ~/dev/rag-s3-4/contexts.json`:** hit rate 0.950,
+   MRR 0.796, recall 0.858, S3-2's numbers; every floor met, exit **0**.
+4. **`diff`:** **IDENTICAL**. Both files hash to `5a36e2f9d00bbdaf…a074cbc`, S3-2's digest.
+5. **The suite** (`HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1`): **1068 passed, 12 skipped, 5
+   xfailed**, coverage **98.40%**; the HF folder stayed empty. The 12 skips are the 8
+   `qdrant_server` tests and 4 ragas tests that need the `eval` extra. (S3-3 ended at 1020
+   passed; this story adds 48.)
+6. **Lint, format, types:** "All checks passed!", "60 files already formatted", "no issues
+   found in 30 source files".
+7. **The scratch drill** (`RAG_QDRANT_COLLECTION=s3_4_scratch`, a corpus of a 615,023-byte
+   corpus PDF and a 2.6 KB Markdown file with three headed sections, a scratch config with
+   `".md": components.splitters.markdown`):
+   - **The first ingest** built 56 chunks, 52 from the PDF and 4 from the Markdown file. The
+     manifest gives `notes.md` the markdown splitter's identity (`53e67a36…`) and
+     `yolo.pdf` the default's (`86c72e0c…`), and its top level names the default. Every
+     Markdown chunk starts at a heading. The third section, at 1,007 characters, is over
+     `chunk_size`, so the splitter's next separator parts the heading from its body.
+   - **The markdown splitter's `chunk_size` to 500:** "Updating the index: 1 changed, 1
+     unchanged", "Embedding 10 chunks", no full rebuild. `yolo.pdf` kept its 52 chunks,
+     splitter and `ingested_at`.
+   - **`max_file_mb: 0.5`:** "Skipped yolo.pdf (0.615 MB, above the 0.5 MB limit)", "1
+     removed, 1 unchanged", "Skipped 1 file(s) above the 0.5 MB limit (max_file_mb).",
+     exit **0**. The new generation holds 10 points, none from `yolo.pdf`.
+   - **Cleanup:** the story's `curl … | xargs` deleted the two scratch generations left
+     (recovery had pruned the first), and the `s3_4_scratch` alias went with them. `rag_qa`
+     still names `…7f20891e`, and its two generations are untouched.
+8. **`gh pr checks`:** "no pull requests found for branch "main"", exit 1, before the PR
+   existed. On the PR's head `0e210a8` (run 39487923435): `check fail`, `eval-retrieval`
+   skipped. Lint, Format, Types and Test passed; **Audit failed** on `certifi 2026.7.22`,
+   GHSA-6q48-6c7w-9gw2 (critical: "certifi bundles emSign root CAs with compromised
+   intermediate CA keys"), fixed in 2026.10.19.
+   - **Not this story's change:** the branch leaves `uv.lock` and `pyproject.toml` as `main`
+     has them. The advisory was published at 19:35 UTC on 2026-10-20, after `main`'s last
+     green run (17:30, run 39466730259), so `main`'s lock fails the same audit. It
+     reproduced here, as PYSEC-2026-4320.
+   - **The fix, as S3-2's aiohttp bump was:** `uv lock --upgrade-package certifi` moves
+     certifi alone, 2026.7.22 → 2026.10.19 (3 lines of `uv.lock`), and the audit is then
+     clean. The release's hashes in the lock are PyPI's, and both it and 2026.7.22 were
+     published by Trusted Publishing from `certifi/python-certifi`'s `release.yml`, in its
+     `release` environment. DEC-24's 14-day rule is for Trivy and pinned images, not lock
+     bumps, and the audit policy allows no ignore for an advisory with a fix.
+   - **After the bump:** the suite again 1068 passed, 12 skipped, 5 xfailed, coverage
+     98.40%; `rag-eval check` exit 0. certifi is no hashed input.
+   - **Re-run on the PR's new head,** `d1e747f` (run 39551082170): `check` and `eval-retrieval`
+     both pass. In that run the suite is 1068 passed, 12 skipped, 5 xfailed; Audit prints "No
+     known vulnerabilities found"; `rag-eval check` and tier 1 (0.950 / 0.796 / 0.858) pass.
+
+**The new guards were checked against breakage.** A script broke each one in turn in the
+working tree, ran the tests meant to catch it, and restored the file, checked by sha256.
+All 16 were caught:
+
+- `diff` ignoring the splitter;
+- the limit compared with `>=`, and as the float's binary value (0.000249 MB);
+- the file hashed before its size is checked, and no size check at all;
+- a splitter change rebuilding in full again;
+- every document chunked by the default splitter, or recorded with the default's
+  identity, or given it by the walk;
+- the fingerprint hashing an override equal to the default, never hashing the map, or
+  hashing the empty map as `{}`;
+- `generate` checking the top-level splitter again;
+- a splitter key with no loader, a lax `max_file_mb` (`true` read as 1), and the
+  per-extension slot left out of the checked references.
+
+The first pass caught 15. The survivor was a test of the Markdown chunks that the default
+splitter also passed: its 150-character overlap starts the second chunk at "## Second"
+too. The test now checks the first chunk's end. One "caught" was a syntax error the
+mutation itself made; it was rewritten, and then failed the test it should.
 
 ## Discovered
 
-(Filled during implementation.)
+- **`MarkdownTextSplitter` never splits at a heading as configured** (langchain-text-splitters
+  1.1.2). Its separators are patterns (`"\n#{1,6} "`, `"\n---+\n"`, …), but it leaves
+  `is_separator_regex` off, so they are escaped and matched literally. Apart from code
+  fences it then splits as `RecursiveCharacterTextSplitter` does. The config entry sets
+  `is_separator_regex: true`, and `tests/test_components.py` fails without it.
+- **A float product misses a decimal limit.** 0.000249 × 10⁶ is 248.99999999999997, which
+  would turn away the 249-byte file the limit admits. The limit is compared as the
+  `Decimal` of what the config says, and a test holds the 249-byte boundary.
+- **A rounded size can read as under the limit.** At three significant figures a
+  12,345,001-byte file is "12.3 MB, above the 12.345 MB limit". The line adds digits until
+  it reads as above ("12.35"), and never prints an exponent.
+- **The fingerprint's relative tests cannot see a change to a part's shape.** Each compares
+  two configs through the same code, so hashing the empty map as `{}` passed them all, and
+  only `rag-eval check` would have failed, in CI. A unit test now pins the real config's
+  `ingestion` part to the committed run's.
+- **Backlog: "Published …: 1 documents"** (found in the drill). `_update`'s publish line
+  does not agree in number for one document. It predates this story; S2-8 fixed the other
+  lines.
+- **For S3-11 or later, if the markdown splitter is used:** a section longer than
+  `chunk_size` leaves its heading as a chunk of its own, 16 characters in the drill: the
+  library's recursive fallback. This corpus has no Markdown files.
+
+## First review (2026-10-21)
+
+Run by the first reviewer on the PR's head, `d1e747f`. Reproduced independently:
+
+- ruff, format and mypy clean; **1068 passed, 12 skipped, 5 xfailed**, coverage **98.40%**;
+  `rag-eval check` exit 0; CI green on the head (run 39551082170).
+- **The live index, read-only:** the walk and `diff` against the S3-2-era manifest give 3
+  unchanged, with the same per-document splitter identity (`86c72e0c`) and nothing too
+  large.
+- **A throwaway Qdrant** (v1.19.2 by the compose file's digest, port 16333, a scratch corpus
+  of `a.md`, `C.MD` and `b.txt`), on the real server rather than local mode:
+  - the first ingest gave both `.md` and `.MD` files the markdown splitter's identity
+    (`53e67a36`), `b.txt` the default's;
+  - the default's `chunk_size` 1000 → 700 re-embedded `b.txt` alone ("1 changed, 2
+    unchanged");
+  - the markdown splitter's `chunk_size` to 3000 (chunks 5 → 2) and then to 300 (2 → 25), on
+    bytes that did not change, so the new chunk IDs overlap the deleted ones
+    (`write_generation` copies all but `delete`, then upserts): after each, the points'
+    IDs equalled the manifest's derived IDs exactly;
+  - an entry with the default's spec ("Nothing changed"), no re-embedding;
+  - `max_file_mb` below one file removed it and reported it; below every file it exited 1 and
+    left the generation as it was; lifting it re-added the file.
+- **The size line:** a fuzz over about 300 random limits and 300 sizes each, plus the
+  boundary limits, found no case where the printed size reads at or under the limit, none
+  with an exponent, and the 249 B / 250 B boundary of 0.000249 MB holds.
+- **The fingerprint,** the real config under nine edits: `ingestion` moves for a differing
+  override and for the default's edit, and only those; `corpus` moves for a limit that skips
+  a file; nothing moves for an empty map, a removed or non-skipping `max_file_mb`, an
+  override equal to the default, or an unreferenced markdown entry. ADR-026, both ways.
+- **Sources:** langchain-text-splitters 1.1.2's `MarkdownTextSplitter` leaves
+  `is_separator_regex` off (Discovered holds); GHSA-6q48-6c7w-9gw2 was published
+  2026-10-20 19:35 UTC and is patched in 2026.10.19; the lock's certifi hashes equal PyPI's,
+  and both releases carry PyPI attestations from `certifi/python-certifi`, `release.yml`,
+  environment `release`.
+
+Findings, no defect in the code:
+
+1. **STATUS.md and this story lagged the last commit:** both still said the certifi bump
+   was to be committed and verification 8 re-run, with CI already green on `d1e747f`. Both
+   now record run 39551082170.
+2. **A run emptied by `max_file_mb` ends "No documents were loaded."** The cause is in the
+   log lines above it. The line is shared with the API's job report, so renaming it is a
+   small contract change: left as a backlog line ("name `max_file_mb` when it emptied the
+   run").
+
+Accepted, no action: a `.md` entry moves `ingestion` even for a corpus with no Markdown
+files, as the loader map already does; lowering the limit on a partly fitting corpus removes
+documents and exits 0, which README and `config.yaml` say, and the previous generation
+survives (DEC-19). Not re-run: the story's 16-breakage script, which is not in the repo;
+the drill, fuzz and fingerprint probes above cover the same rules.
+
+## Second review (2026-10-21, Opus 5.5)
+
+**No defect in the code; 1 record finding and 1 config comment, both fixed after
+`fbf3d8d`.** Run on the PR's head, `fbf3d8d`, with both earlier records treated as claims
+to check. The live `rag_qa` alias was only read: no `rag-ingest` ran against it, and it
+still names `…7f20891e`. Probes ran on a throwaway Qdrant v1.19.2 from the compose file's
+digest (`review-s3-4-qdrant`, port 16333, removed afterwards).
+
+- **Reproduced on `fbf3d8d`:** ruff, format, mypy and `uv lock --check` clean; **1068
+  passed, 12 skipped, 5 xfailed**, coverage **98.40%**, the HF cache empty; `rag-eval
+  check` exit 0; a fresh tier-1 run 0.950 / 0.796 / 0.858, the contexts digest
+  `5a36e2f9…`, IDENTICAL; CI green on the head (run 39565294829, both jobs).
+- **The live index, read-only:** its manifest, written by S3-2's code, gets no full
+  rebuild under S3-4's rules (`changed_since` gives none), and `diff` gives 3 unchanged,
+  each record's splitter identity equal to the walk's (`86c72e0c`); nothing above 50 MB.
+- **New: an update equals a rebuild after every S3-4 transition.** On the throwaway, one
+  collection was updated through six states and another rebuilt with `--rebuild` at each;
+  a scratch corpus of `notes.md` (four headed sections), `b.txt` and the 615,023-byte
+  corpus PDF:
+  - the markdown splitter's `chunk_size` to 300: "1 changed, 2 unchanged";
+  - the default's to 700: "2 changed, 1 unchanged";
+  - `max_file_mb: 0.5`: the PDF skipped, "1 removed, 2 unchanged";
+  - the limit back to 50 and the override dropped: "1 added, 1 changed, 1 unchanged";
+  - an override with the default's spec: "Nothing changed".
+
+  At each, the two had the same point IDs, texts and metadata (all but `ingested_at`),
+  vectors within 1.2e-7, and equal manifest records. The point count moved at each state
+  (59, 71, 98, 20, 88), so an update that missed a re-chunk would have shown.
+- **The identity rules, read in the code:** `spec_identity` hashes the whole spec, so no
+  splitter key is dropped (a spelled-out default costs a needless re-embed at worst); a
+  renamed entry needs no relabel, since the record holds the identity, not the reference;
+  a changed document that fails to load keeps its record and chunks, and is retried; the
+  manifest's top-level splitter is read by nothing but the code that writes it;
+  `build_splitter` has one caller, with the extension; and `_slots()`, one walk, both
+  validates the new slot and lists it for the import check.
+- **Sources:** langchain-text-splitters 1.1.2's `MarkdownTextSplitter.__init__` passes the
+  pattern separators with `is_separator_regex` left `False`, which only `from_language`
+  sets (Discovered holds). The real functions give 248.99999999999997 for the float
+  product and admit the 249-byte file by `Decimal`; "12.35" above a 12.345 MB limit; and
+  the largest corpus file is 25,370,930 bytes. SRS §7.2 asks for chunking "per loader":
+  per extension is the design's choice (ARCHITECTURE.md's gap table) and covers it.
+- **Commits:** the five on the PR have parseable trailers, no body line over 72, and no
+  attribution, nor does the PR body. No `!`: the keys are optional, the report's fields
+  additive.
+
+Findings, both fixed:
+
+1. **The records lagged the head again.** STATUS.md's next action still said to commit and
+   push the first review's record (`fbf3d8d`, pushed); this story's Status named `d1e747f`
+   as the head; and Deviation said the branch "is not created". All three are corrected.
+2. **A trap beside the markdown entry.** With `is_separator_regex: true`,
+   `keep_separator: false` makes the library join merged pieces with the pattern itself: a
+   probe's chunk read `'B\n\nbeta beta\n#{1,6} C…'`. The entry keeps the default, `true`,
+   so nothing is wrong today; `config.yaml`'s comment now says to leave it. Comments are not
+   hashed: `rag-eval check` still exits 0.
+
+Considered, no change: README's "Upgrading from v0.3" lists what needs action, and the
+50 MB limit needs none (a config without the key has no limit).
+
+After the fixes: ruff, format and mypy clean; **1068 passed, 12 skipped, 5 xfailed**,
+coverage **98.40%**; `rag-eval check` exit 0.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **The fingerprint hashes the overrides that differ from the default, not "the map when
+  it is not empty".** An entry with the default's spec makes the default's chunks and
+  re-embeds nothing in `rag-ingest`, so by ADR-026's rule it should move nothing either.
+  An empty map is the case the story names, and it still moves nothing. ARCHITECTURE.md
+  §3.3 has the dated note.
+- **The markdown entry sets `is_separator_regex: true`**, beyond the story's "1,000 / 150"
+  (Discovered). It is referenced by nothing, so no hash moves.
+- **`rag-eval generate`'s staleness check dropped its top-level splitter comparison**, which
+  the story does not name. It was the same rule as `rag-ingest`'s full rebuild, and would
+  have refused an index `rag-ingest` calls up to date. The per-document records decide
+  there too, through `diff`. Found by caveat 28's check of every reader of the identity.
+- **The report's names:** `IngestReport.too_large`, as `(name, size in bytes)`, and
+  `IngestReport.max_file_mb`, the limit the run applied. `IngestReportOut` mirrors them, so
+  the API's job report carries both.
+- **One more unit test than the story lists:** the real config's `ingestion` part against
+  the committed run's (Discovered).
+- **ARCHITECTURE.md** gains two dated notes, under DEC-17's full-rebuild list and §3.3.
+- **The board's S3-3 record** is updated to merged, at the maintainer's request.
+- **Model:** Opus 5.5, as the story says (opus, not fast).
+- **The branch** `feat/s3-4-ingestion-config` was created by the maintainer, not the
+  session: the maintainer runs every git command, and the recipe started with it.
+- **A certifi bump rides on this PR** (`build(deps)`, `uv.lock` alone): an advisory
+  published mid-review turned the Audit red on every branch, `main` included (verification
+  8). Merging the PR clears `main` too.

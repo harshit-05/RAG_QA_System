@@ -5,11 +5,71 @@
 
 ## Now
 
-**Next action: merge PR #21 with a merge commit, then start S3-4.** CI is green on the PR's
-head, `b30a669` (run 39458364522, both jobs): the suite 1020 passed, coverage 98.37%, the
-audit clean, tier 2 fresh, tier 1 0.950 / 0.796 / 0.858, and the 8 Qdrant server tests.
-Check `gh pr checks` on the head again after this record's commit. The commits:
-`0ba74fb` the dependency change, `b30a669` the story record, then this record of CI.
+**Next action: merge PR #22 with a merge commit, then start S3-5.** S3-4 is done
+(2026-10-21). CI is green on the second review's record, `e0ee166` (run 39588185690, both
+jobs): the suite 1068 passed, coverage 98.40%, the audit clean, tier 2 fresh, tier 1 0.950
+/ 0.796 / 0.858, and the 8 Qdrant server tests. Check `gh pr checks` on the head again
+after this record's commit. Neither review found a defect in the code. The merge also
+clears `main`'s red audit, through the certifi bump (`a27d98a`).
+
+**Second review of S3-4 (2026-10-21, on `fbf3d8d`): no defect in the code; 1 record
+finding and 1 config comment, fixed after it.** The live `rag_qa` alias was only read;
+probes ran on a throwaway Qdrant v1.19.2, removed afterwards. Detail in the story.
+
+- **New evidence: an update equals a rebuild after every S3-4 transition,** on the real
+  server: the markdown splitter changed, the default changed, the limit lowered below the
+  PDF, the limit raised with the override dropped, and an override with the default's spec.
+  At each, the same point IDs, texts and metadata as a fresh `--rebuild`, vectors within
+  1.2e-7, and equal manifest records.
+- **Held:** the gates on `fbf3d8d` (1068 passed, 98.40%; `rag-eval check` exit 0; tier 1
+  IDENTICAL, `5a36e2f9…`); the S3-2-written live manifest under S3-4's rules (3 unchanged,
+  no full rebuild); the identity rules read in the code; the Discovered claims against
+  langchain-text-splitters 1.1.2 and the real functions.
+- **Fixed:** this file and the story still named `d1e747f` as the head and the first
+  review's record as uncommitted. And `config.yaml` now warns against `keep_separator:
+  false` on the markdown entry: with regex separators, the library joins merged pieces with
+  the pattern, `"#{1,6} "`, in the chunk text. Comments are not hashed.
+
+S3-4's PR went red on `0e210a8` (run 39487923435) in Audit alone: GHSA-6q48-6c7w-9gw2, a
+critical certifi advisory (compromised emSign intermediate CA keys) published at 19:35 UTC
+on 2026-10-20, after `main`'s last green run. `main`'s lock fails it too. `uv lock
+--upgrade-package certifi` moves certifi alone, 2026.7.22 → 2026.10.19, from the same
+Trusted Publisher as before; the audit is then clean, and the suite and `rag-eval check`
+are unchanged. As S3-2's aiohttp bump did, a `build(deps)` commit (`a27d98a`) on the PR, so
+the merge clears `main` as well.
+
+**S3-4 (2026-10-21): a file type can have its own splitter, and the corpus a maximum file
+size; the real index, tier 2 and every answer are unchanged.**
+
+- **Per-extension splitters:** `pipeline.ingestion.splitters`, empty in `config.yaml`. Each
+  document records the splitter that chunked it, and a changed splitter re-embeds only the
+  documents it chunks: DEC-17's full rebuild on a splitter change is gone. One entry is
+  ready for use, `components.splitters.markdown`, referenced by nothing.
+- **A maximum file size:** `max_file_mb: 50`. A larger file is skipped, reported with its
+  size and the limit in the log, `IngestReport` and the API's job report, and never read.
+  One indexed earlier is removed, as a deleted file is.
+- **Parity:** `rag-eval check` exit 0, all six parts ok; `rag-ingest` "Nothing changed";
+  the contexts file is IDENTICAL to S3-2's (`5a36e2f9…`); tier 1 is 0.950 / 0.796 / 0.858.
+- **The suite:** 1068 passed, 12 skipped, 5 xfailed, coverage 98.40%. 16 deliberate
+  breakages of the new guards were all caught.
+- **The scratch drill** in a collection of its own showed each rule on the real server: the
+  Markdown file alone re-embedded when its splitter changed, and the PDF skipped and its
+  chunks removed below the limit.
+- **Discovered:** `MarkdownTextSplitter` in langchain-text-splitters 1.1.2 never splits at
+  a heading unless `is_separator_regex` is set, which the entry now does. A float limit
+  missed the decimal one by a byte, and a rounded size could read as under the limit;
+  both are fixed with tests. The fingerprint's relative tests could not see a change to a
+  part's shape, so a new test pins `ingestion` to the committed run. Detail in the story.
+- **First review (2026-10-21):** everything reproduced on `d1e747f`, including a drill on a
+  throwaway Qdrant (overlapping chunk IDs after a splitter change on the same bytes, the
+  size limit's three cases), a fuzz of the size line, and the fingerprint under nine edits.
+  No defect in the code; this record was the one stale thing, and one cosmetic line went to
+  the backlog (`exit_status` on a run the limit emptied). Detail in the story.
+
+**S3-3 is merged** (2026-10-20, PR #21, merge commit `9542c9b`). CI was green on the PR's
+last head, `72ca896` (run 39464788422, both jobs), and is green on `main` after the merge
+(run 39466730259). The commits: `0ba74fb` the dependency change, `b30a669` the story
+record, `72ca896` the record of CI.
 
 **Second review of S3-3 (2026-10-20): no blockers; 5 doc and record findings and 1 nit,
 fixed in the working tree.** It re-ran verification 1–11, rebuilt the lock from `HEAD` in
@@ -1214,8 +1274,8 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | --- | --- | --- | --- | --- |
 | [S3-1](phase-3/S3-1-open-phase-3.md) | Open Phase 3: 1.0.0.dev0, format the code once and gate it | DEC-28, backlog: `ruff format` | — | Done 2026-10-16 (PR #19) |
 | [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19 (PR #20, merged 2026-10-20) |
-| [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Done 2026-10-20 (PR #21) |
-| [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Todo |
+| [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Done 2026-10-20 (PR #21, merged 2026-10-20) |
+| [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Done 2026-10-21 (PR #22) |
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Todo |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Todo |
 | [S3-7](phase-3/S3-7-observability.md) | Structured logs, traces, metrics and alerts | NFR-10, NFR-1, NFR-3, DEC-22 | S3-6 | Todo |
@@ -1273,7 +1333,7 @@ S3-2's (design review 1).
 | DEC-14 | Cancelling an answer: how the CLI's Ctrl-C and the API's client disconnect stop generation | **Resolved 2026-10-02: one answer-event stream (`answering.stream_answer`); stopping it means cancelling the task that consumes it** | **Verified trap:** async alone does not fix it. Under `RunnablePassthrough.assign`, `RunnableParallel` waits on its step tasks with `asyncio.wait` and never cancels them. In the trial, a cancel at 0.5 s during a simulated prefill left the stream open until 2.0 s; streaming `prompt \| llm \| parser` directly closed it at 0.5 s. **Design:** the CLI uses one `asyncio.Runner` per session. `QueryPipeline` holds the parts, and `build_rag_chain` stays for `invoke`. `aclose_llm` closes ChatOllama's clients, and `ttft_ms` is measured for NFR-2. S2-1. ARCHITECTURE.md §2.1. |
 | DEC-15 | Phase 2 quality gate: what runs in CI when RAGAs on CPU takes hours | **Resolved 2026-10-02: two tiers** (maintainer) | **Tier 1:** retrieval hit rate, MRR and recall against `expected_sources`, recomputed on every pull request and every push to `main` by a CI job that caches the HF models. That job is CI's only network use. **Tier 2:** RAGAs with a `gemma2:9b` judge through Ollama's OpenAI endpoint, run offline (scoring can go to Colab/Kaggle) and committed with a fingerprint. `rag-eval check` fails CI on a floor breach **or a stale run** (maintainer: fail, not warn). Rejected: a hosted judge in CI; offline-only. **Second review:** the fingerprint has six parts (`query` with a rendered-prompt probe, `ingestion`, `corpus`, `questions`, `references`, `judge`) in `evaluation/fingerprint.py`; Ollama digests are recorded, not hashed; the judge is `rag-judge` from `eval/judge.Modelfile` (8k context, caveat 22); the tier-2 tolerance comes from two scorings. S2-2, S2-3, S2-5, S2-5b. |
 | DEC-16 | Reranker: `langchain_classic`'s `ContextualCompressionRetriever`, or our own | **Resolved 2026-10-02: our own `CrossEncoderReranker` on `sentence-transformers`** (DEC-5 step 2) | A `langchain_core` `BaseDocumentCompressor` that writes `rerank_score` into metadata. k=20 candidates are cut to `top_n` 5, and tier-1 numbers decide whether it is on. `langchain_classic.` and `langchain_community.` leave `ALLOWED_PREFIXES`. The `min_score` knob is for the Sources-relevance backlog line. S2-4. **Outcome (S2-4, 2026-10-04): on.** Hit rate 0.950, MRR 0.7958, recall 0.8583, against dense 0.800, 0.5875, 0.7167; 8 questions won, 4 lost (still hits), 1.4 s per answer on CPU. |
-| DEC-17 | Incremental ingestion: change detection, failure handling, write safety | **Resolved 2026-10-02: a sha256 manifest beside the index, generation directories published by an atomic symlink flip, one writer** (the flip replaced a two-rename swap in the second review) | **Updates:** only added and changed documents are re-embedded. A failed document keeps its chunks, which dissolves DEC-13. **Full rebuild** when the embedder identity or the splitter changes. Device keys are left out of the identity, so Colab's `_cuda` equals local `_cpu`. **IDs and metadata:** uuid5 chunk IDs, ready for Qdrant (DEC-3). `source` becomes corpus-relative, plus `source_sha256` and `ingested_at` (SRS §7.3). **Query side:** `rag-query` refuses a mismatched index. **Breaking:** re-ingest once. S2-6. **As implemented (2026-10-05):** `multi_process` stays in the identity, since langchain-huggingface 1.2.2's multi-process path drops `encode_kwargs` (maintainer). An empty `model_kwargs` counts as none. Generation stamps carry microseconds and always sort after the live one. Only a folder holding exactly `index.faiss` and `index.pkl` is migrated as v0.2, and anything else at the path exits 2. Every update opens the live index, and an update probes the embedder's dimension. ARCHITECTURE.md DEC-17 has the dated notes. |
+| DEC-17 | Incremental ingestion: change detection, failure handling, write safety | **Resolved 2026-10-02: a sha256 manifest beside the index, generation directories published by an atomic symlink flip, one writer** (the flip replaced a two-rename swap in the second review) | **Updates:** only added and changed documents are re-embedded. A failed document keeps its chunks, which dissolves DEC-13. **Full rebuild** when the embedder identity or the splitter changes. Device keys are left out of the identity, so Colab's `_cuda` equals local `_cpu`. **IDs and metadata:** uuid5 chunk IDs, ready for Qdrant (DEC-3). `source` becomes corpus-relative, plus `source_sha256` and `ingested_at` (SRS §7.3). **Query side:** `rag-query` refuses a mismatched index. **Breaking:** re-ingest once. S2-6. **As implemented (2026-10-05):** `multi_process` stays in the identity, since langchain-huggingface 1.2.2's multi-process path drops `encode_kwargs` (maintainer). An empty `model_kwargs` counts as none. Generation stamps carry microseconds and always sort after the live one. Only a folder holding exactly `index.faiss` and `index.pkl` is migrated as v0.2, and anything else at the path exits 2. Every update opens the live index, and an update probes the embedder's dimension. ARCHITECTURE.md DEC-17 has the dated notes. **S3-4 (2026-10-21):** a splitter change no longer rebuilds in full. Each document records the splitter that chunked it (its extension's own, or the default), and a document whose splitter changed re-embeds, as one whose loader changed does; the manifest's top-level splitter decides nothing. |
 | DEC-18 | HTTP API shape: SSE library, auth, concurrency, ingest jobs | **Resolved 2026-10-02: FastAPI ≥ 0.135 native SSE; a token is required off localhost (maintainer); one generation at a time** | **Surface:** `rag-serve`. `QueryRequest` is `{question}` with `extra="forbid"`, so the API never supplies components, and a `trust_remote_code` load guard comes with it. **Load:** 503 with `Retry-After` when busy. A disconnect cancels generation: under uvicorn (ASGI 2.3) Starlette cancels the stream, and `stream_answer` runs inside it, with no producer task (second review). Requests with an `Origin` header are refused. **Ingest:** single-flight jobs in memory, which swap only the retrieval half. **Privacy:** no host paths over HTTP. S2-7. **As built (S2-7, 2026-10-12):** FastAPI's native SSE runs the generator in its own producer task. The cancel still reaches `stream_answer`, and the slot's teardown closes a stream that a drop between events left paused (the spike's window). Retrieval is serialized by a lock, not the slot. The API opens the index itself (`chain.open_retrieval`), and `require_index` is gone. `rag-serve` checks Ollama before uvicorn starts. ARCHITECTURE.md DEC-18 has the dated notes. |
 | DEC-19 | The Qdrant store: how an index is written, published, recovered and found | **Resolved 2026-10-14: a generation is a collection behind an atomic alias switch; the manifest lives in the collection's metadata; our own module on `qdrant-client`** | Qdrant v1.19.2, `qdrant-client` 1.19.1 (resolves with the stack; adds grpcio, protobuf, portalocker, h2; no locked version moves). ADR-024's pattern carries over: build `<collection>--gen-<stamp>-<hex>`, then one `update_collection_aliases` call, then recovery keeps the target and the newest older one. Manifest version 2: identities plus per-document records, with chunk counts in place of ID lists. Search is always exact, by cosine (MiniLM's vectors are unit length). `paths.state` (`var/`) holds the lock and S3-8's job database. **Breaking:** `paths.vector_store` and `RAG_VECTOR_STORE_PATH` are refused at load; a scratch index is `RAG_QDRANT_COLLECTION`. **Quickstart:** `docker compose up -d qdrant` first; local mode with `path=` is not offered (its folder lock admits one process). Parity with FAISS is proven by a contexts digest of all 25 golden questions, so no tier-2 re-run. **Design review 1 (2026-10-15):** readers resolve the alias again per question, since a generation is deleted two switches later; S3-2 writes manifest version 2 whole; a retry counts a create that finds our collection, or a delete that finds none, as done; S3-3 … S3-10 repeat the digest. **Design review 2 (2026-10-16):** the protocol held, killed at every step; our code makes every cut, since the server decides a tie by the collection's layout; with no alias (deleting the target deletes it), recovery deletes only incomplete generations; the manifest sits under one metadata key, written whole; and `var/` is shared under one uid. **As implemented (S3-2, 2026-10-19/20):** parity with FAISS proven, the contexts digest of all 25 golden questions identical (`5a36e2f9…`), so no tier-2 re-run. A generation is created after the embedding, so a kill while embedding leaves nothing to recover. A retriever takes `k` only: the schema refuses FAISS's other options. Readers resolve the alias per question (`build_retrieve`), the API per request, and go not-ready when the alias cannot be read; `rag-eval generate` holds a generation it moves to against its corpus scan. `check()` refuses a server older than 1.16 or an answer that is not Qdrant's (exit 2), and a switch whose answer was lost is read back. The writer lock excludes only writers that share `var/` (caveat 36). Local mode differs from the server (a failing alias batch applied halfway, vector precision), so those properties are `qdrant_server` tests, which CI runs against its service container. S3-2. ARCHITECTURE.md §3.1. |
 | DEC-20 | Hybrid retrieval: where the sparse vectors come from, how they are fused, how it is switched on | **Resolved 2026-10-14: our own BM25 encoder; Qdrant prefetch + RRF with an explicit constant; then the cross-encoder; tier 1 decides, S3-11 switches** | `rag_qa/sparse.py`, about 80 lines with no dependency; IDF applied by Qdrant. Rejected: fastembed's `Qdrant/bm25` (onnxruntime, a model download, a tokenizer that moves with releases) and Qdrant's own BM25 (needs `cloud_inference=True`, which local mode refuses; its tokenizer changes with the server). Qdrant's default RRF constant is 2, so `rrf_k` is always set (60). A `sources` filter by document path (API and CLI) is FR-3's metadata filtering. The real config sets no sparse encoder until S3-11b, so nothing hashed moves before the batched re-run. **Design review 1:** Qdrant's server breaks no RRF ties, so the fusion returns its whole union and our code cuts it, ties by point ID; S3-5 runs hybrid tier 1 twice. **Design review 2 (2026-10-16):** each prefetch still cut its own list on the server, which kept other tied points for each insertion order and after a restart. So the two branches run as separate searches, each cut by our code, and our code fuses them by RRF. S3-5's second run follows a restart. S3-5, S3-11, S3-11b. |
@@ -1346,6 +1406,15 @@ diffed this backlog against `main`'s: no line was dropped.
   logging to tell a lost request from a stalled one, and decide whether a timeout with the
   server up should say so rather than ask if it runs.
 
+- **Any story touching ingestion's log — "Published …: 1 documents"** (found in S3-4's
+  drill). `_update`'s publish line does not agree in number for one document, where S2-8
+  fixed the other lines. Cosmetic; no hashed input.
+
+- **Any story touching `exit_status` — name `max_file_mb` when it emptied the run** (found
+  in S3-4's first review). When every file is above the limit, the run exits 1 with "No
+  documents were loaded."; the cause is only in the log lines above it. The line is shared
+  with the API's job report, so the wording is a small contract. Cosmetic; no hashed input.
+
 - **S3-8 — the Qdrant URL in an ingest job's error text** (found in S3-2's second review).
   `describe_error` passes `cannot use Qdrant at http://host:6333 (…)` through to
   `GET /v1/ingest/<job>` clients. Not a path, so DEC-18 holds; once S3-9 puts Qdrant on an
@@ -1358,6 +1427,9 @@ diffed this backlog against `main`'s: no line was dropped.
   It opens one line: the exclude and a file named on the command line.
 - **S3-3 (2026-10-20):** the parity tests against the `langchain-community` loaders, and
   the corpus PDF line that rode with them (found in S1-3). DEC-5's exit is complete.
+- **S3-4 (2026-10-21):** per-loader splitter strategies (SRS §7.2), as
+  `pipeline.ingestion.splitters`; and SRS §7.1's declared limit, `max_file_mb: 50`. It
+  opens one line: the publish line's "1 documents".
 
 ### Closed in Phase 2
 
@@ -1686,7 +1758,9 @@ diffed this backlog against `main`'s: no line was dropped.
   (DEC-11). **Re-deferred at the Phase 2 exit:** a phase boundary is the one time no
   story branch is open to conflict with it, so that pass decides: reformat once, alone,
   and gate it, or drop the line.
-- **S3-4 — per-loader splitter strategies** (SRS §7.2): chunking
+- **Closed by S3-4 (2026-10-21), as `pipeline.ingestion.splitters` — per-loader splitter
+  strategies.** A changed splitter re-embeds only the documents it chunks, and an empty
+  map moves no fingerprint part, so neither cost below remains. (SRS §7.2): chunking
   configurable per document type. The `_target_` mechanism already supports it;
   it needs more splitter entries and a per-loader default, not new architecture.
   **Re-deferred at the Phase 2 exit:** a splitter change moves tier 2's `ingestion` part

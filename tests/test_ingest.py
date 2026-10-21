@@ -271,6 +271,50 @@ def test_the_summary_accounts_for_everything_not_indexed(
 
 
 @pytest.mark.parametrize(
+    ("size", "limit", "shown"),
+    [
+        pytest.param(
+            25_370_930, 20, "25.4 MB, above the 20 MB limit", id="the largest corpus file"
+        ),
+        pytest.param(1_521_034, 1, "1.52 MB, above the 1 MB limit", id="three figures"),
+        pytest.param(1_530, 0.001, "0.00153 MB, above the 0.001 MB limit", id="under a MB"),
+        pytest.param(1_250_000_000, 50, "1,250 MB, above the 50 MB limit", id="over a GB"),
+        pytest.param(5_000, 0.004, "0.005 MB, above the 0.004 MB limit", id="no trailing zero"),
+        # Three figures would say 12.3: under the limit, on the line that says above it.
+        pytest.param(
+            12_345_001, 12.345, "12.35 MB, above the 12.345 MB limit", id="never reads as under"
+        ),
+        pytest.param(
+            50_000_001, 50, "50.000001 MB, above the 50 MB limit", id="one byte over, exactly"
+        ),
+        pytest.param(15, 0.00001, "0.000015 MB, above the 0.00001 MB limit", id="no exponent"),
+    ],
+)
+def test_a_file_above_the_limit_is_logged_with_its_size_and_the_limit(
+    tmp_path: Path,
+    make_config: MakeConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    size: int,
+    limit: float,
+    shown: str,
+) -> None:
+    corpus = tmp_path / "sizes"
+    corpus.mkdir()
+    with open(corpus / "big.pdf", "wb") as f:
+        f.truncate(size)  # sparse, so instant: above the limit, it is never read
+    monkeypatch.setenv("RAG_DATA_PATH", str(corpus))
+    config = load_config(
+        make_config(lambda c: c["pipeline"]["ingestion"].update(max_file_mb=limit))
+    )
+    report = IngestReport()
+    with caplog.at_level(logging.INFO, logger="rag_qa.ingest"):
+        scan_corpus(config, report)
+    assert f"  - Skipped big.pdf ({shown})" in caplog.messages
+    assert (report.too_large, report.found) == ([("big.pdf", size)], 0)
+
+
+@pytest.mark.parametrize(
     ("report", "summary"),
     [
         pytest.param(IngestReport(), "", id="nothing at all"),
@@ -316,6 +360,16 @@ def test_the_summary_accounts_for_everything_not_indexed(
             "  - b.pdf: PdfReadError: bad\n"
             "  - locked/: PermissionError: no",
             id="an update with failures",
+        ),
+        pytest.param(
+            IngestReport(found=1, unchanged=1, too_large=[("big.pdf", 60_200_000)], max_file_mb=50),
+            "Documents: 1 unchanged.\nSkipped 1 file(s) above the 50 MB limit (max_file_mb).",
+            id="a file above max_file_mb (S3-4)",
+        ),
+        pytest.param(
+            IngestReport(too_large=[("big.pdf", 60_200_000)]),  # built by hand: no limit
+            "Skipped 1 file(s) above the limit (max_file_mb).",
+            id="a file above an unrecorded limit",
         ),
     ],
 )
