@@ -64,7 +64,7 @@ _STOPWORDS_TEXT: Final = """
 STOPWORDS: Final = frozenset(_STOPWORDS_TEXT.split())
 
 #: A soft hyphen and the whitespace after it: a line-break hyphenation in PDF text.
-_SOFT_HYPHEN = re.compile("­\\s*")
+_SOFT_HYPHEN = re.compile("\u00ad\\s*")
 #: A Unicode word token: letters, digits and the underscore, in any script.
 _WORD = re.compile(r"\w+")
 
