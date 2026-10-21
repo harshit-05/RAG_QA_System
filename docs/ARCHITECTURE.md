@@ -2374,6 +2374,14 @@ the dense and sparse candidates with RRF, and the cross-encoder ranks what survi
     re-run covers it. `ingestion` leaves an absent key out of its hash, so v0.3's hash holds
     until then.
 
+_As built in S3-5 (2026-10-21):_ the tokenizer also joins a soft hyphen (U+00AD) with the
+whitespace after it, since the CADE proceedings mark 823 line-break hyphenations with one, and
+the stopwords are NLTK's English list less its 26 forms with an apostrophe (153). `avg_len` is
+100.76. A hybrid retriever must state `prefetch` and `rrf_k`, with no default in code, so the
+dump tier 2 hashes says everything it does; an explicit `mode: dense` dumps as no mode. A query
+with no tokens runs the dense search alone. Tier 1 recommends hybrid on with `rrf_k` 60 and
+`prefetch` 40, and `min_score` −4 (S3-5's story, "Tier 1"); S3-11 decides.
+
 **DEC-21 — Network calls get timeouts, retries where a retry is safe, and circuit breakers;
 Ollama gets an opt-in hosted fallback.** This resolves DEC-9, and NFR-6.
 
@@ -3094,7 +3102,9 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
 - `QueryPipeline` gains `fallback_llm: BaseChatModel | None`.
 - `stream_answer(pipeline, question, *, sources=())`.
 - `retrieve` takes a `RetrievalQuery(question, sources=())`. Tier 1 passes no sources; S3-5's
-  plan settles the exact type.
+  plan settles the exact type. _As built in S3-5:_ a frozen dataclass in `chain.py`, and the
+  retrieval half is `Runnable[RetrievalQuery, list[Document]]`, with no `str` form; tier 1
+  passes `RetrievalQuery(item.question)`.
 - `Done(ttft_ms, total_ms, model, input_tokens, output_tokens)`.
 
 **HTTP changes** (to §2.4's table):

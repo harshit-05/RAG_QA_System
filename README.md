@@ -31,6 +31,7 @@ against a hand-checked set of questions.
 | Chunking | 1,000 characters, 150 overlap | — |
 | Embeddings | `all-MiniLM-L6-v2` on CPU | multilingual model; GPU variants |
 | Vector store | Qdrant server, exact search; each index version a collection behind an alias | another server or collection: `RAG_QDRANT_URL`, `RAG_QDRANT_COLLECTION` |
+| Retrieval | dense: the 20 chunks nearest the question's embedding | hybrid: BM25 keyword search fused with it, measured but not yet on (below) |
 | Reranker | `ms-marco-MiniLM-L-6-v2` cross-encoder on CPU: rescores 20 candidates, keeps 5 | off (the 5 nearest chunks); GPU variant |
 | LLM | `mistral` via Ollama | `phi3` (low memory), `qwen2:7b` |
 
@@ -89,6 +90,27 @@ Sources:
   [2] Batch22_SmartSurveillanceSystemsUsingYOLOv8...pdf, p. 3
 ```
 
+To answer from some documents only, name each with `--source`, by its path relative to
+`corpus/`, as `GET /v1/documents` lists it; repeat it for several:
+
+```bash
+uv run rag-query --source 2412.14140v2.pdf --source notes/meeting.md
+```
+
+A name the index does not hold stops the start with exit 2, and the nearest name it does
+hold.
+
+**Hybrid retrieval** is built and measured, but not yet switched on. The embedding finds
+chunks that mean what the question means, and can miss a name, an acronym or a number;
+BM25 finds the chunks that share the question's words. A hybrid retriever runs both
+searches and fuses their rankings (reciprocal rank fusion), before the reranker. On the
+golden set it finds the one passage dense retrieval misses, and loses none (`config.yaml`,
+the `hybrid` retriever's comment, has the table). It is set by two lines,
+`pipeline.query.retriever: components.retrievers.hybrid` and
+`pipeline.ingestion.sparse_encoder: components.sparse_encoders.bm25`; the next `rag-ingest`
+then rebuilds the index with the BM25 vectors. v1.0's tier-2 run decides whether it ships
+on.
+
 Expect slow answers on CPU. In the v0.3 end-to-end run on a laptop CPU, `mistral`'s first
 words came after about 155 seconds, most of it the model reading the prompt, and the
 answer was complete at about 175 seconds. The answer streams in as it is generated.
@@ -114,8 +136,9 @@ before. What needs something from you:
    `RAG_QDRANT_COLLECTION=scratch_1` (lowercase letters, digits and `_`). Every command
    refuses to start while `RAG_VECTOR_STORE_PATH` is set, so an old script cannot write to
    the real index by mistake.
-4. **A retriever takes `k` only.** `components.retrievers` entries may set
-   `search_kwargs.k`, and `search_type` only as `similarity`. Other options were FAISS's
+4. **A retriever takes `k` only, and the hybrid settings.** `components.retrievers` entries
+   may set `search_kwargs.k`, `search_type` only as `similarity`, and, new in 1.0, hybrid
+   retrieval's `mode: hybrid` with its `prefetch` and `rrf_k`. Other options were FAISS's
    and are refused at load.
 5. **Exit 2 also means Qdrant could not be used**, for every command that reads or writes
    the index: `rag-ingest`, `rag-query`, `rag-serve`, `rag-eval retrieval` and
@@ -213,7 +236,7 @@ again on the first request after Qdrant is back.
 
 | Method and path | Does |
 | --- | --- |
-| `POST /v1/query` `{"question": "..."}` | streams an answer: `sources`, then `token`…, then `done` (or `error`) |
+| `POST /v1/query` `{"question": "..."}` | streams an answer: `sources`, then `token`…, then `done` (or `error`); an optional `"sources": [...]` limits it to those documents |
 | `POST /v1/ingest` `{"rebuild": false}` | starts an ingest job, as `rag-ingest` (`--rebuild` with `true`); 202 with its `job_id` |
 | `GET /v1/ingest/{job_id}` | the job: `status`, `rag-ingest`'s `exit_code`, the `report` and the `log` |
 | `GET /v1/documents` | what the index holds, from its manifest |
@@ -250,6 +273,17 @@ data: {"ttft_ms": 157033.62593899964, "total_ms": 176273.471257}
 Each `token` is a chunk of the answer. A stream that ends with neither `done` nor `error`
 was cut off.
 
+To answer from some documents only, list them in `sources`, by their paths relative to
+the corpus, as `GET /v1/documents` names them (50 at most):
+
+```bash
+curl -sN -X POST localhost:8000/v1/query -H 'content-type: application/json' \
+     -d '{"question": "What is GLIDER?", "sources": ["2412.14140v2.pdf"]}'
+```
+
+A name the index does not hold is refused with `422`, which names it, before any answer
+starts.
+
 An ingest job, then its result:
 
 ```bash
@@ -271,8 +305,8 @@ How it behaves:
   holds them off as well. When a job publishes a new index, the server switches to it;
   answers already streaming finish on the old one. An index that `rag-ingest` publishes
   outside the server is picked up on the next request.
-- **A request cannot choose a component.** The query body is the question and nothing
-  else; an extra key such as `"llm"` is refused with `422`.
+- **A request cannot choose a component.** The query body is the question and, optionally,
+  the documents to answer from; an extra key such as `"llm"` is refused with `422`.
 - **No host paths in any response**: only corpus-relative ones.
 
 ### Access
@@ -512,9 +546,10 @@ src/rag_qa/
   components.py    builds the pipeline's loaders, splitter, embedder and LLM
   loaders.py       PDF, DOCX and text loaders
   rerankers.py     the cross-encoder that rescores retrieved chunks
+  sparse.py        the BM25 encoder that writes hybrid retrieval's keyword vectors
   manifest.py      what each index version holds: file hashes, the embedder, chunk counts
   vectorstore.py   the only module that talks to Qdrant: index versions, the alias
-                   switch, recovery, and exact search
+                   switch, recovery, exact search, and the fusion of hybrid search
   ingest.py        the rag-ingest command: updates the index with what changed
   chain.py         the retrieval and answer chain (LangChain LCEL)
   cli.py           the rag-query command
