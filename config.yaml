@@ -28,6 +28,8 @@ components:
     # is_separator_regex is needed: its heading and rule separators are patterns
     # ("\n#{1,6} "), and langchain-text-splitters 1.1.2 leaves it off, so without it they
     # are matched literally and never split at a real heading.
+    # Leave keep_separator at its default, true: with false, the library joins the pieces
+    # it merges with the pattern itself, so "#{1,6} " would appear in the chunks' text.
     markdown:
       _target_: langchain_text_splitters.MarkdownTextSplitter
       chunk_size: 1000
