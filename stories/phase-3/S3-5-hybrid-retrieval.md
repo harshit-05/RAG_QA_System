@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-22): PR on `feat/s3-5-hybrid-retrieval`. `b8888fb` S3-4's merge and the ruleset; `02f093a` the feature; `8024344` the docs; `5fae25f` this record. Verification 1–14 run and shown below, all as expected. CI went red on `5fae25f` (run 39672941870) in Audit alone, on five pypdf advisories published that day. The maintainer deferred the bump to S3-11b under a dated audit exception (Discovered; caveat 37), committed after this record; `gh pr checks` on that head is still to come. Tier 1 recommends hybrid on, with `rrf_k` 60 and `prefetch` 40, and `min_score` −4, for S3-11 ("Tier 1"). On Opus 5.5 at max effort (Deviation). |
+| **Status** | Done (2026-10-22): PR #23 on `feat/s3-5-hybrid-retrieval`. `b8888fb` S3-4's merge and the ruleset; `02f093a` the feature; `8024344` the docs; `5fae25f` the record; `ba00edc` the pypdf audit exception; `eada273` its record; and this one, the record of CI. Verification 1–15 run and shown below, all as expected. CI went red on `5fae25f` (run 39672941870) in Audit alone, on five pypdf advisories published that day. The maintainer deferred the bump to S3-11b under a dated audit exception (Discovered; caveat 37). CI is green on `eada273` (run 39680224669, both jobs). Tier 1 recommends hybrid on, with `rrf_k` 60 and `prefetch` 40, and `min_score` −4, for S3-11 ("Tier 1"). On Opus 5.5 at max effort (Deviation). The first review (2026-10-22) found no defect in the code and changed one line of `sparse.py`, a style fix ("First review"). Check `gh pr checks` on the head after the review's commits, then merge it with a merge commit. |
 | **Closes** | FR-3 (lexical retrieval fused by RRF; metadata filtering); DEC-20 |
 | **Depends on** | S3-4 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -162,7 +162,7 @@ eval/thresholds.yaml`, since a copied config anchors its paths to its own folder
 | 12 | the cleanup | the scratch generation deleted, and its alias with it; the server holds `rag_qa`'s two generations and its alias only |
 | 13 | `rag-query --source 2412.14140v2.pdf --source 2412.14140.pdf --source nope.pdf` | exit 2 before any model: "--source names documents not in the index: '2412.14140.pdf' (did you mean '2412.14140v2.pdf'?), 'nope.pdf'…" |
 | 14 | the two HTTP checks, `rag-serve` in the maintainer's terminal (2026-10-22) | the GLIDER question with `"sources": ["2412.14140v2.pdf"]`: `event: sources` with 5 sources, every one `2412.14140v2.pdf` (pp. 9, 8, 6, 1, 1), and the server log shows "Answer cancelled: its client disconnected" once `head -3` closed. `"sources": ["nope.pdf"]`: `422` |
-| 15 | `gh pr checks` | red on `5fae25f` (run 39672941870): `check` failed in Audit alone, on five pypdf advisories (Discovered); Lint, Format, Types and Test passed, and `eval-retrieval` was skipped behind it. After the audit exception: to be recorded |
+| 15 | `gh pr checks` | red on `5fae25f` (run 39672941870): `check` failed in Audit alone, on five pypdf advisories (Discovered); Lint, Format, Types and Test passed, and `eval-retrieval` was skipped behind it. Then green on `eada273` (run 39680224669, both jobs). In it, Audit found "No known vulnerabilities found, 5 ignored", Test 1180 passed with coverage 98.55%, the Tier-2 check had all six parts ok, tier 1 was 0.950 / 0.796 / 0.858, and the Qdrant server tests 11 passed |
 
 ## Review notes for the human
 
@@ -355,6 +355,62 @@ The cost is one more search per question, a sparse one. S3-7 measures it (NFR-1)
     before stage 2, and S3-11b bumps pypdf, sets `CHUNKING_VERSION` 2 and ends the exception.
 - **A source that a later ingest removes, mid-session, yields no chunks** (D11). The CLI
   checks the sources once, at start-up. The model then declines, which is the honest answer.
+
+## First review (2026-10-22)
+
+Run by the first reviewer on the PR's head, `eada273`, with a throwaway Qdrant (v1.19.2 by
+the compose file's digest, port 16333) for everything that writes; the live index was only
+read. Reproduced independently:
+
+- ruff, format and mypy clean; **1180 passed, 15 skipped, 5 xfailed**, coverage **98.55%**;
+  the 11 `qdrant_server` tests pass; `rag-eval check` exit 0; the contexts file identical to
+  S3-2's (`5a36e2f9…`); CI green on the head (run 39680224669).
+- **BM25 by hand,** on 5 toy documents in a collection with `modifier=IDF`: the server's
+  scores equal the formula's with N the points that have a sparse vector (1.75364 and
+  1.089231), so the IDF is applied once, by Qdrant, and the query side sends 1 per distinct
+  token. A stopword-only text gives an empty sparse vector, which Qdrant accepts.
+- **Tier 1 from scratch:** the scratch hybrid config made from `config.yaml` (it differs in
+  exactly the two lines this story names), 1,708 chunks ingested; hybrid **1.000 / 0.833 /
+  0.933**, contexts digest `bdc45c48…`, identical to `hybrid-1.json` and unchanged after a
+  `docker restart` of the server. Against a dense run: wins 2 (`glider-slm`,
+  `glider-data-filtering`), losses 0, ties 18. The scripts' hashes match this file's.
+- **The reach and the `min_score` table:** reach 0.950 / 0.900 dense and 1.000 / 0.975 hybrid;
+  dense −4 0.950 / 0.8583, −2 0.900 / 0.8083; hybrid −4 1.000 / 0.9333, −2 0.950 / 0.8833,
+  with the chunks per question (4.90, 4.35, 5.00, 4.50 for answerable; 4.00 and one empty
+  context for unanswerable) as tabled.
+- **The constants:** `avg_len` 100.7594 over the 1,708 chunks (config: 100.76); 823 soft
+  hyphens, 0 ligatures, 0 hash collisions. (The plan's 19,013-token vocabulary is 18,962
+  once D3 joins the soft hyphens.)
+- **The incremental paths, on the server:** an edit re-embeds only the edited file, and the
+  copy step carries every other chunk's sparse vector over, an empty one included; a changed
+  `avg_len`, an encoder removed and one added each rebuild in full, with the reason; a
+  renamed entry with the same spec changes nothing; the `sources` filter holds on the dense
+  and the sparse branch, a name the index lacks gives no chunks, and the live generation
+  already has the `metadata.source` payload index.
+- **The API:** a refused `sources` leaves no slot in use (the test asserts it), and a
+  `../etc/passwd` source is a name that is not found, never a path.
+- **The CI exception:** the five GHSA IDs are pypdf's, published 2026-10-21 between 16:48 and
+  19:58 UTC. The Audit command without the ignores finds exactly those five; with them,
+  "No known vulnerabilities found, 5 ignored". The expiry guard passes on 2027-01-20 and
+  fails on 2027-01-21. Each reach claim holds in pypdf 6.19.0's source: text extraction
+  returns at the `/Image` subtype (`_page.py:2023`), and the image, writer and tree code the
+  other three sit in is not on its path; the corpus has no upload route.
+- **The premise of the deferral,** a scratch rebuild under pypdf 6.21.2: 1,710 chunks, 7 of 25
+  golden contexts changed (5 with other citations), tier 1 0.950 / 0.771 / 0.842. And 6.20.0,
+  the smallest release that fixes the two reachable advisories, extracts as 6.21.x does
+  (103 of 516 CADE pages and 2 of 32 GLIDER pages differ from 6.19.0, whitespace only), so
+  there is no free partial bump.
+
+Findings, no defect in the code:
+
+1. **`sparse.py` held an invisible U+00AD** in the soft-hyphen regex, which a reader cannot
+   see. It is now the escape `"\u00ad\\s*"` (as the source reads). The compiled pattern and
+   its flags are identical to the old ones, so `SPARSE_VERSION` stays 1 and no vector moves;
+   `tests/test_sparse.py`'s pins, the incremental tests and the architecture test pass, and
+   no literal soft hyphen is left in the file.
+
+Not a defect: a first background run of the suite showed 4 CLI Ctrl-C failures. A background
+subshell leaves SIGINT ignored, and the tests say so; they pass on an idle machine.
 
 ## Deviation from plan
 

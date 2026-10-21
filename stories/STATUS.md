@@ -5,9 +5,13 @@
 
 ## Now
 
-**Next action: commit the audit exception and its record on `feat/s3-5-hybrid-retrieval`,
-push, and check that CI goes green on the PR; then review S3-5 and merge it with a merge
-commit.** The HTTP filter checks passed (S3-5's verification record).
+**Next action: commit the first review's two changes and its record, push, check `gh pr
+checks` on the new head, and merge PR #23 with a merge commit; then start S3-6.** S3-5 is
+done (2026-10-22), and the first review (2026-10-22) found no defect in the code. CI is
+green on `eada273` (run 39680224669, both jobs). In it, the audit found "No known vulnerabilities, 5 ignored", the suite had 1180
+passed with coverage 98.55%, tier 2's six parts were ok, and tier 1 was 0.950 / 0.796 /
+0.858, with the 11 Qdrant server tests passing. Check `gh pr checks` on the head again
+after this record's commit. The HTTP filter checks passed (S3-5's verification record).
 
 **CI went red on S3-5's PR (run 39672941870, `5fae25f`) in Audit alone.** Five pypdf 6.19.0
 advisories were published on 2026-10-21, after `main`'s last green run, so `main`'s lock
@@ -42,6 +46,12 @@ config, tier 2 and every answer are unchanged.**
   `search_type` already narrowed by S3-2. Detail in the story.
 - **On Opus 5.5 at max effort,** where the story routes to Fable. The plan is in the story
   ("Plan"), approved in plan mode.
+- **First review (2026-10-22):** everything reproduced on `eada273`, including tier 1 rebuilt
+  from scratch on a throwaway Qdrant (the same contexts digest, `bdc45c48…`, before and after
+  a server restart), the reach and `min_score` tables, BM25 checked by hand against the
+  server, and the pypdf premise (a 6.21.2 rebuild: 1,710 chunks, 7 of 25 contexts changed,
+  tier 1 0.950 / 0.771 / 0.842). No defect in the code; one style fix (an invisible
+  character in `sparse.py`'s regex, now an escape). Detail in the story.
 
 **S3-4 is merged** (2026-10-21, PR #22, merge commit `54944d4`). CI was green on the PR's
 last head, `be44453` (run 39589681301), and is green on `main` after the merge (run
@@ -1355,7 +1365,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19 (PR #20, merged 2026-10-20) |
 | [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Done 2026-10-20 (PR #21, merged 2026-10-20) |
 | [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Done 2026-10-21 (PR #22, merged 2026-10-21) |
-| [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | In review (2026-10-22): PR open; CI red in Audit on pypdf, deferred under an exception (caveat 37) |
+| [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Done 2026-10-22 (PR #23) |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Todo |
 | [S3-7](phase-3/S3-7-observability.md) | Structured logs, traces, metrics and alerts | NFR-10, NFR-1, NFR-3, DEC-22 | S3-6 | Todo |
 | [S3-8](phase-3/S3-8-api-hardening.md) | API keys, rate limits and a stateless query tier | NFR-5, DEC-23 | S3-7 | Todo |
