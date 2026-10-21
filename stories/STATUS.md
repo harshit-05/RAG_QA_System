@@ -5,10 +5,29 @@
 
 ## Now
 
-**Next action: commit the first review's record, push, and merge PR #22 with a merge
-commit.** CI is green on `d1e747f` (run 39551082170, both jobs; suite 1068 passed, audit
-"No known vulnerabilities found", tier 1 0.950 / 0.796 / 0.858), and the first review
-(2026-10-21) found no defect in the code.
+**Next action: commit the second review's record, push, and merge PR #22 with a merge
+commit once CI is green on it.** CI is green on `fbf3d8d`, the first review's record (run
+39565294829, both jobs), as on `d1e747f` (run 39551082170; suite 1068 passed, audit "No
+known vulnerabilities found", tier 1 0.950 / 0.796 / 0.858). Neither review found a defect
+in the code.
+
+**Second review of S3-4 (2026-10-21, on `fbf3d8d`): no defect in the code; 1 record
+finding and 1 config comment, fixed after it.** The live `rag_qa` alias was only read;
+probes ran on a throwaway Qdrant v1.19.2, removed afterwards. Detail in the story.
+
+- **New evidence: an update equals a rebuild after every S3-4 transition,** on the real
+  server: the markdown splitter changed, the default changed, the limit lowered below the
+  PDF, the limit raised with the override dropped, and an override with the default's spec.
+  At each, the same point IDs, texts and metadata as a fresh `--rebuild`, vectors within
+  1.2e-7, and equal manifest records.
+- **Held:** the gates on `fbf3d8d` (1068 passed, 98.40%; `rag-eval check` exit 0; tier 1
+  IDENTICAL, `5a36e2f9…`); the S3-2-written live manifest under S3-4's rules (3 unchanged,
+  no full rebuild); the identity rules read in the code; the Discovered claims against
+  langchain-text-splitters 1.1.2 and the real functions.
+- **Fixed:** this file and the story still named `d1e747f` as the head and the first
+  review's record as uncommitted. And `config.yaml` now warns against `keep_separator:
+  false` on the markdown entry: with regex separators, the library joins merged pieces with
+  the pattern, `"#{1,6} "`, in the chunk text. Comments are not hashed.
 
 S3-4's PR went red on `0e210a8` (run 39487923435) in Audit alone: GHSA-6q48-6c7w-9gw2, a
 critical certifi advisory (compromised emSign intermediate CA keys) published at 19:35 UTC

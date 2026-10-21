@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Reviewed (2026-10-21): on `feat/s3-4-ingestion-config`, `3f3b1a8` the feature, `0e210a8` and `d1e747f` this record, `a27d98a` a certifi bump, PR #22. Verification 1–8 are run and shown below, all as expected. CI went red on `0e210a8` (run 39487923435), in Audit alone, on a certifi advisory published after `main`'s last green run; the bump fixed it, and the head `d1e747f` is green (run 39551082170, both jobs). The first review found no defect in the code ("First review"). |
+| **Status** | Reviewed twice (2026-10-21): on `feat/s3-4-ingestion-config`, `3f3b1a8` the feature, `0e210a8`, `d1e747f` and `fbf3d8d` this record, `a27d98a` a certifi bump, PR #22. Verification 1–8 are run and shown below, all as expected. CI went red on `0e210a8` (run 39487923435), in Audit alone, on a certifi advisory published after `main`'s last green run; the bump fixed it. `d1e747f` is green (run 39551082170, both jobs), and so is `fbf3d8d` (run 39565294829, both jobs). Neither review found a defect in the code ("First review", "Second review"); the second review's record and a `config.yaml` comment follow `fbf3d8d`. |
 | **Closes** | SRS §7.2 (chunking configurable per document type); SRS §7.1 (a declared maximum file size); backlog: per-loader splitter strategies |
 | **Depends on** | S3-2 (manifest version 2) |
 | **Model** | opus (not fast: it changes identity rules that tier 2's fingerprint reuses) |
@@ -262,6 +262,68 @@ documents and exits 0, which README and `config.yaml` say, and the previous gene
 survives (DEC-19). Not re-run: the story's 16-breakage script, which is not in the repo;
 the drill, fuzz and fingerprint probes above cover the same rules.
 
+## Second review (2026-10-21, Opus 5.5)
+
+**No defect in the code; 1 record finding and 1 config comment, both fixed after
+`fbf3d8d`.** Run on the PR's head, `fbf3d8d`, with both earlier records treated as claims
+to check. The live `rag_qa` alias was only read: no `rag-ingest` ran against it, and it
+still names `…7f20891e`. Probes ran on a throwaway Qdrant v1.19.2 from the compose file's
+digest (`review-s3-4-qdrant`, port 16333, removed afterwards).
+
+- **Reproduced on `fbf3d8d`:** ruff, format, mypy and `uv lock --check` clean; **1068
+  passed, 12 skipped, 5 xfailed**, coverage **98.40%**, the HF cache empty; `rag-eval
+  check` exit 0; a fresh tier-1 run 0.950 / 0.796 / 0.858, the contexts digest
+  `5a36e2f9…`, IDENTICAL; CI green on the head (run 39565294829, both jobs).
+- **The live index, read-only:** its manifest, written by S3-2's code, gets no full
+  rebuild under S3-4's rules (`changed_since` gives none), and `diff` gives 3 unchanged,
+  each record's splitter identity equal to the walk's (`86c72e0c`); nothing above 50 MB.
+- **New: an update equals a rebuild after every S3-4 transition.** On the throwaway, one
+  collection was updated through six states and another rebuilt with `--rebuild` at each;
+  a scratch corpus of `notes.md` (four headed sections), `b.txt` and the 615,023-byte
+  corpus PDF:
+  - the markdown splitter's `chunk_size` to 300: "1 changed, 2 unchanged";
+  - the default's to 700: "2 changed, 1 unchanged";
+  - `max_file_mb: 0.5`: the PDF skipped, "1 removed, 2 unchanged";
+  - the limit back to 50 and the override dropped: "1 added, 1 changed, 1 unchanged";
+  - an override with the default's spec: "Nothing changed".
+
+  At each, the two had the same point IDs, texts and metadata (all but `ingested_at`),
+  vectors within 1.2e-7, and equal manifest records. The point count moved at each state
+  (59, 71, 98, 20, 88), so an update that missed a re-chunk would have shown.
+- **The identity rules, read in the code:** `spec_identity` hashes the whole spec, so no
+  splitter key is dropped (a spelled-out default costs a needless re-embed at worst); a
+  renamed entry needs no relabel, since the record holds the identity, not the reference;
+  a changed document that fails to load keeps its record and chunks, and is retried; the
+  manifest's top-level splitter is read by nothing but the code that writes it;
+  `build_splitter` has one caller, with the extension; and `_slots()`, one walk, both
+  validates the new slot and lists it for the import check.
+- **Sources:** langchain-text-splitters 1.1.2's `MarkdownTextSplitter.__init__` passes the
+  pattern separators with `is_separator_regex` left `False`, which only `from_language`
+  sets (Discovered holds). The real functions give 248.99999999999997 for the float
+  product and admit the 249-byte file by `Decimal`; "12.35" above a 12.345 MB limit; and
+  the largest corpus file is 25,370,930 bytes. SRS §7.2 asks for chunking "per loader":
+  per extension is the design's choice (ARCHITECTURE.md's gap table) and covers it.
+- **Commits:** the five on the PR have parseable trailers, no body line over 72, and no
+  attribution, nor does the PR body. No `!`: the keys are optional, the report's fields
+  additive.
+
+Findings, both fixed:
+
+1. **The records lagged the head again.** STATUS.md's next action still said to commit and
+   push the first review's record (`fbf3d8d`, pushed); this story's Status named `d1e747f`
+   as the head; and Deviation said the branch "is not created". All three are corrected.
+2. **A trap beside the markdown entry.** With `is_separator_regex: true`,
+   `keep_separator: false` makes the library join merged pieces with the pattern itself: a
+   probe's chunk read `'B\n\nbeta beta\n#{1,6} C…'`. The entry keeps the default, `true`,
+   so nothing is wrong today; `config.yaml`'s comment now says to leave it. Comments are not
+   hashed: `rag-eval check` still exits 0.
+
+Considered, no change: README's "Upgrading from v0.3" lists what needs action, and the
+50 MB limit needs none (a config without the key has no limit).
+
+After the fixes: ruff, format and mypy clean; **1068 passed, 12 skipped, 5 xfailed**,
+coverage **98.40%**; `rag-eval check` exit 0.
+
 ## Deviation from plan
 
 - **The fingerprint hashes the overrides that differ from the default, not "the map when
@@ -283,8 +345,8 @@ the drill, fuzz and fingerprint probes above cover the same rules.
 - **ARCHITECTURE.md** gains two dated notes, under DEC-17's full-rebuild list and §3.3.
 - **The board's S3-3 record** is updated to merged, at the maintainer's request.
 - **Model:** Opus 5.5, as the story says (opus, not fast).
-- **The branch** `feat/s3-4-ingestion-config` is not created: the maintainer runs every git
-  command, and the recipe starts with it.
+- **The branch** `feat/s3-4-ingestion-config` was created by the maintainer, not the
+  session: the maintainer runs every git command, and the recipe started with it.
 - **A certifi bump rides on this PR** (`build(deps)`, `uv.lock` alone): an advisory
   published mid-review turned the Audit red on every branch, `main` included (verification
   8). Merging the PR clears `main` too.
