@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Implemented (2026-10-21), not yet committed: verification 1–7 are run and shown below, all as expected; 8, `gh pr checks`, waits for the PR. Stopped before committing, for the maintainer's approval. |
+| **Status** | In review (2026-10-21): on `feat/s3-4-ingestion-config`, `3f3b1a8` the feature and `0e210a8` this record, then a certifi bump (below), PR #22. Verification 1–7 are run and shown below, all as expected. CI went red on `0e210a8` (run 39487923435), in Audit alone, on a certifi advisory published after `main`'s last green run; the bump fixes it, and verification 8 is to be re-run on the PR's new head. |
 | **Closes** | SRS §7.2 (chunking configurable per document type); SRS §7.1 (a declared maximum file size); backlog: per-loader splitter strategies |
 | **Depends on** | S3-2 (manifest version 2) |
 | **Model** | opus (not fast: it changes identity rules that tier 2's fingerprint reuses) |
@@ -145,8 +145,24 @@ and the live index under `rag_qa` (`rag_qa--gen-20261019T153834837765Z-7f20891e`
    - **Cleanup:** the story's `curl … | xargs` deleted the two scratch generations left
      (recovery had pruned the first), and the `s3_4_scratch` alias went with them. `rag_qa`
      still names `…7f20891e`, and its two generations are untouched.
-8. **`gh pr checks`:** "no pull requests found for branch "main"", exit 1: there is no PR
-   yet. To be run on the PR.
+8. **`gh pr checks`:** "no pull requests found for branch "main"", exit 1, before the PR
+   existed. On the PR's head `0e210a8` (run 39487923435): `check fail`, `eval-retrieval`
+   skipped. Lint, Format, Types and Test passed; **Audit failed** on `certifi 2026.7.22`,
+   GHSA-6q48-6c7w-9gw2 (critical: "certifi bundles emSign root CAs with compromised
+   intermediate CA keys"), fixed in 2026.10.19.
+   - **Not this story's change:** the branch leaves `uv.lock` and `pyproject.toml` as `main`
+     has them. The advisory was published at 19:35 UTC on 2026-10-20, after `main`'s last
+     green run (17:30, run 39466730259), so `main`'s lock fails the same audit. It
+     reproduced here, as PYSEC-2026-4320.
+   - **The fix, as S3-2's aiohttp bump was:** `uv lock --upgrade-package certifi` moves
+     certifi alone, 2026.7.22 → 2026.10.19 (3 lines of `uv.lock`), and the audit is then
+     clean. The release's hashes in the lock are PyPI's, and both it and 2026.7.22 were
+     published by Trusted Publishing from `certifi/python-certifi`'s `release.yml`, in its
+     `release` environment. DEC-24's 14-day rule is for Trivy and pinned images, not lock
+     bumps, and the audit policy allows no ignore for an advisory with a fix.
+   - **After the bump:** the suite again 1068 passed, 12 skipped, 5 xfailed, coverage
+     98.40%; `rag-eval check` exit 0. certifi is no hashed input.
+   - To be re-run on the PR's new head.
 
 **The new guards were checked against breakage.** A script broke each one in turn in the
 working tree, ran the tests meant to catch it, and restored the file, checked by sha256.
@@ -216,3 +232,6 @@ mutation itself made; it was rewritten, and then failed the test it should.
 - **Model:** Opus 5.5, as the story says (opus, not fast).
 - **The branch** `feat/s3-4-ingestion-config` is not created: the maintainer runs every git
   command, and the recipe starts with it.
+- **A certifi bump rides on this PR** (`build(deps)`, `uv.lock` alone): an advisory
+  published mid-review turned the Audit red on every branch, `main` included (verification
+  8). Merging the PR clears `main` too.

@@ -5,9 +5,14 @@
 
 ## Now
 
-**Next action: the maintainer reviews S3-4's working tree, then commits it on
-`feat/s3-4-ingestion-config` and opens the PR** (the recipe is in the session; the story's
-verification 8, `gh pr checks`, runs on the PR).
+**Next action: commit the certifi bump and its record on `feat/s3-4-ingestion-config`,
+push, and check `gh pr checks` on the new head.** S3-4's PR went red on `0e210a8` (run
+39487923435) in Audit alone: GHSA-6q48-6c7w-9gw2, a critical certifi advisory (compromised
+emSign intermediate CA keys) published at 19:35 UTC on 2026-10-20, after `main`'s last
+green run. `main`'s lock fails it too. `uv lock --upgrade-package certifi` moves certifi
+alone, 2026.7.22 → 2026.10.19, from the same Trusted Publisher as before; the audit is
+then clean, and the suite and `rag-eval check` are unchanged. As S3-2's aiohttp bump did,
+a `build(deps)` commit on the PR, so the merge clears `main` as well.
 
 **S3-4 (2026-10-21): a file type can have its own splitter, and the corpus a maximum file
 size; the real index, tier 2 and every answer are unchanged.**
@@ -1241,7 +1246,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | [S3-1](phase-3/S3-1-open-phase-3.md) | Open Phase 3: 1.0.0.dev0, format the code once and gate it | DEC-28, backlog: `ruff format` | — | Done 2026-10-16 (PR #19) |
 | [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19 (PR #20, merged 2026-10-20) |
 | [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Done 2026-10-20 (PR #21, merged 2026-10-20) |
-| [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Implemented 2026-10-21, not committed |
+| [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | In review 2026-10-21 (PR #22) |
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Todo |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Todo |
 | [S3-7](phase-3/S3-7-observability.md) | Structured logs, traces, metrics and alerts | NFR-10, NFR-1, NFR-3, DEC-22 | S3-6 | Todo |
