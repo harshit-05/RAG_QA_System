@@ -5,12 +5,37 @@
 
 ## Now
 
-**Next action: merge PR #22 with a merge commit, then start S3-5.** S3-4 is done
-(2026-10-21). CI is green on the second review's record, `e0ee166` (run 39588185690, both
-jobs): the suite 1068 passed, coverage 98.40%, the audit clean, tier 2 fresh, tier 1 0.950
-/ 0.796 / 0.858, and the 8 Qdrant server tests. Check `gh pr checks` on the head again
-after this record's commit. Neither review found a defect in the code. The merge also
-clears `main`'s red audit, through the certifi bump (`a27d98a`).
+**Next action: S3-5, plan-first, on `feat/s3-5-hybrid-retrieval`.**
+
+**S3-4 is merged** (2026-10-21, PR #22, merge commit `54944d4`). CI was green on the PR's
+last head, `be44453` (run 39589681301), and is green on `main` after the merge (run
+39590870310). The merge also cleared `main`'s red audit, through the certifi bump
+(`a27d98a`). The live index is unchanged: the `rag_qa` alias names
+`rag_qa--gen-20261019T153834837765Z-7f20891e`, and S3-2's parity baseline is still
+`~/dev/rag-s3-2/contexts-qdrant.json` (sha256 `5a36e2f9…a074cbc`), which S3-4 reproduced
+IDENTICAL.
+
+**`main` is protected** by ruleset 25561360 (applied 2026-10-21, ahead of S3-9).
+
+- **What it enforces:** no deletion and no force-push; a pull request for every change, with
+  0 approvals; and `check` and `eval-retrieval` from GitHub Actions (integration 15368)
+  passing, on a branch up to date with `main`. Squash and rebase merges are disabled in the
+  repository settings, so a merge commit is the only method.
+- **§11's rule that a red stage blocks a merge now holds** for the two existing jobs. S3-9
+  adds `deploy-config` and `container` to this ruleset, by a PUT, and never creates a second
+  one.
+- **Records go on the story's branch.** `main` takes no direct push, so a close-out after
+  the merge (S1-8's and S2-3's precedent) needs a pull request of its own. Record the merge
+  of one story on the next story's branch, as S3-5 does for S3-4.
+- **If a merge asks for an approval,** the likely cause is a pull-request default that
+  GitHub filled in without documenting it, `require_extra_approval_for_unattributed_changes:
+  true`. Every commit so far is attributed to `harshit-05`. Set it to false on ruleset
+  25561360.
+
+**S3-4 was done before its merge** (2026-10-21). CI was green on the second review's record,
+`e0ee166` (run 39588185690, both jobs): the suite 1068 passed, coverage 98.40%, the audit
+clean, tier 2 fresh, tier 1 0.950 / 0.796 / 0.858, and the 8 Qdrant server tests. Neither
+review found a defect in the code.
 
 **Second review of S3-4 (2026-10-21, on `fbf3d8d`): no defect in the code; 1 record
 finding and 1 config comment, fixed after it.** The live `rag_qa` alias was only read;
@@ -868,6 +893,10 @@ The final story of each phase performs the tag + version bump at close-out.
 
 - [x] Resolve DEC-1 / DEC-2 — done in the Phase 0 arch pass, 2026-09-18.
 
+- [x] **A ruleset on `main`** — ruleset 25561360, applied 2026-10-21 ("Now"). It requires
+      `check` and `eval-retrieval`; S3-9's recipe extends it with `deploy-config` and
+      `container`.
+
 - [x] **Phase 2 (S2-5b): somewhere to run tier-2 scoring.** Done 2026-10-11: a Colab T4,
   with Ollama pinned to 0.22.1 and outputs on Google Drive. That is about 35 min per
   scoring, against 13–18 h on this CPU at 2 threads. The notebook's cells are in S2-5b's
@@ -1275,7 +1304,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | [S3-1](phase-3/S3-1-open-phase-3.md) | Open Phase 3: 1.0.0.dev0, format the code once and gate it | DEC-28, backlog: `ruff format` | — | Done 2026-10-16 (PR #19) |
 | [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19 (PR #20, merged 2026-10-20) |
 | [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Done 2026-10-20 (PR #21, merged 2026-10-20) |
-| [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Done 2026-10-21 (PR #22) |
+| [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Done 2026-10-21 (PR #22, merged 2026-10-21) |
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Todo |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Todo |
 | [S3-7](phase-3/S3-7-observability.md) | Structured logs, traces, metrics and alerts | NFR-10, NFR-1, NFR-3, DEC-22 | S3-6 | Todo |
