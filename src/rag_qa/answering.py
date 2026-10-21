@@ -35,7 +35,7 @@ Dependency direction: ``answering → chain``. Imports no front end.
 """
 
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +44,14 @@ from typing import cast
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessageChunk
 
-from rag_qa.chain import NoIndexError, QueryPipeline, citation, format_docs, page_label
+from rag_qa.chain import (
+    NoIndexError,
+    QueryPipeline,
+    RetrievalQuery,
+    citation,
+    format_docs,
+    page_label,
+)
 
 
 @dataclass(frozen=True)
@@ -119,13 +126,17 @@ def _ms_since(start: float) -> float:
     return (time.perf_counter() - start) * 1000
 
 
-async def stream_answer(pipeline: QueryPipeline, question: str) -> AsyncIterator[AnswerEvent]:
+async def stream_answer(
+    pipeline: QueryPipeline, question: str, *, sources: Sequence[str] = ()
+) -> AsyncIterator[AnswerEvent]:
     """Answer ``question``: :class:`Sources`, then :class:`Token`\\ s, then :class:`Done`.
 
-    Raises :class:`~rag_qa.chain.NoIndexError` when the pipeline has no retrieval half
-    yet. A cancelled stream ends with ``CancelledError``, not ``Done``; other errors
-    propagate to the front end, which renders them. Empty text chunks are dropped, so
-    ``ttft_ms`` times the first visible token (the figure NFR-2 sets a target for).
+    With ``sources``, corpus-relative paths, only those documents are searched (S3-5,
+    FR-3); the front end has checked them against the served manifest. Raises
+    :class:`~rag_qa.chain.NoIndexError` when the pipeline has no retrieval half yet. A
+    cancelled stream ends with ``CancelledError``, not ``Done``; other errors propagate to
+    the front end, which renders them. Empty text chunks are dropped, so ``ttft_ms`` times
+    the first visible token (the figure NFR-2 sets a target for).
     """
     if pipeline.retrieve is None:
         raise NoIndexError("no index yet: ingest the corpus first")
@@ -135,7 +146,7 @@ async def stream_answer(pipeline: QueryPipeline, question: str) -> AsyncIterator
     # cannot stop: the awaiting task returns at once and the thread finishes on its own
     # (measured, S2-1 review). With the reranker that is up to about 2 s of CPU, which
     # front ends that limit concurrency must count (DEC-14; the API's slot, S2-7).
-    docs = await pipeline.retrieve.ainvoke(question)
+    docs = await pipeline.retrieve.ainvoke(RetrievalQuery(question, tuple(sources)))
     yield Sources(source_refs(docs, pipeline.corpus_root))
 
     ttft_ms: float | None = None

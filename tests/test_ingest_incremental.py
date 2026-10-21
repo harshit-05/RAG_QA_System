@@ -57,6 +57,7 @@ from rag_qa.manifest import (
 )
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_DATA_PATH, ENV_VECTOR_STORE_PATH
+from rag_qa.sparse import SPARSE_VERSION, Bm25Encoder
 from rag_qa.vectorstore import StoreError, StoreUnavailableError
 
 Edit = Callable[[dict[str, Any]], None]
@@ -1175,4 +1176,166 @@ def test_no_absolute_path_survives_in_a_described_error(scratch: Scratch) -> Non
     elsewhere = OSError(13, "Permission denied", "/var/data/secret.txt")  # a PermissionError
     assert describe_error(elsewhere, config) == (
         "PermissionError: [Errno 13] Permission denied: 'secret.txt'"
+    )
+
+
+# --- sparse vectors (S3-5, DEC-20) ---------------------------------------------------------
+
+BM25 = "components.sparse_encoders.bm25"
+
+
+def with_bm25(c: dict[str, Any]) -> None:
+    """Config edit: the real config's BM25 encoder set for ingestion."""
+    c["pipeline"]["ingestion"]["sparse_encoder"] = BM25
+
+
+def bm25_with(**settings: Any) -> Edit:
+    def edit(c: dict[str, Any]) -> None:
+        with_bm25(c)
+        c["components"]["sparse_encoders"]["bm25"].update(settings)
+
+    return edit
+
+
+def bm25_renamed(c: dict[str, Any]) -> None:
+    entries = c["components"]["sparse_encoders"]
+    entries["renamed"] = entries.pop("bm25")
+    c["pipeline"]["ingestion"]["sparse_encoder"] = "components.sparse_encoders.renamed"
+
+
+def sparse_points(scratch: Scratch, generation: str | None = None) -> dict[str, Any]:
+    """Each point's sparse vector, as ``(indices, values)``; ``None`` without one."""
+    points, _ = scratch.client.scroll(generation or scratch.live(), limit=10_000, with_vectors=True)
+    found = {}
+    for p in points:
+        vector = p.vector.get("bm25") if isinstance(p.vector, dict) else None
+        found[str(p.id)] = None if vector is None else (vector.indices, vector.values)
+    return found
+
+
+def test_with_a_sparse_encoder_every_chunk_gets_its_bm25_vector(scratch: Scratch) -> None:
+    config = scratch.config(with_bm25)
+    ingest(config)
+    record = scratch.manifest().sparse
+    assert record is not None and record.ref == BM25
+    assert record.identity == spec_identity(config.component(BM25).spec())
+    encoder = Bm25Encoder(k1=1.2, b=0.75, avg_len=100.76)
+    texts = {doc.id: doc.page_content for doc in scratch.chunks()}
+    held = sparse_points(scratch)
+    assert held.keys() == texts.keys() == scratch.listed()
+    for pid, text in texts.items():
+        expected = encoder.encode_document(text)
+        indices, values = held[pid]
+        assert indices == list(expected.indices)
+        assert values == pytest.approx(list(expected.values))
+
+
+def test_without_one_the_index_has_no_sparse_vectors(scratch: Scratch) -> None:
+    scratch.ingest()
+    assert scratch.manifest().sparse is None
+    assert all(vector is None for vector in sparse_points(scratch).values())
+
+
+@pytest.mark.parametrize(
+    ("first", "then", "reason"),
+    [
+        pytest.param(None, with_bm25, "a sparse encoder is now set", id="appearing"),
+        pytest.param(with_bm25, None, "no sparse encoder is set now", id="going"),
+        pytest.param(
+            with_bm25,
+            bm25_with(k1=1.5),
+            "the sparse encoder is not the one that built the index",
+            id="another spec",
+        ),
+    ],
+)
+def test_a_sparse_encoder_that_appears_goes_or_changes_rebuilds_in_full(
+    scratch: Scratch, embedded: list[int], first: Edit | None, then: Edit | None, reason: str
+) -> None:
+    # The generation's vector configuration changes, or every sparse vector does (DEC-20).
+    scratch.ingest(first)
+    embedded.clear()
+    report = scratch.ingest(then)
+    assert report.rebuild is not None and report.rebuild.startswith(reason)
+    assert embedded == [7]
+    # Every point has a sparse vector after the rebuild, or none does.
+    assert all((vector is None) == (then is None) for vector in sparse_points(scratch).values())
+
+
+def test_a_new_sparse_version_rebuilds_in_full(
+    scratch: Scratch, embedded: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch.ingest(with_bm25)
+    monkeypatch.setattr("rag_qa.manifest.SPARSE_VERSION", SPARSE_VERSION + 1)
+    embedded.clear()
+    report = scratch.ingest(with_bm25)
+    assert report.rebuild == (
+        f"this version makes sparse vectors differently (sparse version {SPARSE_VERSION} "
+        f"then, {SPARSE_VERSION + 1} now)"
+    )
+    assert embedded == [7]
+    sparse = scratch.manifest().sparse
+    assert sparse is not None and sparse.version == SPARSE_VERSION + 1
+
+
+def test_a_renamed_sparse_encoder_with_the_same_spec_rebuilds_nothing(
+    scratch: Scratch, embedded: list[int]
+) -> None:
+    scratch.ingest(with_bm25)
+    embedded.clear()
+    report = scratch.ingest(bm25_renamed)
+    assert (report.rebuild, report.published, embedded) == (None, None, [])
+
+
+def test_an_update_of_a_hybrid_index_equals_a_rebuild(scratch: Scratch) -> None:
+    # The copy carries the unchanged chunks' sparse vectors; the changed and added ones get
+    # new ones. Qdrant applies the IDF at query time, so nothing else moves.
+    scratch.ingest(with_bm25)
+    (scratch.corpus / "notes.txt").write_text("Kestrel Island has forty staff.\n")
+    (scratch.corpus / "terns.txt").write_text("Terns nest on Kestrel Island.\n")
+    (scratch.corpus / "sub" / "deeper" / "LOUD.TXT").unlink()
+    updated = scratch.ingest(with_bm25)
+    assert updated.rebuild is None and (updated.added, updated.changed, updated.removed) == (
+        1,
+        1,
+        1,
+    )
+    after_update = sparse_points(scratch)
+    rebuilt = scratch.ingest(with_bm25, rebuild=True)
+    assert rebuilt.rebuild == "--rebuild was given"
+    after_rebuild = sparse_points(scratch)
+    assert after_update.keys() == after_rebuild.keys()
+    for pid, (indices, values) in after_rebuild.items():
+        assert after_update[pid][0] == indices
+        assert after_update[pid][1] == pytest.approx(values)
+
+
+#: ``sample_corpus``'s chunks' BM25 vectors under each SPARSE_VERSION, as
+#: :func:`sparse_digest` gives, with config.yaml's bm25 settings.
+SAMPLE_CORPUS_SPARSE = {1: "026af369bdb1c0207b2fb5d21d78c496c9e5af8f54182f236245b3e560ce0007"}
+
+
+def sparse_digest(scratch: Scratch) -> str:
+    """The sha256 of the encoder's vectors for the live generation's chunks, in walk order:
+    the encoder's own output, so the digest does not depend on how Qdrant stores floats."""
+    manifest = scratch.manifest()
+    scan = scan_corpus(scratch.config(), IngestReport())
+    by_id = {doc.id: doc.page_content for doc in scratch.chunks()}
+    encoder = Bm25Encoder(k1=1.2, b=0.75, avg_len=100.76)
+    vectors = []
+    for file in scan.files:
+        for cid in manifest.chunk_ids_of(file.name):
+            vector = encoder.encode_document(by_id[cid])
+            vectors.append([list(vector.indices), list(vector.values)])
+    return hashlib.sha256(json.dumps(vectors).encode()).hexdigest()
+
+
+def test_the_sample_corpus_encodes_as_the_sparse_version_says(scratch: Scratch) -> None:
+    # The tripwire for SPARSE_VERSION over real chunks, beside tests/test_sparse.py's probe
+    # texts. If it moved, bump SPARSE_VERSION and pin this digest under the new version.
+    scratch.ingest()
+    digest = sparse_digest(scratch)
+    assert SAMPLE_CORPUS_SPARSE.get(SPARSE_VERSION) == digest, (
+        f"the sample corpus no longer encodes as SPARSE_VERSION {SPARSE_VERSION} did: bump it "
+        f"in rag_qa/sparse.py, and pin {digest} under the new version"
     )

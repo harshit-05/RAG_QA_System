@@ -11,8 +11,9 @@ part           hashes                                                           
                the prompt template, and the prompt rendered over two fixed
                documents (the *probe*)
 ``ingestion``  the embedder identity, the splitter, the loader map,             generate, score
-               :data:`~rag_qa.manifest.CHUNKING_VERSION`, and the
-               per-extension splitters that differ from the default (S3-4)
+               :data:`~rag_qa.manifest.CHUNKING_VERSION`, the
+               per-extension splitters that differ from the default (S3-4),
+               and the sparse encoder with its version, once one is set (S3-5)
 ``corpus``     the sha256 of every file ``rag-ingest`` would index (the         generate, score
                same walk: ``max_file_mb``'s limit reaches it through it)
 ``questions``  each golden record's id, question, answerable flag and           generate, score
@@ -49,6 +50,7 @@ from typing import Any, Final
 from langchain_core.documents import Document
 
 from rag_qa import chain
+from rag_qa.components import configured_sparse
 from rag_qa.evaluation.dataset import GoldenItem
 from rag_qa.ingest import CorpusScan, CorpusUnreadableError, IngestReport, scan_corpus
 from rag_qa.manifest import CHUNKING_VERSION, embedder_identity, spec_identity
@@ -71,7 +73,8 @@ RERUN: Final[Mapping[str, str]] = {
 #: What a part covers, in a stale message.
 COVERS: Final[Mapping[str, str]] = {
     "query": "the llm, retriever, reranker, prompt, or how the prompt is assembled",
-    "ingestion": "the embedder, a splitter, the loader map, or chunking version",
+    "ingestion": "the embedder, a splitter, the loader map, the sparse encoder, or chunking "
+    "version",
     "corpus": "a file rag-ingest indexes",
     "questions": "a golden record's id, question, answerable flag or must_not_contain",
     "references": "a golden record's ground_truth",
@@ -197,6 +200,12 @@ def ingestion_part(config: RagConfig) -> str:
     }
     if overrides:
         part["splitters"] = overrides
+    # The sparse encoder (S3-5), only when one is set: it writes the vectors a hybrid
+    # retriever searches. Left out while unset, so the part every earlier run recorded
+    # stands (DEC-20). Its identity and SPARSE_VERSION, never its reference name.
+    sparse = configured_sparse(config)
+    if sparse is not None:
+        part["sparse"] = {"identity": sparse.identity, "version": sparse.version}
     return spec_identity(part)
 
 

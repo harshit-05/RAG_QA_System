@@ -5,6 +5,7 @@ import socket
 import time
 from itertools import pairwise
 from pathlib import Path
+from typing import Any
 
 import pytest
 from conftest import (
@@ -24,13 +25,17 @@ from rag_qa.components import (
     build_embedder,
     build_loader,
     build_reranker,
+    build_sparse_encoder,
     build_splitter,
     build_store,
+    configured_sparse,
     llm_reachable,
 )
 from rag_qa.config import ConfigError, load_config
 from rag_qa.loaders import DocxLoader, PdfLoader, TextLoader
+from rag_qa.manifest import SparseRecord, spec_identity
 from rag_qa.rerankers import CrossEncoderReranker
+from rag_qa.sparse import SPARSE_VERSION, Bm25Encoder
 from rag_qa.vectorstore import QdrantStore
 
 
@@ -222,6 +227,59 @@ def test_a_bad_collection_set_after_load_is_still_refused(
     monkeypatch.setenv("RAG_QDRANT_COLLECTION", "Not-Allowed")
     with pytest.raises(ConfigError, match="RAG_QDRANT_COLLECTION: collection 'Not-Allowed'"):
         build_store(config)
+
+
+# --- the sparse encoder (S3-5, DEC-20) -------------------------------------------------------
+
+BM25 = "components.sparse_encoders.bm25"
+
+
+def with_bm25(c: dict[str, Any]) -> None:
+    c["pipeline"]["ingestion"]["sparse_encoder"] = BM25
+
+
+def test_no_sparse_encoder_is_built_or_recorded_while_none_is_set(make_config: MakeConfig) -> None:
+    config = load_config(make_config())  # the real config: set by nothing yet
+    assert build_sparse_encoder(config) is None
+    assert configured_sparse(config) is None
+
+
+def test_the_sparse_encoder_is_the_ingestion_one_with_its_record(make_config: MakeConfig) -> None:
+    config = load_config(make_config(with_bm25))
+    encoder = build_sparse_encoder(config)
+    assert isinstance(encoder, Bm25Encoder)
+    assert (encoder.k1, encoder.b, encoder.avg_len) == (1.2, 0.75, 100.76)
+    assert configured_sparse(config) == SparseRecord(
+        ref=BM25, identity=spec_identity(config.component(BM25).spec()), version=SPARSE_VERSION
+    )
+
+
+@pytest.mark.parametrize(
+    ("settings", "problem"),
+    [
+        ({"avg_len": 0}, "avg_len must be a finite number above 0"),
+        ({"k1": "1.2"}, "k1 must be a number"),
+        ({"stemming": True}, "unexpected keyword argument 'stemming'"),
+    ],
+)
+def test_a_sparse_encoder_that_cannot_be_built_is_a_config_error(
+    make_config: MakeConfig, settings: dict[str, Any], problem: str
+) -> None:
+    def edit(c: dict[str, Any]) -> None:
+        with_bm25(c)
+        c["components"]["sparse_encoders"]["bm25"].update(settings)
+
+    with pytest.raises(ConfigError, match=f"Cannot build the sparse encoder {BM25}: .*{problem}"):
+        build_sparse_encoder(load_config(make_config(edit)))
+
+
+def test_a_target_that_is_not_a_sparse_encoder_is_refused(
+    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = load_config(make_config(with_bm25))
+    monkeypatch.setattr("rag_qa.components.build_object", lambda spec: object())
+    with pytest.raises(ConfigError, match="builds a object, not a sparse encoder"):
+        build_sparse_encoder(config)
 
 
 def test_a_target_that_is_not_a_store_is_refused(

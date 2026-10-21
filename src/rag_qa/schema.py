@@ -181,6 +181,11 @@ SEARCH_KWARGS = ("k",)
 #: How many chunks a retriever returns when its ``search_kwargs`` name no ``k``: what
 #: LangChain's ``as_retriever`` returned, kept so a v0.3 config means what it meant.
 DEFAULT_K = 4
+#: How a retriever searches (DEC-20): ``dense``, by the embedding alone, which is also what
+#: no ``mode`` means; or ``hybrid``, by the embedding and the BM25 sparse vectors, fused.
+RETRIEVER_MODES = ("dense", "hybrid")
+#: The settings only a hybrid retriever has, and which it must state (S3-5's plan, D6).
+HYBRID_SETTINGS = ("prefetch", "rrf_k")
 
 
 class RetrieverSpec(_Strict):
@@ -191,10 +196,23 @@ class RetrieverSpec(_Strict):
     is FAISS's ``as_retriever()`` keyword arguments, kept so that its dump, which tier 2
     hashes, does not move. Since S3-2 only the options the Qdrant retriever honours are
     accepted: one ignored silently would make a config say what it does not do.
+
+    **Hybrid retrieval** (DEC-20, S3-5) is ``mode: hybrid``, with two settings it must
+    state, and that no other mode accepts:
+
+    - ``prefetch``: how many points each search, dense and sparse, keeps for the fusion;
+    - ``rrf_k``: the constant of reciprocal rank fusion, ``1 / (rrf_k + rank)``.
+
+    Required rather than defaulted, so that the dump tier 2 hashes says everything the
+    retriever does. Unset keys stay out of :meth:`kwargs`, and so does ``mode: dense``,
+    which means what no ``mode`` means: a dense retriever's dump is the one v0.3 hashed.
     """
 
     search_type: str | None = None
     search_kwargs: dict[str, Any] = Field(default_factory=dict)
+    mode: str | None = None
+    prefetch: Any = None
+    rrf_k: Any = None
 
     @model_validator(mode="after")
     def check_supported(self) -> "RetrieverSpec":
@@ -211,20 +229,69 @@ class RetrieverSpec(_Strict):
                 f"retriever takes only 'k', how many chunks it returns"
             )
         k = self.search_kwargs.get("k", DEFAULT_K)
-        if not isinstance(k, int) or isinstance(k, bool) or k < 1:
+        if not _whole(k):
             problems.append(f"search_kwargs.k must be a whole number of at least 1, not {k!r}")
+        problems += self._mode_problems()
         if problems:
             raise ValueError("; ".join(problems))
         return self
 
+    def _mode_problems(self) -> list[str]:
+        if self.mode is not None and self.mode not in RETRIEVER_MODES:
+            return [f"mode {self.mode!r} is not supported: use 'dense' (the default) or 'hybrid'"]
+        problems = []
+        if self.is_hybrid:
+            for name in HYBRID_SETTINGS:
+                value = getattr(self, name)
+                if value is None:
+                    problems.append(
+                        f"mode 'hybrid' needs {name} ({_HYBRID_HELP[name]}); config.yaml's "
+                        f"hybrid entry shows it"
+                    )
+                elif not _whole(value):
+                    problems.append(f"{name} must be a whole number of at least 1, not {value!r}")
+        else:
+            stray = [name for name in HYBRID_SETTINGS if getattr(self, name) is not None]
+            if stray:
+                problems.append(
+                    f"{' and '.join(stray)} {'is' if len(stray) == 1 else 'are'} for a hybrid "
+                    f"retriever only: set mode: hybrid, or remove "
+                    f"{'it' if len(stray) == 1 else 'them'}"
+                )
+        return problems
+
+    @property
+    def is_hybrid(self) -> bool:
+        """Whether the retriever fuses dense and sparse searches (``mode: hybrid``)."""
+        return self.mode == "hybrid"
+
     def kwargs(self) -> dict[str, Any]:
-        """A fresh dict of the settings, with unset options left out: what tier 2 hashes."""
-        return self.model_dump(exclude_none=True)
+        """A fresh dict of the settings, with unset options left out: what tier 2 hashes.
+
+        ``mode: dense`` is left out too: it is what no ``mode`` means, so spelling it out
+        moves no hash.
+        """
+        dumped = self.model_dump(exclude_none=True)
+        if dumped.get("mode") == "dense":
+            del dumped["mode"]
+        return dumped
 
     def k(self) -> int:
         """How many chunks the retriever returns."""
         k: int = self.search_kwargs.get("k", DEFAULT_K)
         return k
+
+
+#: What each hybrid setting does, for the message that asks for it.
+_HYBRID_HELP = {
+    "prefetch": "how many points each of the dense and sparse searches keeps; 40 is usual",
+    "rrf_k": "the constant of reciprocal rank fusion, 1 / (rrf_k + rank); 60 is usual",
+}
+
+
+def _whole(value: Any) -> bool:
+    """Whether ``value`` is a whole number of at least 1 (``True`` is not one)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
 class Components(_Strict):
@@ -238,6 +305,9 @@ class Components(_Strict):
     rerankers: dict[str, ComponentSpec] = Field(default_factory=dict)
     #: Where the index lives (DEC-19): ``rag_qa.vectorstore.QdrantStore`` entries.
     vector_stores: dict[str, ComponentSpec] = Field(default_factory=dict)
+    #: What writes the sparse vectors of hybrid retrieval (DEC-20, S3-5):
+    #: ``rag_qa.sparse.Bm25Encoder`` entries.
+    sparse_encoders: dict[str, ComponentSpec] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def check_collections(self) -> "Components":
@@ -385,6 +455,10 @@ class Ingestion(_Strict):
     #: it is skipped and reported, as an unmapped extension is. Unset means no limit.
     #: Strict, so ``true`` or ``"50"`` is refused rather than read as a number.
     max_file_mb: float | None = Field(default=None, gt=0, allow_inf_nan=False, strict=True)
+    #: The sparse encoder that writes each chunk's BM25 vector beside its embedding (DEC-20,
+    #: S3-5), as the embedder does for both halves: a hybrid retriever encodes its queries
+    #: with it too. Unset, the index has no sparse vectors, and nothing hashes the key.
+    sparse_encoder: str | None = None
 
     @model_validator(mode="after")
     def check_extensions(self) -> "Ingestion":
@@ -621,6 +695,7 @@ class Evaluation(_Strict):
 _SLOT_KINDS = {
     ("ingestion", "splitter"): "splitters",
     ("ingestion", "embedder"): "embedders",
+    ("ingestion", "sparse_encoder"): "sparse_encoders",
     ("query", "llm"): "llms",
     ("query", "retriever"): "retrievers",
     ("query", "reranker"): "rerankers",
@@ -711,6 +786,39 @@ class RagConfig(_Strict):
                 f"the reranker's top_n of {top_n}. The reranker keeps the best top_n of the "
                 f"candidates, so it needs at least that many"
             )
+        return self
+
+    # After check_references too, so the retriever reference resolves.
+    @model_validator(mode="after")
+    def check_hybrid(self) -> "RagConfig":
+        """A hybrid retriever has the sparse vectors it searches, and enough of them.
+
+        Its queries are encoded by ``pipeline.ingestion.sparse_encoder``, the encoder that
+        wrote the index's vectors, as the embedder serves both halves. And each search
+        keeps ``prefetch`` points for the fusion, which must be at least the chunks the
+        retriever returns: ``reranker_candidates`` with a reranker, else its own ``k``.
+        """
+        query = self.pipeline.query
+        spec = self.retriever(query.retriever)
+        if not spec.is_hybrid:
+            return self
+        problems = []
+        if self.pipeline.ingestion.sparse_encoder is None:
+            problems.append(
+                f"pipeline.query.retriever {query.retriever!r} is hybrid, but "
+                f"pipeline.ingestion.sparse_encoder is not set: a hybrid retriever searches "
+                f"the sparse vectors that encoder writes, and encodes its queries with it. "
+                f"Set it (e.g. components.sparse_encoders.bm25), or use a dense retriever"
+            )
+        wanted = query.reranker_candidates if query.reranker is not None else spec.k()
+        if wanted is not None and spec.prefetch < wanted:
+            what = "reranker_candidates" if query.reranker is not None else "search_kwargs.k"
+            problems.append(
+                f"{query.retriever}.prefetch is {spec.prefetch}, below the {wanted} chunks it "
+                f"returns ({what}): each search must keep at least that many for the fusion"
+            )
+        if problems:
+            raise ValueError("\n".join(problems))
         return self
 
     def _reference_problem(self, ref: str, expected_kind: str) -> str | None:

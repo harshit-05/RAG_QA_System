@@ -3,7 +3,8 @@
 :func:`build_query_pipeline` returns a :class:`QueryPipeline`, the two halves of an
 answer kept apart:
 
-- ``retrieve``: question in, chunks out. Awaited, never streamed.
+- ``retrieve``: a :class:`RetrievalQuery` in, the question and the documents it may search
+  (S3-5), chunks out. Awaited, never streamed.
 - ``prompt`` and ``llm``: :func:`rag_qa.answering.stream_answer` renders the prompt,
   then streams the model itself, never ``prompt | llm | StrOutputParser()``. That is
   what makes a cancel close the stream to the model every time (DEC-14).
@@ -43,10 +44,13 @@ from rag_qa.components import (
     build_embedder,
     build_llm,
     build_reranker,
+    build_sparse_encoder,
     build_store,
+    configured_sparse,
 )
-from rag_qa.manifest import Manifest, embedder_identity
+from rag_qa.manifest import Manifest, embedder_identity, same_sparse
 from rag_qa.schema import RagConfig
+from rag_qa.sparse import Bm25Encoder
 from rag_qa.vectorstore import (
     NO_INDEX,
     GenerationGoneError,
@@ -114,6 +118,21 @@ def check_index(config: RagConfig, *, store: QdrantStore | None = None) -> tuple
             f"the config's ({ref}), and their vectors cannot be compared. Re-run rag-ingest "
             f"--rebuild to rebuild it with {ref}."
         )
+    if config.retriever(config.pipeline.query.retriever).is_hybrid:
+        # A hybrid retriever searches the index's sparse vectors with queries this config's
+        # encoder makes: they must be that encoder's (DEC-20). A dense one ignores them.
+        wanted = configured_sparse(config)
+        if not same_sparse(manifest.sparse, wanted):
+            had = (
+                "no sparse vectors"
+                if manifest.sparse is None
+                else f"sparse vectors from another encoder ({manifest.sparse.ref} as it was then)"
+            )
+            raise IncompatibleIndexError(
+                f"the index in {store.where} has {had}, but the config's retriever "
+                f"{config.pipeline.query.retriever} is hybrid and searches those of "
+                f"{config.pipeline.ingestion.sparse_encoder}. Re-run rag-ingest to rebuild it."
+            )
     return generation, manifest
 
 
@@ -156,6 +175,20 @@ def _check_dimension(embeddings: Embeddings, manifest: Manifest, store: QdrantSt
 
 
 @dataclass(frozen=True)
+class RetrievalQuery:
+    """What the retrieval half is asked: a question, and the corpus documents it may search
+    (S3-5, FR-3).
+
+    ``sources`` are corpus-relative paths, as the manifest and ``GET /v1/documents`` name
+    them; empty means the whole corpus. The front ends check them against the served
+    manifest before asking, and tier 1 and tier 2 pass none.
+    """
+
+    question: str
+    sources: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class QueryPipeline:
     """The parts of an answer, built once and shared by every question.
 
@@ -165,7 +198,7 @@ class QueryPipeline:
     one it started with.
     """
 
-    retrieve: Runnable[str, list[Document]] | None
+    retrieve: Runnable[RetrievalQuery, list[Document]] | None
     prompt: ChatPromptTemplate  # rendered by stream_answer, which then streams llm itself
     llm: BaseChatModel  # streamed directly; also kept so aclose() can close its clients
     corpus_root: Path  # sources are reported relative to it
@@ -211,7 +244,7 @@ class Retrieval:
     """A retrieval half, with the index generation it opened and that generation's
     manifest: what the API serves, lists and reports (DEC-18)."""
 
-    retrieve: Runnable[str, list[Document]]
+    retrieve: Runnable[RetrievalQuery, list[Document]]
     generation: str  # the generation it is bound to, as live_generation() names it
     manifest: Manifest
     reranker: BaseDocumentCompressor | None = None  # the one it reranks with, for a reopen
@@ -231,8 +264,15 @@ def _bound(
     generation: str,
     embeddings: Embeddings,
     reranker: BaseDocumentCompressor | None,
-) -> Runnable[str, list[Document]]:
-    """A retrieval half bound to ``generation``: the retriever, then the reranker if any."""
+    sparse: Bm25Encoder | None,
+) -> Runnable[RetrievalQuery, list[Document]]:
+    """A retrieval half bound to ``generation``: the retriever, then the reranker if any.
+
+    The question goes to both; the sources only to the retriever, which searches nothing
+    else (:func:`rag_qa.vectorstore.source_filter`). One function rather than a sequence,
+    because the reranker needs the question as well as the chunks. Awaited, it runs in an
+    executor thread, retrieval included (DEC-14).
+    """
     query = config.pipeline.query
     spec = config.retriever(query.retriever)
     # With a reranker, the retriever fetches its candidates in place of its own k (DEC-16);
@@ -240,8 +280,17 @@ def _bound(
     k = spec.k()
     if reranker is not None and query.reranker_candidates is not None:
         k = query.reranker_candidates
-    found = retriever(store, generation, embeddings, spec.kwargs(), k=k)
-    return found if reranker is None else _rerank_after(found, reranker)
+    found = retriever(
+        store, generation, embeddings, spec.kwargs(), sparse=sparse if spec.is_hybrid else None, k=k
+    )
+
+    def retrieve(asked: RetrievalQuery) -> list[Document]:
+        docs = found.invoke(asked.question, sources=asked.sources)
+        if reranker is None:
+            return docs
+        return list(reranker.compress_documents(docs, asked.question))
+
+    return RunnableLambda(retrieve)
 
 
 def open_retrieval(
@@ -281,14 +330,15 @@ def open_retrieval(
     generation, manifest = _checked(config, store, embeddings)
     if reranker is None:
         reranker = build_reranker(config)
-    bound = _bound(config, store, generation, embeddings, reranker)
+    sparse = build_sparse_encoder(config)  # no model: a few settings, cheap on every open
+    bound = _bound(config, store, generation, embeddings, reranker, sparse)
 
-    def retrieve(question: str) -> list[Document]:
+    def retrieve(asked: RetrievalQuery) -> list[Document]:
         try:
-            return bound.invoke(question)
+            return bound.invoke(asked)
         except GenerationGoneError:
             again, _ = _checked(config, store, embeddings)
-            return _bound(config, store, again, embeddings, reranker).invoke(question)
+            return _bound(config, store, again, embeddings, reranker, sparse).invoke(asked)
 
     return Retrieval(
         retrieve=RunnableLambda(retrieve),
@@ -305,7 +355,7 @@ def build_retrieve(
     reranker: BaseDocumentCompressor | None = None,
     store: QdrantStore | None = None,
     on_new_generation: Callable[[Manifest], None] | None = None,
-) -> Runnable[str, list[Document]]:
+) -> Runnable[RetrievalQuery, list[Document]]:
     """A retrieval half that resolves the alias again before every question (DEC-19).
 
     For a reader that may outlive two ingests: ``rag-query``'s session and ``rag-eval``.
@@ -320,31 +370,16 @@ def build_retrieve(
     opened = open_retrieval(config, embeddings, reranker=reranker, store=store)
     reranker = opened.reranker  # built once, by the first open, and reused on every reopen
 
-    def retrieve(question: str) -> list[Document]:
+    def retrieve(asked: RetrievalQuery) -> list[Document]:
         nonlocal opened
         if store.alias_target() != opened.generation:
             moved = open_retrieval(config, embeddings, reranker=reranker, store=store)
             if on_new_generation is not None:
                 on_new_generation(moved.manifest)
             opened = moved
-        return opened.retrieve.invoke(question)
+        return opened.retrieve.invoke(asked)
 
     return RunnableLambda(retrieve)
-
-
-def _rerank_after(
-    retriever: Runnable[str, list[Document]], reranker: BaseDocumentCompressor
-) -> Runnable[str, list[Document]]:
-    """``retriever``, then ``reranker`` over the chunks it found, as one Runnable.
-
-    One function rather than a sequence, because the reranker needs the question as well
-    as the chunks. Awaited, it runs in an executor thread, retrieval included (DEC-14).
-    """
-
-    def retrieve_and_rerank(question: str) -> list[Document]:
-        return list(reranker.compress_documents(retriever.invoke(question), question))
-
-    return RunnableLambda(retrieve_and_rerank)
 
 
 def build_prompt(config: RagConfig) -> ChatPromptTemplate:
@@ -418,8 +453,11 @@ def build_rag_chain(config: RagConfig) -> Runnable[dict[str, str], dict[str, Any
     to_prompt_inputs: RunnableLambda[dict[str, Any], dict[str, str]] = RunnableLambda(
         lambda x: {"context": format_docs(x["context"]), "question": x["question"]}
     )
+    asked: RunnableLambda[str, RetrievalQuery] = RunnableLambda(
+        lambda question: RetrievalQuery(question)
+    )
     return RunnablePassthrough.assign(
-        context=itemgetter("question") | retrieve
+        context=itemgetter("question") | asked | retrieve
     ) | RunnablePassthrough.assign(
         answer=to_prompt_inputs | build_prompt(config) | llm | StrOutputParser()
     )

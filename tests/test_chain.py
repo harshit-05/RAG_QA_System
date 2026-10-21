@@ -32,9 +32,11 @@ from rag_qa.chain import (
     IncompatibleIndexError,
     NoIndexError,
     QueryPipeline,
+    RetrievalQuery,
     build_query_pipeline,
     build_rag_chain,
     build_retrieve,
+    check_index,
     citation,
     format_docs,
     open_retrieval,
@@ -118,7 +120,7 @@ def test_no_index_fails_before_any_model_is_built(
 def test_with_an_index_both_halves_are_built(fake_rag: Path) -> None:
     pipeline = build_query_pipeline(load_config(fake_rag))
     assert pipeline.retrieve is not None
-    assert 0 < len(pipeline.retrieve.invoke("How many staff?")) <= 5  # retriever k
+    assert 0 < len(pipeline.retrieve.invoke(RetrievalQuery("How many staff?"))) <= 5  # retriever k
     assert answer_from(pipeline) == FAKE_ANSWER
 
 
@@ -133,7 +135,7 @@ def test_open_retrieval_names_the_generation_it_opened_and_its_manifest(
     assert opened.generation == chain_live_generation(build_store(config))
     assert opened.manifest.generation == opened.generation
     assert "guide.pdf" in opened.manifest.documents
-    assert opened.retrieve.invoke("How many staff?")
+    assert opened.retrieve.invoke(RetrievalQuery("How many staff?"))
 
 
 def test_without_an_index_there_is_no_live_generation(make_config: MakeConfig) -> None:
@@ -149,7 +151,9 @@ def test_a_reranker_passed_in_is_used_and_none_is_built(
     reranker = build_reranker(config)
     embeddings = build_embedder(config)
     for _ in range(3):
-        chunks = build_retrieve(config, embeddings, reranker=reranker).invoke("Staff?")
+        chunks = build_retrieve(config, embeddings, reranker=reranker).invoke(
+            RetrievalQuery("Staff?")
+        )
         assert len(chunks) == RERANK_TOP_N
     assert len(stub_cross_encoder.built) == 1
 
@@ -306,18 +310,18 @@ def test_the_retrieval_half_resolves_the_alias_before_every_question(
     searched: list[str] = []
     real = vectorstore.search
 
-    def spy(store: Any, generation: str, vector: Any, k: int) -> Any:
+    def spy(store: Any, generation: str, vector: Any, k: int, **kwargs: Any) -> Any:
         searched.append(generation)
-        return real(store, generation, vector, k)
+        return real(store, generation, vector, k, **kwargs)
 
     monkeypatch.setattr(vectorstore, "search", spy)
     names = [live_generation(qdrant)]
-    assert retrieve.invoke("Staff?")
+    assert retrieve.invoke(RetrievalQuery("Staff?"))
     for name in ("penguins.txt", "terns.txt"):
         (sample_corpus / name).write_text(f"{name} nest on Kestrel Island.\n")
         ingest(config)
         names.append(live_generation(qdrant))
-        assert retrieve.invoke("Staff?")
+        assert retrieve.invoke(RetrievalQuery("Staff?"))
     assert names[0] not in generations(qdrant)  # pruned two switches later
     assert searched == names  # each question searched the generation live at the time
 
@@ -336,7 +340,7 @@ def test_a_question_reads_the_alias_once_and_opens_nothing_when_it_has_not_moved
 
     monkeypatch.setattr("rag_qa.chain.open_retrieval", counting)
     for _ in range(3):
-        retrieve.invoke("Staff?")
+        retrieve.invoke(RetrievalQuery("Staff?"))
     assert opens == []
 
 
@@ -347,11 +351,11 @@ def test_a_new_generation_is_heard_before_it_is_searched_and_may_be_refused(
     config = load_config(fake_rag)
     heard: list[Manifest] = []
     retrieve = build_retrieve(config, build_embedder(config), on_new_generation=heard.append)
-    retrieve.invoke("q")
+    retrieve.invoke(RetrievalQuery("q"))
     assert heard == []  # the first generation is the one it opened with
     (sample_corpus / "late.txt").write_text("Late.\n")
     ingest(config)
-    retrieve.invoke("q")
+    retrieve.invoke(RetrievalQuery("q"))
     assert len(heard) == 1 and "late.txt" in heard[0].documents
 
     def refuse(manifest: Manifest) -> None:
@@ -361,7 +365,7 @@ def test_a_new_generation_is_heard_before_it_is_searched_and_may_be_refused(
     (sample_corpus / "later.txt").write_text("Later.\n")
     ingest(config)
     with pytest.raises(RuntimeError, match="not the corpus"):
-        refusing.invoke("q")
+        refusing.invoke(RetrievalQuery("q"))
 
 
 def test_a_bound_half_whose_generation_is_gone_resolves_the_alias_once_more(
@@ -375,7 +379,8 @@ def test_a_bound_half_whose_generation_is_gone_resolves_the_alias_once_more(
         (sample_corpus / name).write_text(f"{name}\n")
         ingest(config)
     assert opened.generation not in generations(qdrant)
-    assert opened.retrieve.invoke("Staff?")  # from the live generation, not an error
+    # From the live generation, not an error.
+    assert opened.retrieve.invoke(RetrievalQuery("Staff?"))
 
 
 def test_build_rag_chain_and_stream_answer_give_the_model_the_same_prompt(
@@ -415,7 +420,9 @@ def test_with_a_reranker_the_retriever_fetches_reranker_candidates(
     fake_rag: Path, make_config: MakeConfig, stub_cross_encoder: type[StubCrossEncoder]
 ) -> None:
     config = load_config(make_config(use_fakes_and_reranker))
-    chunks = build_retrieve(config, build_embedder(config)).invoke("How many staff?")
+    chunks = build_retrieve(config, build_embedder(config)).invoke(
+        RetrievalQuery("How many staff?")
+    )
 
     (model,) = stub_cross_encoder.built
     (pairs,) = model.seen
@@ -432,7 +439,9 @@ def test_without_a_reranker_the_retriever_keeps_its_own_k(
     fake_rag: Path, stub_cross_encoder: type[StubCrossEncoder]
 ) -> None:
     config = load_config(fake_rag)  # use_fakes: no reranker
-    chunks = build_retrieve(config, build_embedder(config)).invoke("How many staff?")
+    chunks = build_retrieve(config, build_embedder(config)).invoke(
+        RetrievalQuery("How many staff?")
+    )
     assert len(chunks) == 5
     assert stub_cross_encoder.built == []
     assert not any("rerank_score" in chunk.metadata for chunk in chunks)
@@ -456,3 +465,99 @@ def test_sources_carry_the_rerank_score_in_reranked_order(
     expected = best_first(model, pairs)[:RERANK_TOP_N]
     assert [ref.n for ref in sources] == [1, 2]
     assert [ref.score for ref in sources] == [model.score_of(text) for text in expected]
+
+
+# --- hybrid retrieval and the sources filter (S3-5, DEC-20) -------------------------------
+
+BM25 = "components.sparse_encoders.bm25"
+
+
+def with_bm25(c: dict[str, Any]) -> None:
+    """Config edit: the fakes, with the real config's BM25 encoder set for ingestion."""
+    use_fakes(c)
+    c["pipeline"]["ingestion"]["sparse_encoder"] = BM25
+
+
+def hybrid(c: dict[str, Any]) -> None:
+    """Config edit: :func:`with_bm25`, and the real config's hybrid retriever in use."""
+    with_bm25(c)
+    c["pipeline"]["query"]["retriever"] = "components.retrievers.hybrid"
+
+
+def test_a_hybrid_retriever_refuses_an_index_without_sparse_vectors(
+    fake_rag: Path, make_config: MakeConfig
+) -> None:
+    # fake_rag was ingested with no sparse encoder: its sparse search would find nothing.
+    with pytest.raises(IncompatibleIndexError) as exc:
+        check_index(load_config(make_config(hybrid)))
+    message = str(exc.value)
+    assert "has no sparse vectors" in message
+    assert "components.retrievers.hybrid is hybrid" in message
+    assert "Re-run rag-ingest" in message
+
+
+def test_a_hybrid_retriever_refuses_another_encoder_s_sparse_vectors(
+    fake_rag: Path, make_config: MakeConfig
+) -> None:
+    ingest(load_config(make_config(with_bm25)))
+
+    def other_k1(c: dict[str, Any]) -> None:
+        hybrid(c)
+        c["components"]["sparse_encoders"]["bm25"]["k1"] = 1.5
+
+    with pytest.raises(IncompatibleIndexError, match="sparse vectors from another encoder"):
+        check_index(load_config(make_config(other_k1)))
+
+
+def test_a_hybrid_index_answers_a_hybrid_and_a_dense_retriever(
+    fake_rag: Path, make_config: MakeConfig
+) -> None:
+    ingest(load_config(make_config(with_bm25)))
+    fused = build_retrieve(*embedded(make_config(hybrid))).invoke(RetrievalQuery("Kestrel staff"))
+    dense = build_retrieve(*embedded(make_config(with_bm25))).invoke(RetrievalQuery("Kestrel"))
+    assert len(fused) == len(dense) == 5  # the retrievers' own k
+
+
+def embedded(path: Path) -> tuple[Any, Any]:
+    config = load_config(path)
+    return config, build_embedder(config)
+
+
+@pytest.mark.parametrize("edit", [use_fakes, hybrid], ids=["dense", "hybrid"])
+def test_the_sources_reach_the_search_and_only_the_search(
+    fake_rag: Path, make_config: MakeConfig, edit: Any
+) -> None:
+    ingest(load_config(make_config(with_bm25)))
+    config, embeddings = embedded(make_config(edit))
+    retrieve = build_retrieve(config, embeddings)
+    every = retrieve.invoke(RetrievalQuery("Station Kestrel"))
+    assert len({doc.metadata["source"] for doc in every}) > 1
+    only = retrieve.invoke(RetrievalQuery("Station Kestrel", ("notes.txt", "README.md")))
+    assert {doc.metadata["source"] for doc in only} == {"notes.txt", "README.md"}
+
+
+def test_with_sources_the_reranker_still_gets_the_question(
+    fake_rag: Path, make_config: MakeConfig, stub_cross_encoder: type[StubCrossEncoder]
+) -> None:
+    config = load_config(make_config(use_fakes_and_reranker))
+    chunks = build_retrieve(config, build_embedder(config)).invoke(
+        RetrievalQuery("How many staff?", ("guide.pdf",))
+    )
+    (model,) = stub_cross_encoder.built
+    (pairs,) = model.seen
+    assert {question for question, _ in pairs} == {"How many staff?"}
+    assert len(pairs) == 3  # guide.pdf's three pages, all it has
+    assert {chunk.metadata["source"] for chunk in chunks} == {"guide.pdf"}
+
+
+def test_stream_answer_passes_its_sources_to_the_retrieval_half(fake_rag: Path) -> None:
+    pipeline = build_query_pipeline(load_config(fake_rag))
+
+    async def sources_of(**kwargs: Any) -> list[str]:
+        async for event in stream_answer(pipeline, "How many staff?", **kwargs):
+            assert isinstance(event, Sources)
+            return [ref.source for ref in event.sources]
+        raise AssertionError("no events")
+
+    assert set(asyncio.run(sources_of(sources=["sub/report.docx"]))) == {"sub/report.docx"}
+    assert len(set(asyncio.run(sources_of()))) > 1

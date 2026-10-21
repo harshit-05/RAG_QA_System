@@ -174,6 +174,145 @@ def test_a_broken_reranker_reference_is_reported_as_one() -> None:
         RagConfig.model_validate(data)
 
 
+# --- hybrid retrieval (S3-5, DEC-20) ------------------------------------------------------
+
+HYBRID = {"mode": "hybrid", "search_kwargs": {"k": 5}, "prefetch": 40, "rrf_k": 60}
+BM25 = {"_target_": "rag_qa.sparse.Bm25Encoder", "k1": 1.2, "b": 0.75, "avg_len": 100.0}
+
+
+def with_hybrid(retriever: dict[str, Any] | None = None, *, encoder: bool = True) -> dict[str, Any]:
+    """MINIMAL with a hybrid retriever in use (``retriever`` replaces its entry), and the
+    sparse encoder set for ingestion unless ``encoder`` is false."""
+    data = copy.deepcopy(MINIMAL)
+    data["components"]["retrievers"]["hybrid"] = retriever if retriever is not None else HYBRID
+    data["components"]["sparse_encoders"] = {"bm25": BM25}
+    data["pipeline"]["query"]["retriever"] = "components.retrievers.hybrid"
+    if encoder:
+        data["pipeline"]["ingestion"]["sparse_encoder"] = "components.sparse_encoders.bm25"
+    return data
+
+
+def test_a_hybrid_retriever_with_its_encoder_loads_and_dumps_every_setting() -> None:
+    config = RagConfig.model_validate(with_hybrid())
+    spec = config.retriever("components.retrievers.hybrid")
+    assert spec.is_hybrid
+    assert spec.kwargs() == HYBRID
+    assert config.references()["pipeline.ingestion.sparse_encoder"] == (
+        "components.sparse_encoders.bm25"
+    )
+
+
+def test_a_dense_retriever_s_dump_does_not_move(config: RagConfig) -> None:
+    # Tier 2 hashes the dump (DEC-20): the new keys, unset, stay out of it, and an explicit
+    # `mode: dense` is what no mode means.
+    assert config.retriever("components.retrievers.search").kwargs() == {"search_kwargs": {"k": 5}}
+    explicit = RetrieverSpec.model_validate({"mode": "dense", "search_kwargs": {"k": 5}})
+    assert explicit.kwargs() == {"search_kwargs": {"k": 5}}
+    assert not explicit.is_hybrid
+
+
+@pytest.mark.parametrize(
+    ("entry", "problem"),
+    [
+        pytest.param({"mode": "sparse"}, "mode 'sparse' is not supported", id="another mode"),
+        pytest.param(
+            {"mode": "hybrid", "rrf_k": 60}, "mode 'hybrid' needs prefetch", id="no prefetch"
+        ),
+        pytest.param(
+            {"mode": "hybrid", "prefetch": 40}, "mode 'hybrid' needs rrf_k", id="no rrf_k"
+        ),
+        pytest.param(
+            {"mode": "hybrid", "prefetch": "40", "rrf_k": 60},
+            "prefetch must be a whole number",
+            id="a prefetch as text",
+        ),
+        pytest.param(
+            {"mode": "hybrid", "prefetch": 40, "rrf_k": 0},
+            "rrf_k must be a whole number of at least 1",
+            id="rrf_k 0",
+        ),
+        pytest.param(
+            {"mode": "hybrid", "prefetch": 40, "rrf_k": 60.5},
+            "rrf_k must be a whole number",
+            id="a fractional rrf_k",
+        ),
+        pytest.param(
+            {"prefetch": 40}, "prefetch is for a hybrid retriever only", id="dense prefetch"
+        ),
+        pytest.param(
+            {"mode": "dense", "prefetch": 40, "rrf_k": 60},
+            "prefetch and rrf_k are for a hybrid retriever only",
+            id="dense, both",
+        ),
+    ],
+)
+def test_hybrid_settings_go_with_mode_hybrid_and_only_with_it(
+    entry: dict[str, Any], problem: str
+) -> None:
+    with pytest.raises(ValidationError, match=problem):
+        RetrieverSpec.model_validate({"search_kwargs": {"k": 5}, **entry})
+
+
+@pytest.mark.parametrize("k", [0, "5", True, 2.0])
+def test_a_retriever_s_k_is_a_whole_number_of_at_least_1(k: Any) -> None:
+    # The same rule as prefetch and rrf_k: True is not 1, and "5" is not read as 5.
+    with pytest.raises(ValidationError, match="search_kwargs.k must be a whole number"):
+        RetrieverSpec.model_validate({"search_kwargs": {"k": k}})
+
+
+def test_a_hybrid_retriever_without_a_sparse_encoder_names_both_slots() -> None:
+    with pytest.raises(ValidationError) as exc:
+        RagConfig.model_validate(with_hybrid(encoder=False))
+    message = str(exc.value)
+    assert "pipeline.query.retriever 'components.retrievers.hybrid' is hybrid" in message
+    assert "pipeline.ingestion.sparse_encoder is not set" in message
+
+
+def test_a_sparse_encoder_with_a_dense_retriever_loads(config: RagConfig) -> None:
+    # The index then carries sparse vectors nobody searches yet: legitimate (DEC-20).
+    data = with_hybrid()
+    data["pipeline"]["query"]["retriever"] = "components.retrievers.search"
+    loaded = RagConfig.model_validate(data)
+    assert loaded.pipeline.ingestion.sparse_encoder == "components.sparse_encoders.bm25"
+
+
+@pytest.mark.parametrize(
+    ("prefetch", "reranker", "problem"),
+    [
+        (4, False, "prefetch is 4, below the 5 chunks it returns \\(search_kwargs.k\\)"),
+        (19, True, "prefetch is 19, below the 20 chunks it returns \\(reranker_candidates\\)"),
+    ],
+)
+def test_each_search_keeps_at_least_the_chunks_the_retriever_returns(
+    prefetch: int, reranker: bool, problem: str
+) -> None:
+    data = with_hybrid({**HYBRID, "prefetch": prefetch})
+    if reranker:
+        data["components"]["rerankers"] = {"r": {"_target_": "rag_qa.stub.Reranker", "top_n": 5}}
+        data["pipeline"]["query"].update(reranker="components.rerankers.r", reranker_candidates=20)
+    with pytest.raises(ValidationError, match=problem):
+        RagConfig.model_validate(data)
+    data["components"]["retrievers"]["hybrid"]["prefetch"] = 20 if reranker else 5
+    RagConfig.model_validate(data)  # equal is enough
+
+
+def test_the_sparse_encoder_slot_must_name_a_sparse_encoder() -> None:
+    data = with_hybrid()
+    data["pipeline"]["ingestion"]["sparse_encoder"] = "components.embedders.embed"
+    with pytest.raises(ValidationError, match="needs an entry of components.sparse_encoders"):
+        RagConfig.model_validate(data)
+    data["pipeline"]["ingestion"]["sparse_encoder"] = "components.sparse_encoders.nope"
+    with pytest.raises(ValidationError, match="has no entry 'nope'"):
+        RagConfig.model_validate(data)
+
+
+def test_a_sparse_encoder_target_is_held_to_the_allowlist() -> None:
+    data = with_hybrid()
+    data["components"]["sparse_encoders"]["bm25"]["_target_"] = "os.system"
+    with pytest.raises(ValidationError, match="outside the import allowlist"):
+        RagConfig.model_validate(data)
+
+
 def test_without_a_path_context_paths_are_taken_as_given(config: RagConfig) -> None:
     # Programmatic construction: no config file, so nothing to anchor to.
     assert str(config.paths.data) == "corpus"

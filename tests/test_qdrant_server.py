@@ -18,9 +18,24 @@ import pytest
 from conftest import QDRANT_TEST_URL
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
-from test_vectorstore import chunks_of, doc, manifest, publish, tied_collection
+from test_vectorstore import (
+    ENCODER,
+    HYBRID,
+    QUERY_1,
+    SPARSE_RECORD,
+    FixedEmbeddings,
+    chunks_of,
+    doc,
+    manifest,
+    publish,
+    publish_hybrid,
+    sparse_tied_collection,
+    texts_of,
+    tied_collection,
+)
 
-from rag_qa.manifest import manifest_payload
+from rag_qa import vectorstore
+from rag_qa.manifest import chunk_id, manifest_payload
 from rag_qa.vectorstore import (
     GenerationGoneError,
     QdrantStore,
@@ -28,6 +43,7 @@ from rag_qa.vectorstore import (
     newest_complete,
     open_generation,
     recover,
+    retriever,
     search,
     write_generation,
 )
@@ -193,3 +209,84 @@ def test_a_search_of_a_deleted_generation_is_gone(server: QdrantClient, collecti
     server.delete_collection(old)
     with pytest.raises(GenerationGoneError, match=old):
         search(store, old, [1.0, 1.0, 0.5], 1)
+
+
+# ---- hybrid retrieval and the sources filter (S3-5, DEC-20) --------------------------------
+
+
+def test_a_hybrid_query_and_a_filtered_query_on_the_server(
+    server: QdrantClient, collection: str
+) -> None:
+    # The server's IDF and filter, through our two searches and our fusion: the same answer
+    # as local mode gives (test_vectorstore.py).
+    store = store_of(server, collection)
+    texts = ["alpha one", "beta two", "gamma three", "delta four", "zebra five"]
+    generation = publish_hybrid(store, **{"a.txt": texts, "b.txt": ["zebra b", "beta b"]})
+    params = server.get_collection(generation).config.params
+    assert params.sparse_vectors is not None
+    assert params.sparse_vectors["bm25"].modifier == models.Modifier.IDF
+    found = retriever(store, generation, FixedEmbeddings(), HYBRID, sparse=ENCODER, k=2)
+    assert [d.page_content for d in found.invoke("zebra", sources=("a.txt",))] == [
+        "zebra five",
+        "alpha one",
+    ]
+    only_b = found.invoke("zebra", sources=("b.txt",))
+    assert [d.page_content for d in only_b] == ["zebra b", "beta b"]
+    dense = retriever(store, generation, FixedEmbeddings(), {"search_kwargs": {"k": 5}}, k=5)
+    assert {d.metadata["source"] for d in dense.invoke("q", sources=("b.txt",))} == {"b.txt"}
+    assert found.invoke("zebra", sources=("gone.txt",)) == []
+
+
+def test_a_fused_tie_across_the_two_lists_is_cut_by_point_id(
+    server: QdrantClient, collection: str
+) -> None:
+    # With prefetch 2, the dense list holds the first two chunks and the sparse list the
+    # fifth alone: the first and the fifth both score 1 / (rrf_k + 1). A cut of 1 falls in
+    # that tie, and the point ID decides it, whatever the insertion order.
+    store = store_of(server, collection)
+    texts = ["alpha one", "beta two", "gamma three", "delta four", "zebra five"]
+    spec = {**HYBRID, "prefetch": 2}
+    results = []
+    for order in (texts, list(reversed(texts))):
+        parts = texts_of("a.txt", texts)
+        ranked = sorted(range(len(texts)), key=lambda i: order.index(texts[i]))
+        add = type(parts)(
+            ids=[parts.ids[i] for i in ranked],
+            texts=[parts.texts[i] for i in ranked],
+            metadatas=[parts.metadatas[i] for i in ranked],
+            vectors=[parts.vectors[i] for i in ranked],
+            sparse=[parts.sparse[i] for i in ranked] if parts.sparse else None,
+        )
+        records = {"a.txt": doc("a.txt", len(texts))}
+        hybrid = manifest(**records).model_copy(update={"sparse": SPARSE_RECORD})
+        generation = write_generation(store, hybrid, base=None, delete=[], add=add).generation
+        fused = retriever(store, generation, FixedEmbeddings(), spec, sparse=ENCODER, k=1)
+        both = retriever(store, generation, FixedEmbeddings(), spec, sparse=ENCODER, k=2)
+        results.append(
+            ([d.id for d in fused.invoke("zebra")], [d.id for d in both.invoke("zebra")])
+        )
+    tied = sorted([chunk_id("a.txt", "a" * 64, 0), chunk_id("a.txt", "a" * 64, 4)])
+    assert results[0] == results[1] == ([tied[0]], tied)
+
+
+def test_a_tie_at_each_branch_s_own_cut_gives_one_answer_from_builds_in_different_orders(
+    server: QdrantClient, collection: str
+) -> None:
+    # Design review 2: each branch's cut through tied points is ours. Thirty points tie in
+    # both branches; two collections built in different orders must give the same sparse
+    # cut, the same dense cut, and so the same fused list (fuse is what the hybrid
+    # retriever runs over the two). Within one collection the server always agrees with
+    # itself, so only different builds prove anything.
+    store = store_of(server, collection)
+    results = []
+    for n, order in enumerate([list(range(30)), [(i * 7) % 30 for i in range(30)]]):
+        name = f"{collection}_sparse_ties_{n}"
+        ids = sparse_tied_collection(server, name, order)
+        sparse = search(store, name, QUERY_1, 8)
+        dense = search(store, name, [1.0, 1.0], 8)
+        fused = vectorstore.fuse([dense, sparse], rrf_k=60, limit=8)
+        results.append([[str(p.id) for p in found] for found in (sparse, dense, fused)])
+    assert results[0] == results[1]
+    sparse_cut, dense_cut, _ = results[0]
+    assert sparse_cut[5:] == sorted(ids)[:3]  # the 5 that score higher, then ties by ID
+    assert dense_cut == sorted([*ids, *sparse_cut[:5]])[:8]  # every dense vector ties
