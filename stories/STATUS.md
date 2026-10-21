@@ -5,11 +5,12 @@
 
 ## Now
 
-**Next action: commit the second review's record, push, and merge PR #22 with a merge
-commit once CI is green on it.** CI is green on `fbf3d8d`, the first review's record (run
-39565294829, both jobs), as on `d1e747f` (run 39551082170; suite 1068 passed, audit "No
-known vulnerabilities found", tier 1 0.950 / 0.796 / 0.858). Neither review found a defect
-in the code.
+**Next action: merge PR #22 with a merge commit, then start S3-5.** S3-4 is done
+(2026-10-21). CI is green on the second review's record, `e0ee166` (run 39588185690, both
+jobs): the suite 1068 passed, coverage 98.40%, the audit clean, tier 2 fresh, tier 1 0.950
+/ 0.796 / 0.858, and the 8 Qdrant server tests. Check `gh pr checks` on the head again
+after this record's commit. Neither review found a defect in the code. The merge also
+clears `main`'s red audit, through the certifi bump (`a27d98a`).
 
 **Second review of S3-4 (2026-10-21, on `fbf3d8d`): no defect in the code; 1 record
 finding and 1 config comment, fixed after it.** The live `rag_qa` alias was only read;
@@ -1274,7 +1275,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | [S3-1](phase-3/S3-1-open-phase-3.md) | Open Phase 3: 1.0.0.dev0, format the code once and gate it | DEC-28, backlog: `ruff format` | — | Done 2026-10-16 (PR #19) |
 | [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19 (PR #20, merged 2026-10-20) |
 | [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Done 2026-10-20 (PR #21, merged 2026-10-20) |
-| [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Reviewed 2026-10-21 (PR #22) |
+| [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Done 2026-10-21 (PR #22) |
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Todo |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Todo |
 | [S3-7](phase-3/S3-7-observability.md) | Structured logs, traces, metrics and alerts | NFR-10, NFR-1, NFR-3, DEC-22 | S3-6 | Todo |
