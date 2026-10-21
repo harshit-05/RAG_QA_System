@@ -79,6 +79,11 @@ read off the results. The golden set can show only large differences:
 
   The choice is recorded here. The candidate runs use it through a scratch config, with a
   hybrid ingest on the T4 when hybrid is on; S3-11b sets it in `config.yaml`.
+  - **On the chunks S3-11b ships** (caveat 37, added 2026-10-22). S3-5 measured with pypdf
+    6.19.0, but S3-11b bumps it with `CHUNKING_VERSION` 2, which changed 7 of the 25 golden
+    contexts. So S3-11 first repeats S3-5's dense-against-hybrid and `min_score` tables
+    with the bump, on its branch (about 15 minutes of tier 1, with S3-5's
+    `~/dev/rag-s3-5/run.sh`), and every candidate run uses those chunks.
 - **Stage 3, the prompt**, with mistral, generated and scored on a Colab T4: v0.3's prompt
   against the revised one.
   - **The revision:**

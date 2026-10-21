@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In review (2026-10-22): built and measured on `feat/s3-5-hybrid-retrieval`, not committed. Verification 1–13 run and shown below, all as expected; the two HTTP checks (rag-serve in the maintainer's terminal) and `gh pr checks` wait for the maintainer. Tier 1 recommends hybrid on, with `rrf_k` 60 and `prefetch` 40, and `min_score` −4, for S3-11 ("Tier 1"). On Opus 5.5 at max effort (Deviation). |
+| **Status** | In review (2026-10-22): PR on `feat/s3-5-hybrid-retrieval`. `b8888fb` S3-4's merge and the ruleset; `02f093a` the feature; `8024344` the docs; `5fae25f` this record. Verification 1–14 run and shown below, all as expected. CI went red on `5fae25f` (run 39672941870) in Audit alone, on five pypdf advisories published that day. The maintainer deferred the bump to S3-11b under a dated audit exception (Discovered; caveat 37), committed after this record; `gh pr checks` on that head is still to come. Tier 1 recommends hybrid on, with `rrf_k` 60 and `prefetch` 40, and `min_score` −4, for S3-11 ("Tier 1"). On Opus 5.5 at max effort (Deviation). |
 | **Closes** | FR-3 (lexical retrieval fused by RRF; metadata filtering); DEC-20 |
 | **Depends on** | S3-4 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -161,8 +161,8 @@ eval/thresholds.yaml`, since a copied config anchors its paths to its own folder
 | 11 | the variants, the reach and the `min_score` runs (12) | the tables in "Tier 1" |
 | 12 | the cleanup | the scratch generation deleted, and its alias with it; the server holds `rag_qa`'s two generations and its alias only |
 | 13 | `rag-query --source 2412.14140v2.pdf --source 2412.14140.pdf --source nope.pdf` | exit 2 before any model: "--source names documents not in the index: '2412.14140.pdf' (did you mean '2412.14140v2.pdf'?), 'nope.pdf'…" |
-| 14 | the two HTTP checks, `rag-serve` in the maintainer's terminal | pending: the maintainer's |
-| 15 | `gh pr checks` | pending: after the push |
+| 14 | the two HTTP checks, `rag-serve` in the maintainer's terminal (2026-10-22) | the GLIDER question with `"sources": ["2412.14140v2.pdf"]`: `event: sources` with 5 sources, every one `2412.14140v2.pdf` (pp. 9, 8, 6, 1, 1), and the server log shows "Answer cancelled: its client disconnected" once `head -3` closed. `"sources": ["nope.pdf"]`: `422` |
+| 15 | `gh pr checks` | red on `5fae25f` (run 39672941870): `check` failed in Audit alone, on five pypdf advisories (Discovered); Lint, Format, Types and Test passed, and `eval-retrieval` was skipped behind it. After the audit exception: to be recorded |
 
 ## Review notes for the human
 
@@ -328,6 +328,31 @@ The cost is one more search per question, a sparse one. S3-7 measures it (NFR-1)
 - **Two probes touched the live Qdrant server outside the alias, read-only on `rag_qa`:** a
   collection `zz_s35_probe` (sparse vectors, the filter, an empty query), created and
   deleted, and the read-only scrolls that measured `avg_len` and found the soft hyphens.
+- **pypdf's advisories, and why its bump is not free** (CI, 2026-10-22). Five pypdf 6.19.0
+  advisories were published on 2026-10-21 between 16:48 and 19:58 UTC, after `main`'s last
+  green run (11:17 UTC), so `main`'s lock fails them too. `uv lock --upgrade-package pypdf`
+  moves pypdf alone, to 6.21.2, from the same trusted publisher (`py-pdf/pypdf`,
+  `publish-to-pypi.yaml`, environment `pypi`). But the fixed releases extract differently.
+  Through our `PdfLoader` (`~/dev/rag-s3-5/pdf_extraction.py`), 6.21.1 and 6.21.2 agree with
+  each other and differ from 6.19.0 in whitespace on 2 of 32 pages of the GLIDER paper and
+  103 of 516 of the CADE proceedings; the YOLOv8 paper is unchanged. A scratch rebuild with
+  6.21.2 made 1,710 chunks, not 1,708, changed 7 of the 25 golden contexts (5 with other
+  citations), and gave tier 1 0.950 / 0.771 / 0.842 (`glider-purpose` rank 1 → 2).
+  - **That needs `CHUNKING_VERSION` 2 and a tier-2 re-run,** and the audit policy allows no
+    ignore for a fixed advisory. The maintainer chose to defer the bump to S3-11b's one
+    re-run under a dated exception (caveat 37). `ci.yml`'s Audit step ignores the five
+    GHSA IDs, each with its reason, and fails on its own after 2027-01-20. Checked locally:
+    the step's script passes with "No known vulnerabilities found, 5 ignored", and
+    `--ignore-vuln` matches the GHSA IDs through their CVE aliases.
+  - **Reach, checked in pypdf 6.19.0's source.** Text extraction returns at once for an
+    image XObject (`_page.py`), and Pillow is reached only through `_xobj_to_image`, which
+    the `images` APIs and `decode_as_image` call. So the JPEG advisory is not reached, nor
+    are the writer's `find_outline_item` and tree editing's `remove_from_tree`. The xref
+    loop (`_read_standard_xref_table`) and the multi-filter memory (`decode_stream_data`)
+    are reached by any read, through a hostile PDF in `corpus/`, which only the operator
+    fills.
+  - **S3-11 and S3-11b now say so:** S3-11 repeats this story's tables on the bumped chunks
+    before stage 2, and S3-11b bumps pypdf, sets `CHUNKING_VERSION` 2 and ends the exception.
 - **A source that a later ingest removes, mid-session, yields no chunks** (D11). The CLI
   checks the sources once, at start-up. The model then declines, which is the honest answer.
 
@@ -345,6 +370,10 @@ The cost is one more search per question, a sparse one. S3-7 measures it (NFR-1)
 - **The third server test fuses the two server cuts with `fuse` directly,** which is what
   the hybrid retriever runs: the tied collection's points carry no text to make documents
   of.
+- **A CI change outside the story's scope** (maintainer, 2026-10-22): the Audit step's dated
+  pypdf exception, since the advisories blocked the merge (ruleset 25561360 requires
+  `check`) and `main` fails them as well. It goes on this PR, as S3-2's aiohttp and S3-4's
+  certifi bumps did.
 - **Small things:** the API's dependency is `known_sources` (the plan said
   `checked_query`); `_rerank_after` is folded into `_bound`, which now passes the sources
   to the retriever and the question to the reranker; `rag-ingest` builds the sparse encoder

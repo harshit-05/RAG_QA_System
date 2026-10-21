@@ -5,9 +5,16 @@
 
 ## Now
 
-**Next action: review S3-5, then commit it on `feat/s3-5-hybrid-retrieval`** (the recipe is
-in the session; nothing is committed). Two verification steps are the maintainer's: the HTTP
-filter checks with `rag-serve` in a foreground terminal, and `gh pr checks` after the push.
+**Next action: commit the audit exception and its record on `feat/s3-5-hybrid-retrieval`,
+push, and check that CI goes green on the PR; then review S3-5 and merge it with a merge
+commit.** The HTTP filter checks passed (S3-5's verification record).
+
+**CI went red on S3-5's PR (run 39672941870, `5fae25f`) in Audit alone.** Five pypdf 6.19.0
+advisories were published on 2026-10-21, after `main`'s last green run, so `main`'s lock
+fails them too. Unlike certifi's and aiohttp's, this bump is not free: the fixed releases
+extract the corpus's text differently, and on a scratch rebuild 7 of the 25 golden contexts
+changed. The maintainer chose to defer the bump to S3-11b's one re-run, under a dated audit
+exception, the first one the policy has (caveat 37, DEC-24's row).
 
 **S3-5 (2026-10-21/22): hybrid retrieval and a `sources` filter, built and measured; the real
 config, tier 2 and every answer are unchanged.**
@@ -1205,6 +1212,20 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
     died on a 404. In a forced interleaving it deleted the generation just switched to, and
     the alias went with it until the next publish. Give another checkout
     `RAG_QDRANT_COLLECTION=<name>`, or stop this checkout's Qdrant while it runs its own.
+37. **pypdf stays at 6.19.0 until S3-11b, under an audit exception** (maintainer, 2026-10-22,
+    found by S3-5's CI). Five pypdf advisories were published on 2026-10-21. The fixed
+    releases extract the corpus differently: whitespace on 105 of 561 pages, 1,710 chunks
+    instead of 1,708, 7 of the 25 golden contexts changed, and tier 1 0.950 / 0.771 / 0.842
+    in place of 0.950 / 0.796 / 0.858. The bump therefore needs `CHUNKING_VERSION` 2 and a
+    tier-2 re-run. CI's Audit step ignores the five, with a reason each, until S3-11b's one
+    re-run carries the bump (DEC-26), and fails on its own after 2027-01-20.
+    - **Never move pypdf on its own** (`uv lock --upgrade` included): a new version changes
+      the chunks, and no fingerprint part sees it. S3-11b bumps it with `CHUNKING_VERSION` 2,
+      then removes the date check and the five ignores from `ci.yml`.
+    - **Three of the five are unreachable:** image extraction, tree editing and the writer,
+      none of which the loader calls (checked in pypdf 6.19.0's source). Two are denial of
+      service through a hostile PDF in `corpus/`, which only the operator fills.
+    - **Another pypdf advisory before S3-11b** is a new decision, not a sixth ignore.
 
 ## GPU offload notes (nothing *requires* GPU; Colab/Kaggle available)
 
@@ -1334,7 +1355,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19 (PR #20, merged 2026-10-20) |
 | [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Done 2026-10-20 (PR #21, merged 2026-10-20) |
 | [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Done 2026-10-21 (PR #22, merged 2026-10-21) |
-| [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | In review (2026-10-22): built and measured, not committed |
+| [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | In review (2026-10-22): PR open; CI red in Audit on pypdf, deferred under an exception (caveat 37) |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Todo |
 | [S3-7](phase-3/S3-7-observability.md) | Structured logs, traces, metrics and alerts | NFR-10, NFR-1, NFR-3, DEC-22 | S3-6 | Todo |
 | [S3-8](phase-3/S3-8-api-hardening.md) | API keys, rate limits and a stateless query tier | NFR-5, DEC-23 | S3-7 | Todo |
@@ -1398,7 +1419,7 @@ S3-2's (design review 1).
 | DEC-21 | NFR-6 and the hosted fallback | **Resolved 2026-10-14: timeouts, safe retries and circuit breakers on network calls; an opt-in OpenAI-compatible fallback, with one real check** (maintainer) | Ollama: connect 5 s, read 600 s; retries only before the first token. Qdrant: 10 s; every call retried (all idempotent). Our own breaker per dependency; open means 503 with `Retry-After` before the first byte. The fallback (`pipeline.query.fallback_llm`, a `fallback` extra with `langchain-openai`) answers only while Ollama's breaker is open or after a connection error before the first token; streamed itself, never `.with_fallbacks()`; its key from the environment only; never used by tier 2. It absorbs the backlog's reopen back-off. **Design review 1:** with a fallback configured, an open Ollama breaker routes to it, and the start-up checks warn instead of exiting 2; retry semantics are stated per call; the retry before the first token is a hand-written loop. **Design review 2 (2026-10-16):** Qdrant's breaker wraps each attempt, with one deadline per retrieval, since retrieval holds the retrieval lock; a 404 is never retried; the fallback sets `max_retries: 0` and a timeout, as the OpenAI SDK retries twice on its own. S3-6. |
 | DEC-22 | NFR-10: logs, traces, metrics, alerts | **Resolved 2026-10-14: structlog; OpenTelemetry spans we create ourselves; prometheus-client; burn-rate alerts; Jaeger** | No LangChain callback handlers: one that suspends reopens DEC-14's cancel window. Spans are never current across a `yield`, and end in a `finally`. Metrics on their own port. Alert rules tested by `promtool` in CI. NFR-1 by a 100k synthetic benchmark; NFR-3 reported by `rag-ingest`. **Design review 2 (2026-10-16):** it held. With the instrumentation off, excluded or full, a client dropped during 30 s of silence cancelled the stream within milliseconds, and every span ended. promtool runs from the Prometheus image, by digest. S3-7. |
 | DEC-23 | The API beyond localhost (DEC-18's Phase 3 half) and NFR-5 | **Resolved 2026-10-14: named, scoped API keys (maintainer); token-bucket rate limits; a 64 KiB body limit; job records in SQLite; a stateless query tier; TLS at the proxy** | A keys file of sha256 hashes with scopes `query` and `ingest`, managed by `rag-keys`; `RAG_API_TOKEN` still works as one all-scope key. A job holds a lock of its own, so an unfinished row whose job lock is free reads as abandoned. Limits per replica, documented. **Design review 1:** the job's own lock replaces probing the writer lock, which could call a live job abandoned and make a starting writer exit 2; the health routes are exempt from rate limits; failed authentication is limited to 10 a minute per address. **Design review 2 (2026-10-16):** `X-Forwarded-For` is trusted from Caddy's own address only, since uvicorn trusts loopback by default; the rate tables are bounded; the keys file lives in `var/`, mounted as a folder, and fails closed; "no credential" means no key and no token; a streamed body over the limit raises `HTTPException(413)`; and the abandoned-job rule reads the row again after the probe. S3-8. |
-| DEC-24 | Containers, compose, overlays and CI scanning | **Resolved 2026-10-14: one image (uv, CPU torch, models baked in, offline), one compose file with Caddy for TLS and balancing, `RAG_CONFIG_OVERLAY`, Trivy run as a binary pinned by sha256** | Not `aquasecurity/trivy-action` (tags hijacked, CVE-2026-33634). SIGTERM ends `rag-serve` with 143 under an init, and that stays. The audit policy: ignores only for advisories with no fix, each with a reason and a date; a weekly run; the `eval` extra audited. A ruleset makes every stage block a merge. **Design review 1:** the `eval` extra has four advisories, not one. The `langchain` bump moves into S3-9 (maintainer) and clears two; diskcache's and ragas's have no fix, and are the policy's first ignores. The repository is public, so rulesets are available. **Design review 2 (2026-10-16):** a signature would not have caught Trivy's pipeline-built v0.69.4, so every pin is verified once, by provenance pinned to its workflow and tag, its source commit on `main`, and an age rule. promtool runs from the image, by digest, and the weekly run scans the third-party images. Compose runs one uid, Qdrant's unprivileged image, and Caddy as the only trusted proxy; the disconnect through Caddy held. S3-9. |
+| DEC-24 | Containers, compose, overlays and CI scanning | **Resolved 2026-10-14: one image (uv, CPU torch, models baked in, offline), one compose file with Caddy for TLS and balancing, `RAG_CONFIG_OVERLAY`, Trivy run as a binary pinned by sha256** | Not `aquasecurity/trivy-action` (tags hijacked, CVE-2026-33634). SIGTERM ends `rag-serve` with 143 under an init, and that stays. The audit policy: ignores only for advisories with no fix, each with a reason and a date; a weekly run; the `eval` extra audited. A ruleset makes every stage block a merge. **Design review 1:** the `eval` extra has four advisories, not one. The `langchain` bump moves into S3-9 (maintainer) and clears two; diskcache's and ragas's have no fix, and are the policy's first ignores. The repository is public, so rulesets are available. **Design review 2 (2026-10-16):** a signature would not have caught Trivy's pipeline-built v0.69.4, so every pin is verified once, by provenance pinned to its workflow and tag, its source commit on `main`, and an age rule. promtool runs from the image, by digest, and the weekly run scans the third-party images. Compose runs one uid, Qdrant's unprivileged image, and Caddy as the only trusted proxy; the disconnect through Caddy held. **One exception to the audit policy (maintainer, 2026-10-22):** five pypdf 6.19.0 advisories with fixed releases are ignored in `ci.yml`, each with its reason, until S3-11b bumps pypdf with `CHUNKING_VERSION` 2 inside its one re-run, and at the latest until 2027-01-20, when the Audit step fails on its own. The fixed releases change 7 of the 25 golden contexts (caveat 37). S3-9. |
 | DEC-25 | Backup and restore | **Resolved 2026-10-14: snapshots of immutable generations to a directory; a restore is a new generation and an alias switch** | Checksums verified both ways; a snapshot from another embedder is refused; RPO and RTO stated; tested against a real server in CI and by drills (maintainer's addition). **Design review 1:** a restore holds the writer lock from the upload to the end, or an ingest could delete its generation mid-restore; the sidecar keeps the whole manifest. **Design review 2 (2026-10-16):** the manifest survived a real round trip. Restore refuses a taken name, since an upload overwrites in place, and runs `check_index`'s whole rule. Snapshot files outlive their collections, so restore, `create` and `recover` delete them. The backup service mounts `./var`. S3-10. |
 | DEC-26 | Tier-2 re-runs in Phase 3 | **Resolved 2026-10-14: one, batching every lever; S3-11 measures them and S3-11b commits** | The judge (from the hand labels), the prompt fixes and LLM01's delimiting, the hybrid switch, `min_score`, the model (DEC-2), `check` recomputing aggregates, and a per-question context digest. Staged so the grid stays small: about 4–6 h of T4 time plus about 70 min here. **Design review 1:** split into S3-11 (the sweep) and S3-11b (the commit), as S2-5 and S2-5b were (maintainer); the `langchain` bump moved to S3-9; the answers file records Qdrant's version. **Design review 2 (2026-10-16):** a stage 0 measures the T4 against this CPU; stage 1's re-score is certain; every rule is a margin committed before the first run; Colab restores this host's index and runs Ollama only; about 5–9 h of T4 time, where this row first said 4–6; and about 5 labels outside the 20 after S3-11b. S3-11, S3-11b. |
 | DEC-27 | NFR-2: revise the SLO, serve from a GPU, or a hosted model | **Resolved 2026-10-14: revised** (maintainer) | (a) the `sources` event in under 2 s at p95 with the model idle; (b) the time to first token reported per class of hardware, this CPU's from the committed run and a T4's from S3-11. A GPU host later is a `base_url` edit. Resolves ADR-016 at the amend session, which S3-12 runs. **Design review 1:** (a) is measured as a p95 over the golden questions (S3-7, and S3-11b if hybrid retrieval is on). |
@@ -1443,6 +1464,12 @@ diffed this backlog against `main`'s: no line was dropped.
   `stemmer` option and a `SPARSE_VERSION` bump.
 
 ### Opened in Phase 3 stories
+
+- **S3-11b — bump pypdf to 6.21.1 or later, with `CHUNKING_VERSION` 2, and end the audit
+  exception** (found in S3-5's CI, caveat 37). The re-run rebuilds every index anyway; then
+  remove the Audit step's date check and its five `--ignore-vuln`, and record tier 1 before
+  and after. S3-5 measured 6.21.2: 0.950 / 0.771 / 0.842, against 0.950 / 0.796 / 0.858 now.
+  Decide the soft hyphens below in the same change, since both alter the chunks.
 
 - **S3-11b — PDF soft hyphens stay in the chunk text** (found in S3-5). The CADE proceedings
   carry 823 U+00AD at line-break hyphenations, so the embedder and the model read

@@ -143,7 +143,9 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     as the environment.
   - **The audit policy,** as DEC-24 states it:
     - `--ignore-vuln` entries only for advisories with no fixed release, each with a reason
-      and a date in `ci.yml` and a STATUS.md line;
+      and a date in `ci.yml` and a STATUS.md line. One exception exists already, and S3-9
+      keeps it as it is (added 2026-10-22): five pypdf advisories, with a date check, until
+      S3-11b (caveat 37). The weekly run also turns red on it after 2027-01-20;
     - `.trivyignore.yaml` entries, each with a statement and an `expired_at` at most 90 days
       out;
     - a weekly `schedule` run of the whole workflow on `main`. It also runs `trivy image`

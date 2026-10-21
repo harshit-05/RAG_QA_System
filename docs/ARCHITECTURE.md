@@ -2746,6 +2746,11 @@ a separate ingest worker (on one host there is no CPU to isolate it on).
   - **The audit policy** (a backlog line, decided here):
     - `pip-audit --ignore-vuln ID` only for an advisory with no fixed release, with a
       reason and a date beside it in `ci.yml`, and a line in STATUS.md;
+      _One exception, taken by the maintainer on 2026-10-22 (S3-5; STATUS.md caveat 37):_
+      five pypdf 6.19.0 advisories with fixed releases are ignored, because those releases
+      extract the corpus differently and change 7 of the 25 golden contexts. The bump rides
+      S3-11b's one re-run with `CHUNKING_VERSION` 2. The step fails on its own after
+      2027-01-20, 90 days out, as Trivy's ignores expire;
     - Trivy's ignores in `.trivyignore.yaml`, each with a statement and an `expired_at` at
       most 90 days out;
     - a weekly scheduled run of the whole workflow on `main`, so an advisory surfaces
