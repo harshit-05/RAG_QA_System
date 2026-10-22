@@ -105,6 +105,13 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     environment still audits clean.
 
   No tier-2 part moves: `judge` pins ragas and instructor, not langchain.
+- **The `eval` extra's Pillow bump** (added 2026-10-22, S3-5's second review): 24 advisories
+  against Pillow 12.3.0 were published on 2026-10-21 at 21:11 UTC, all fixed in 13.0.0.
+  Pillow comes through ragas alone, so only the `eval` extra has it, and CI's main Audit is
+  unaffected. `uv lock --upgrade-package pillow` moved Pillow alone, 12.3.0 → 13.0.0, in a
+  scratch copy of S3-5's head (`8ed9cf3`). A major release, so check that `import_ragas()`
+  still runs with it, as S3-3's verification 10 did. No tier-2 part moves: `judge` pins
+  ragas and instructor, not Pillow.
 - **CI** (needs the `workflow` scope, caveat 13).
   - **The `container` job:**
     - `docker/setup-buildx-action` v4.4.1 and `docker/build-push-action` v7.4.0, by SHA,
@@ -145,7 +152,9 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     - `--ignore-vuln` entries only for advisories with no fixed release, each with a reason
       and a date in `ci.yml` and a STATUS.md line. One exception exists already, and S3-9
       keeps it as it is (added 2026-10-22): five pypdf advisories, with a date check, until
-      S3-11b (caveat 37). The weekly run also turns red on it after 2027-01-20;
+      S3-11b (caveat 37). The weekly run also turns red on it after 2027-01-20. The `eval`
+      extra's Audit step below carries the same five ignores under the same date check: its
+      export holds pypdf 6.19.0 too (S3-5's second review);
     - `.trivyignore.yaml` entries, each with a statement and an `expired_at` at most 90 days
       out;
     - a weekly `schedule` run of the whole workflow on `main`. It also runs `trivy image`
@@ -157,7 +166,8 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
       advisories have no fixed release, and are the policy's first entries: `diskcache`
       5.6.3, PYSEC-2026-2447 (unsafe unpickling, which reaches only ragas's cache folder on a
       scoring machine), and `ragas` 0.4.3, PYSEC-2026-3046 (SSRF in the multimodal
-      faithfulness metric, which the judge does not use).
+      faithfulness metric, which the judge does not use). It also carries pypdf's five,
+      above, and Pillow's 24 are gone with its bump.
   - **The ruleset recipe,** for the maintainer to run: a `gh api` call that requires
     `check`, `eval-retrieval`, `deploy-config` and `container` on `main`. The repository is
     public, so the free plan has rulesets (checked in design review 1).
@@ -190,12 +200,16 @@ diff ~/dev/rag-s3-2/contexts-qdrant.json ~/dev/rag-s3-9/contexts.json && echo ID
 HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q
 uv run ruff check && uv run ruff format --check && uv run mypy
 
-# the bump: exactly five version lines move, then the eval extra's audit as CI runs it
+# the bumps: exactly six packages' version lines move (langchain's five and Pillow), then
+# the eval extra's audit as CI runs it, with pypdf's five ignores until S3-11b (caveat 37)
 git diff main -- uv.lock | grep -E '^[-+]version = '
 uv export --no-dev --extra eval --no-emit-project --no-hashes | grep -v "sys_platform == 'darwin'" \
   | sed 's/^\(torch==[^ ;]*\)+cpu/\1/' > /tmp/s3-9-eval.txt
 uv run --no-sync pip-audit --no-deps --disable-pip -r /tmp/s3-9-eval.txt \
-  --ignore-vuln PYSEC-2026-2447 --ignore-vuln PYSEC-2026-3046   # no known vulnerabilities
+  --ignore-vuln PYSEC-2026-2447 --ignore-vuln PYSEC-2026-3046 \
+  --ignore-vuln GHSA-5hx5-vpf9-5wcv --ignore-vuln GHSA-9mx8-4j7g-633p \
+  --ignore-vuln GHSA-qfv9-64jg-mh7p --ignore-vuln GHSA-39mj-jf6j-2qj3 \
+  --ignore-vuln GHSA-7mh2-4gg2-979f                            # no known vulnerabilities
 
 docker build -t rag-qa:s3-9 .                              # fails if torch is not +cpu
 docker run --rm --entrypoint python rag-qa:s3-9 -c "import torch; print(torch.__version__)"   # +cpu

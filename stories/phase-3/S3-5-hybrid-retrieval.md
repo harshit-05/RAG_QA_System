@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done (2026-10-22): PR #23 on `feat/s3-5-hybrid-retrieval`. `b8888fb` S3-4's merge and the ruleset; `02f093a` the feature; `8024344` the docs; `5fae25f` the record; `ba00edc` the pypdf audit exception; `eada273` its record; and this one, the record of CI. Verification 1–15 run and shown below, all as expected. CI went red on `5fae25f` (run 39672941870) in Audit alone, on five pypdf advisories published that day. The maintainer deferred the bump to S3-11b under a dated audit exception (Discovered; caveat 37). CI is green on `eada273` (run 39680224669, both jobs). Tier 1 recommends hybrid on, with `rrf_k` 60 and `prefetch` 40, and `min_score` −4, for S3-11 ("Tier 1"). On Opus 5.5 at max effort (Deviation). The first review (2026-10-22) found no defect in the code and changed one line of `sparse.py`, a style fix ("First review"). Check `gh pr checks` on the head after the review's commits, then merge it with a merge commit. |
+| **Status** | Done (2026-10-22): PR #23 on `feat/s3-5-hybrid-retrieval`. `b8888fb` S3-4's merge and the ruleset; `02f093a` the feature; `8024344` the docs; `5fae25f` the record; `ba00edc` the pypdf audit exception; `eada273` its record; and this one, the record of CI. Verification 1–15 run and shown below, all as expected. CI went red on `5fae25f` (run 39672941870) in Audit alone, on five pypdf advisories published that day. The maintainer deferred the bump to S3-11b under a dated audit exception (Discovered; caveat 37). CI is green on `eada273` (run 39680224669, both jobs). Tier 1 recommends hybrid on, with `rrf_k` 60 and `prefetch` 40, and `min_score` −4, for S3-11 ("Tier 1"). On Opus 5.5 at max effort (Deviation). The first review (2026-10-22) found no defect in the code and changed one line of `sparse.py`, a style fix ("First review"); its commits are `6f8d468` and `8ed9cf3`, and CI is green on `8ed9cf3` (run 39686537367, both jobs). The second review (2026-10-22) found no defect in the code either; it corrected S3-9's and S3-11b's plans for the audit exception and recorded Pillow's advisories for S3-9 ("Second review"). Once CI is green on its record, merge it with a merge commit. |
 | **Closes** | FR-3 (lexical retrieval fused by RRF; metadata filtering); DEC-20 |
 | **Depends on** | S3-4 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -412,6 +412,90 @@ Findings, no defect in the code:
 Not a defect: a first background run of the suite showed 4 CLI Ctrl-C failures. A background
 subshell leaves SIGINT ignored, and the tests say so; they pass on an idle machine.
 
+## Second review (2026-10-22, Opus 5.5)
+
+**No defect in the code; 1 planning finding for S3-9 and S3-11b, the records, and 2 nits,
+all fixed after `8ed9cf3`.** Run on the PR's head, `8ed9cf3`, with both earlier records
+treated as claims to check. The live Qdrant was only read: the alias still names
+`…7f20891e`, and the server holds `rag_qa`'s two generations alone. Everything that wrote
+ran on a throwaway Qdrant v1.19.2 from the compose file's digest (`review-s3-5-qdrant`, port
+16333, removed afterwards).
+
+- **Reproduced on `8ed9cf3`:** ruff, format, mypy and `uv lock --check` clean; **1180
+  passed, 15 skipped, 5 xfailed**, coverage **98.55%**, the HF cache empty; the 11
+  `qdrant_server` tests on the throwaway; `rag-eval check` exit 0; tier 1 0.950 / 0.796 /
+  0.858, the contexts digest `5a36e2f9…`, IDENTICAL; CI green on the head (run 39686537367).
+- **The live index, read-only:** under the new sparse rule `changed_since` gives no
+  rebuild (both records null), and `diff` gives 3 unchanged.
+- **New: with sparse vectors on, an update equals a rebuild.** On the throwaway, the scratch
+  hybrid config (`config.yaml` with the story's two lines) ingested a corpus of `notes.md`,
+  `b.txt` and the 615,023-byte YOLOv8 PDF; one collection was updated through six states and
+  another rebuilt with `--rebuild` at each:
+  - the first ingest (59 points);
+  - `b.txt`'s bytes edited: "1 changed, 2 unchanged", 4 chunks embedded;
+  - a stopword-only file added: "1 added", its one chunk with an empty sparse vector;
+  - `notes.md` edited: "1 changed", the empty vector copied with the rest;
+  - `max_file_mb: 0.5`: the PDF skipped, "1 removed";
+  - the limit lifted: "1 added", 52 chunks embedded.
+
+  At each, the two had the same point IDs, texts and metadata (all but `ingested_at`),
+  dense vectors within 1e-7, sparse vectors exactly equal, the `idf` modifier on both, and
+  the same BM25 hits and scores from Qdrant for four queries: the server's IDF over a copied
+  generation is the IDF over a rebuilt one.
+- **The code, against its claims:**
+  - both searches of a hybrid question go to the retriever's bound generation, never the
+    alias, so a publish between them cannot mix two generations;
+  - `fuse` sums each point's terms in list order and breaks ties by point ID, as the cut
+    does, so equal inputs give equal outputs across processes;
+  - the widening loop ends on a short list, which a sparse search often returns;
+  - `encode_query` deduplicates by index, so a hash collision never sends Qdrant one index
+    twice;
+  - `sources` reaches `_get_relevant_documents` only because langchain-core 1.6.3's
+    `BaseRetriever.__init_subclass__` sets `_expects_other_args` from its signature, and
+    `invoke` forwards keyword arguments only then. A rename would silently drop the filter;
+    `tests/test_api.py`'s `test_a_query_with_sources_is_answered_from_those_documents_only`
+    would catch it, end to end;
+  - the schema refuses `prefetch`/`rrf_k` without `mode: hybrid`, needs them with it, and
+    refuses a `prefetch` below the chunks returned; `mode: dense` dumps as absent.
+- **The audit exception's facts, today:** CI's Audit command, run here, finds exactly the
+  five pypdf advisories and clears them with the five ignores ("No known vulnerabilities
+  found, 5 ignored"). Each `ci.yml` reason matches its advisory (GHSA-5hx5 low, JPEG data;
+  GHSA-9mx8 and GHSA-qfv9 medium, tree editing and the writer; GHSA-39mj and GHSA-7mh2
+  medium, the xref loop and the multi-filter memory, both fixed first in 6.20.0). The
+  loader calls only `PdfReader`, `page_labels`, `pages` and `extract_text`, and the expiry
+  check compares ISO dates as strings, which orders them.
+- **Commits:** the eight on the PR have parseable trailers, no body line over 72 and no
+  attribution, nor does the PR body. No `!`: `sources` and `--source` are additive, and so
+  are the new config keys.
+
+Findings, all fixed:
+
+1. **S3-9's `eval` Audit step would have gone red.** S3-5 told S3-9 to keep the pypdf
+   exception "as it is", but the step S3-9 adds for the `eval` extra, and its verification
+   command, carried only the two no-fix ignores. That export holds pypdf 6.19.0 as well:
+   run today, it finds the same five. It also finds 24 Pillow 12.3.0 advisories, published
+   2026-10-21 at 21:11 UTC and fixed in 13.0.0, which reach only the `eval` extra, through
+   ragas; `uv lock --upgrade-package pillow` moved Pillow alone in a scratch copy. S3-9's
+   story now carries the five ignores in that step and a Pillow bump; S3-11b's removes the
+   exception from both steps; caveat 37 and a backlog line say so.
+2. **The records lagged the head,** for the third story running: STATUS.md's next action
+   still said to commit the first review's changes (`6f8d468` and `8ed9cf3`, pushed), and
+   this story's Status listed neither. A record commit cannot record its own CI, so the
+   next action now names what remains once it lands.
+3. **Nits:** STATUS.md quoted pip-audit as "No known vulnerabilities, 5 ignored" (it prints
+   "No known vulnerabilities found, 5 ignored"), in a line past the file's wrap.
+
+Considered, no change:
+
+- `known_sources` is a sync dependency, so it runs in a worker thread, and can read a
+  manifest that a concurrent request's refresh swapped in after this request took its
+  pipeline. The worst case is D11's: a named source with no chunks, and the model declines.
+- An encoder set with a dense retriever moves `ingestion`, though no answer can change: the
+  cheap direction, as S3-4's accepted over-inclusions are.
+
+After the fixes, which touch story files only: `rag-eval check` exit 0, and `git diff`
+names no file outside `stories/`.
+
 ## Deviation from plan
 
 - **Model:** fable-routed, run on Opus 5.5 at max effort, since Fable is unavailable
@@ -430,6 +514,9 @@ subshell leaves SIGINT ignored, and the tests say so; they pass on an idle machi
   pypdf exception, since the advisories blocked the merge (ruleset 25561360 requires
   `check`) and `main` fails them as well. It goes on this PR, as S3-2's aiohttp and S3-4's
   certifi bumps did.
+- **The second review edited two later stories** (S3-9 and S3-11b) and caveat 37, and added
+  a backlog line: this story's change to them had left S3-9's `eval` Audit step without the
+  pypdf ignores ("Second review").
 - **Small things:** the API's dependency is `known_sources` (the plan said
   `checked_query`); `_rerank_after` is folded into `_bound`, which now passes the sources
   to the retriever and the question to the reranker; `rag-ingest` builds the sparse encoder

@@ -40,8 +40,9 @@ of scoring on the T4, by the judge S3-11 chose.
     - `min_score` goes on the reranker entry;
   - **the chunks** (caveat 37, added 2026-10-22): pypdf to 6.21.1 or later, with
     `CHUNKING_VERSION` 2, so the run's index is rebuilt from them, and S3-5's soft-hyphen
-    question decided in the same change (STATUS.md backlog). Then remove the Audit step's date
-    check and its five `--ignore-vuln` from `ci.yml`: the exception ends here (DEC-24);
+    question decided in the same change (STATUS.md backlog). Then remove the date check and
+    the five pypdf `--ignore-vuln` from both Audit steps in `ci.yml`, the main one and the
+    `eval` extra's that S3-9 adds: the exception ends here (DEC-24);
   - **the model:** the chosen one as `pipeline.query.llm`. The others stay as entries (keep
     the alternatives as config axes).
 - **The run.**

@@ -5,13 +5,31 @@
 
 ## Now
 
-**Next action: commit the first review's two changes and its record, push, check `gh pr
-checks` on the new head, and merge PR #23 with a merge commit; then start S3-6.** S3-5 is
-done (2026-10-22), and the first review (2026-10-22) found no defect in the code. CI is
-green on `eada273` (run 39680224669, both jobs). In it, the audit found "No known vulnerabilities, 5 ignored", the suite had 1180
-passed with coverage 98.55%, tier 2's six parts were ok, and tier 1 was 0.950 / 0.796 /
-0.858, with the 11 Qdrant server tests passing. Check `gh pr checks` on the head again
-after this record's commit. The HTTP filter checks passed (S3-5's verification record).
+**Next action: once CI is green on the second review's record, merge PR #23 with a merge
+commit; then start S3-6.** S3-5 is done (2026-10-22), and neither review found a defect in
+the code. CI is green on `8ed9cf3`, the first review's record (run 39686537367, both jobs),
+as on `eada273` (run 39680224669). In that run the audit found "No known vulnerabilities
+found, 5 ignored", the suite had 1180 passed with coverage 98.55%, tier 2's six parts were
+ok, and tier 1 was 0.950 / 0.796 / 0.858, with the 11 Qdrant server tests passing. The HTTP
+filter checks passed (S3-5's verification record).
+
+**Second review of S3-5 (2026-10-22, on `8ed9cf3`): no defect in the code; 1 planning
+finding for S3-9 and S3-11b, and the records, fixed after it.** The live Qdrant was only
+read; probes ran on a throwaway v1.19.2, removed afterwards. Detail in the story.
+
+- **New evidence: with sparse vectors on, an update equals a rebuild,** through six states
+  on the real server (a file edited, a stopword-only file added and its empty sparse vector
+  copied twice, the PDF removed by the limit and added back): the same point IDs, texts and
+  metadata, dense vectors within 1e-7, sparse vectors exactly, and BM25 searches with
+  Qdrant's IDF scoring the same.
+- **Finding: S3-9's `eval` Audit step would have gone red.** Its export holds pypdf 6.19.0,
+  so it needs the same five ignores, and S3-11b removes them from both steps; and 24 Pillow
+  12.3.0 advisories (2026-10-21) reach it through ragas, fixed by a one-package bump to
+  13.0.0. S3-9's and S3-11b's stories, caveat 37 and a backlog line now say so.
+- **Held:** the gates on `8ed9cf3` (1180 passed, 98.55%; 11 server tests; `rag-eval check`
+  exit 0; tier 1 IDENTICAL); the live index under the new sparse rule (3 unchanged); the
+  exception's facts today (exactly the five, each reason against its advisory); and the
+  code against its claims, the `sources` keyword's path through langchain-core included.
 
 **CI went red on S3-5's PR (run 39672941870, `5fae25f`) in Audit alone.** Five pypdf 6.19.0
 advisories were published on 2026-10-21, after `main`'s last green run, so `main`'s lock
@@ -1232,6 +1250,9 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
     - **Never move pypdf on its own** (`uv lock --upgrade` included): a new version changes
       the chunks, and no fingerprint part sees it. S3-11b bumps it with `CHUNKING_VERSION` 2,
       then removes the date check and the five ignores from `ci.yml`.
+    - **The `eval` extra holds pypdf 6.19.0 too,** so the Audit step S3-9 adds for it
+      carries the same five ignores and date check, and S3-11b removes them from both steps
+      (S3-5's second review).
     - **Three of the five are unreachable:** image extraction, tree editing and the writer,
       none of which the loader calls (checked in pypdf 6.19.0's source). Two are denial of
       service through a hostile PDF in `corpus/`, which only the operator fills.
@@ -1507,6 +1528,12 @@ diffed this backlog against `main`'s: no line was dropped.
   retries cover it. S3-6 can use it as a real case, turn on `httpx`/`httpcore` debug
   logging to tell a lost request from a stalled one, and decide whether a timeout with the
   server up should say so rather than ask if it runs.
+
+- **S3-9 — Pillow 12.3.0 in the `eval` extra** (found in S3-5's second review). 24
+  advisories were published on 2026-10-21 at 21:11 UTC, all fixed in 13.0.0. Pillow comes
+  through ragas alone, so CI's main Audit does not see it; S3-9's new `eval` Audit step
+  would. `uv lock --upgrade-package pillow` moves Pillow alone; S3-9's story has the bump,
+  and checks that ragas still imports.
 
 - **Any story touching ingestion's log — "Published …: 1 documents"** (found in S3-4's
   drill). `_update`'s publish line does not agree in number for one document, where S2-8
