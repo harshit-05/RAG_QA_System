@@ -2,7 +2,8 @@
 
 Every generation carries its manifest in its own collection's metadata, so a query replica
 needs no shared disk (DEC-19). It records which embedder built the index, the default
-splitter, how the store searches it, and, for each document, the sha256 of the file's
+splitter, the sparse encoder if any (S3-5), how the store searches it, and, for each
+document, the sha256 of the file's
 bytes, its loader's and splitter's identities and how many chunks it has. ``rag-ingest``
 diffs the corpus against it to embed only what changed. The query side compares its
 embedder identity with the config's before comparing any vectors.
@@ -33,6 +34,8 @@ from pathlib import Path
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from rag_qa.sparse import SPARSE_VERSION
 
 MANIFEST_VERSION: Final = 2
 
@@ -152,6 +155,14 @@ class SplitterRecord(_Record):
     identity: str
 
 
+class SparseRecord(_Record):
+    """The sparse encoder that wrote the generation's sparse vectors (DEC-20, S3-5)."""
+
+    ref: str  # the config reference, for messages; the identity and version are compared
+    identity: str  # spec_identity of the encoder's spec
+    version: int  # the SPARSE_VERSION that tokenized and weighted
+
+
 class StoreRecord(_Record):
     """How the store searches the generation (DEC-19): by cosine, always exactly."""
 
@@ -161,6 +172,20 @@ class StoreRecord(_Record):
 
 #: The only store record this version writes or reads.
 STORE: Final = StoreRecord(distance="cosine", exact=True)
+
+
+def sparse_record(ref: str, spec: Mapping[str, Any]) -> SparseRecord:
+    """The record of the sparse encoder ``spec``, the config's entry ``ref``, as this code
+    would write its vectors: the spec's identity and :data:`rag_qa.sparse.SPARSE_VERSION`."""
+    return SparseRecord(ref=ref, identity=spec_identity(spec), version=SPARSE_VERSION)
+
+
+def same_sparse(a: SparseRecord | None, b: SparseRecord | None) -> bool:
+    """Whether two records describe the same sparse vectors, or both none: the identity and
+    the version decide, never the reference, so renaming a config entry changes nothing."""
+    if a is None or b is None:
+        return a is b
+    return (a.identity, a.version) == (b.identity, b.version)
 
 
 class DocumentRecord(_Record):
@@ -186,9 +211,10 @@ class Manifest(_Record):
     #: The default splitter when this generation was published. It names it and decides
     #: nothing: each document's own record does (S3-4).
     splitter: SplitterRecord
-    #: The sparse encoder's record, null until S3-11b sets one (DEC-20). A later story
-    #: widens the type; a null stays readable.
-    sparse: None
+    #: The sparse encoder's record, or null when the generation has no sparse vectors: every
+    #: index until S3-11b sets an encoder (DEC-20). S3-5 widened the type, so a null written
+    #: since S3-2 stays readable.
+    sparse: SparseRecord | None
     store: StoreRecord
     documents: dict[str, DocumentRecord]
 

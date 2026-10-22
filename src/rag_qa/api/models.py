@@ -9,12 +9,17 @@ Responses carry corpus-relative paths and generation names only, never a host pa
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 #: The longest question accepted, in characters.
 MAX_QUESTION_CHARS = 2000
+#: The most documents one question may be limited to (S3-5, DEC-20).
+MAX_SOURCES = 50
+#: The longest document path accepted, in characters: far beyond any corpus path, and a
+#: bound on what a 422 repeats back.
+MAX_SOURCE_CHARS = 1024
 
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
 
@@ -24,12 +29,19 @@ class _Request(BaseModel):
 
 
 class QueryRequest(_Request):
-    """``POST /v1/query``: the question, and nothing else."""
-
-    model_config = ConfigDict(str_strip_whitespace=True)
+    """``POST /v1/query``: the question, and optionally the documents to answer from."""
 
     #: Surrounding whitespace is dropped, as the CLI drops it, so a blank question is empty.
-    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    question: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_QUESTION_CHARS)
+    ]
+    #: The corpus documents to answer from, by their paths relative to the corpus, as
+    #: ``GET /v1/documents`` lists them (S3-5, FR-3); none means the whole corpus. Each must
+    #: be in the served index, or the request is refused with 422 naming the unknown ones.
+    #: Matched exactly, so not stripped: they are names, not prose.
+    sources: list[Annotated[str, StringConstraints(min_length=1, max_length=MAX_SOURCE_CHARS)]] = (
+        Field(default_factory=list, max_length=MAX_SOURCES)
+    )
 
 
 class IngestRequest(_Request):

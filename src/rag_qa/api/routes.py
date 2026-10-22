@@ -10,6 +10,8 @@ late. Each check is therefore a dependency, and they run in this order:
    Every route needs it except the two health probes.
 4. ``POST /v1/query`` only: no free slot, 503 with ``Retry-After`` (:func:`take_slot`).
 5. ``POST /v1/query`` only: no index the config can use, 503 (:func:`served_pipeline`).
+6. ``POST /v1/query`` only: a body that breaks the request model, then a source the served
+   index does not hold, 422 (:func:`known_sources`).
 
 **The body comes in two steps** (S2-7's first review). FastAPI parses it before it runs any
 dependency, so a body that is not valid JSON gets its 422 ahead of the 403 and the 401
@@ -194,6 +196,31 @@ async def served_pipeline(serving: Annotated[Serving, Depends(get_serving)]) -> 
     return serving.pipeline
 
 
+def known_sources(
+    body: QueryRequest,
+    serving: Annotated[Serving, Depends(get_serving)],
+    _: Annotated[QueryPipeline, Depends(served_pipeline)],
+) -> QueryRequest:
+    """The request, once every source it names is in the served index; 422 naming the
+    unknown ones otherwise (S3-5, FR-3).
+
+    The body is declared here rather than on the route, after the index's own check, so the
+    refusals keep their order: the index's 503, then a body that breaks the model (422),
+    then unknown sources (422). The names come from the client, so repeating them leaks
+    nothing; the model bounds their count and length.
+    """
+    manifest = serving.served.manifest
+    held = manifest.documents if manifest is not None else {}
+    unknown = [source for source in dict.fromkeys(body.sources) if source not in held]
+    if unknown:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"unknown sources, not in the index: {', '.join(map(repr, unknown))}. A source is a "
+            f"path relative to the corpus, as GET /v1/documents lists them",
+        )
+    return body
+
+
 # --- routes -------------------------------------------------------------------------------
 
 #: The health probes: never behind the token, so a supervisor can always ask.
@@ -244,16 +271,21 @@ def answer_event(event: AnswerEvent) -> ServerSentEvent:
     response_class=EventSourceResponse,
     responses={
         401: {"description": "a token is set, and the request did not carry it"},
+        422: {"description": "a malformed body, or a source the served index does not hold"},
         503: {"description": "busy (with Retry-After), or no index the config can use"},
     },
 )
 async def query(
-    body: QueryRequest,
     slot: Annotated[Slot, Depends(take_slot, scope="request")],
     pipeline: Annotated[QueryPipeline, Depends(served_pipeline)],
+    body: Annotated[QueryRequest, Depends(known_sources)],
 ) -> AsyncIterator[ServerSentEvent]:
-    """Answer a question as a stream: ``sources``, ``token``…, then ``done`` or ``error``."""
-    answer = cast(AsyncGenerator[AnswerEvent, None], stream_answer(pipeline, body.question))
+    """Answer a question as a stream: ``sources``, ``token``…, then ``done`` or ``error``.
+    With ``sources``, only those corpus documents are searched."""
+    answer = cast(
+        AsyncGenerator[AnswerEvent, None],
+        stream_answer(pipeline, body.question, sources=tuple(dict.fromkeys(body.sources))),
+    )
     slot.hold(answer)
     try:
         async for event in answer:

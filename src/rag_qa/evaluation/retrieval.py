@@ -43,7 +43,7 @@ from typing import Any, Literal
 from langchain_core.documents import Document
 
 from rag_qa.answering import source_refs
-from rag_qa.chain import build_retrieve, check_index, format_docs
+from rag_qa.chain import RetrievalQuery, build_retrieve, check_index, format_docs
 from rag_qa.components import build_embedder, build_store
 from rag_qa.evaluation.dataset import GoldenItem
 from rag_qa.schema import RagConfig
@@ -188,7 +188,8 @@ def evaluate_retrieval(
     asked = [item for item in items if item.answerable or record is not None]
 
     async def retrieve_all() -> list[list[Document]]:
-        return [await retrieve.ainvoke(item.question) for item in asked]
+        # The whole corpus: a golden question names no sources (S3-5).
+        return [await retrieve.ainvoke(RetrievalQuery(item.question)) for item in asked]
 
     scores = []
     for item, docs in zip(asked, asyncio.run(retrieve_all()), strict=True):

@@ -163,6 +163,29 @@ def without_s3_4_s_keys(c: dict[str, Any]) -> None:
     del c["components"]["splitters"]["markdown"]
 
 
+def without_s3_5_s_keys(c: dict[str, Any]) -> None:
+    """The real config as it was before S3-5: no sparse encoder entry, no hybrid retriever."""
+    del c["components"]["sparse_encoders"], c["components"]["retrievers"]["hybrid"]
+
+
+def with_bm25(c: dict[str, Any]) -> None:
+    ingestion(c)["sparse_encoder"] = "components.sparse_encoders.bm25"
+
+
+def hybrid_scratch(c: dict[str, Any]) -> None:
+    """S3-5's scratch config: the real one with the hybrid retriever and its encoder."""
+    with_bm25(c)
+    query(c)["retriever"] = "components.retrievers.hybrid"
+
+
+def bm25(c: dict[str, Any]) -> dict[str, Any]:
+    return c["components"]["sparse_encoders"]["bm25"]
+
+
+def hybrid_retriever(c: dict[str, Any]) -> dict[str, Any]:
+    return c["components"]["retrievers"]["hybrid"]
+
+
 def setter(get: Callable[[dict[str, Any]], dict[str, Any]], key: str, value: Any) -> Change:
     return config_edit(lambda c: get(c).__setitem__(key, value))
 
@@ -390,6 +413,17 @@ STAYS: list[Any] = [
     # S3-4. The world is the real config, so this holds its six parts unchanged by the 50 MB
     # limit, the empty map and the unused markdown entry together.
     pytest.param(config_edit(without_s3_4_s_keys), id="the real config without S3-4's keys"),
+    # S3-5: the real config's six parts with its unused sparse encoder and hybrid retriever,
+    # and with each of them edited while unused.
+    pytest.param(config_edit(without_s3_5_s_keys), id="the real config without S3-5's keys"),
+    pytest.param(setter(bm25, "k1", 1.5), id="an unused sparse encoder's spec"),
+    pytest.param(setter(hybrid_retriever, "rrf_k", 10), id="an unused hybrid retriever's spec"),
+    pytest.param(
+        config_edit(
+            lambda c: c["components"]["retrievers"]["vector_search"].__setitem__("mode", "dense")
+        ),
+        id="mode: dense spelled out",
+    ),
     pytest.param(setter(ingestion, "max_file_mb", None), id="no limit"),
     pytest.param(setter(ingestion, "max_file_mb", 1000), id="a limit above every file"),
     pytest.param(
@@ -420,6 +454,48 @@ def test_the_real_config_s_ingestion_part_is_the_committed_run_s() -> None:
     # of CI's check job, holds all six parts over the real corpus.
     recorded = load_answers(REPO_ROOT / "eval" / "runs" / "answers-latest.json").fingerprint
     assert fp.ingestion_part(load_config(REAL_CONFIG)) == recorded["ingestion"]
+
+
+def test_s3_5_s_scratch_config_moves_ingestion_and_query(world: World) -> None:
+    # The hybrid retriever and its encoder together: S3-11b's switch, and its one re-run.
+    before = world.parts()
+    hybrid_scratch(world.config)
+    assert fp.moved(before, world.parts()) == ["query", "ingestion"]
+
+
+def test_setting_a_sparse_encoder_moves_ingestion_alone(world: World) -> None:
+    before = world.parts()
+    with_bm25(world.config)
+    assert fp.moved(before, world.parts()) == ["ingestion"]
+
+
+def test_a_sparse_encoder_in_use_moves_ingestion_with_its_spec_and_version(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with_bm25(world.config)
+    before = world.parts()
+    bm25(world.config)["avg_len"] = 99.0
+    assert fp.moved(before, world.parts()) == ["ingestion"]
+    before = world.parts()
+    monkeypatch.setattr("rag_qa.manifest.SPARSE_VERSION", 2)
+    assert fp.moved(before, world.parts()) == ["ingestion"]
+
+
+def test_a_renamed_sparse_encoder_moves_nothing(world: World) -> None:
+    with_bm25(world.config)
+    before = world.parts()
+    entries = world.config["components"]["sparse_encoders"]
+    entries["renamed"] = entries.pop("bm25")
+    ingestion(world.config)["sparse_encoder"] = "components.sparse_encoders.renamed"
+    assert fp.moved(before, world.parts()) == []
+
+
+def test_a_hybrid_retriever_in_use_moves_query_with_its_settings(world: World) -> None:
+    hybrid_scratch(world.config)
+    for key, value in (("rrf_k", 10), ("prefetch", 20)):
+        before = world.parts()
+        hybrid_retriever(world.config)[key] = value
+        assert fp.moved(before, world.parts()) == ["query"]
 
 
 def test_a_per_extension_splitter_s_spec_moves_ingestion_once_it_is_in_use(world: World) -> None:

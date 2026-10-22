@@ -50,6 +50,7 @@ from langchain_core.messages import AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import RunnableLambda
 from langchain_ollama import ChatOllama
+from pydantic import ValidationError
 from qdrant_client import QdrantClient
 from starlette.datastructures import State
 from starlette.requests import Request
@@ -60,11 +61,12 @@ from rag_qa.api import state as api_state
 from rag_qa.api.app import create_app
 from rag_qa.api.jobs import KEEP
 from rag_qa.api.models import IngestReportOut, QueryRequest
-from rag_qa.api.state import NO_INDEX_YET, REINGEST, Serving, serialized
-from rag_qa.chain import IncompatibleIndexError, NoIndexError
+from rag_qa.api.state import NO_INDEX_YET, REINGEST, Served, Serving, serialized
+from rag_qa.chain import IncompatibleIndexError, NoIndexError, RetrievalQuery
 from rag_qa.components import build_store
 from rag_qa.config import load_config
 from rag_qa.ingest import CorpusUnreadableError, IngestionRunningError, IngestReport, ingest
+from rag_qa.manifest import STORE, DocumentRecord, EmbedderRecord, Manifest, SplitterRecord
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_DATA_PATH, ServerSettings
 from rag_qa.vectorstore import StoreUnavailableError
@@ -291,6 +293,12 @@ def test_a_slot_is_free_after_an_answer_ends_either_way(
         pytest.param({"question": 7}, id="not a string"),
         pytest.param({}, id="no question"),
         pytest.param(["x"], id="not an object"),
+        pytest.param({"question": "x", "sources": None}, id="sources null"),
+        pytest.param({"question": "x", "sources": "notes.txt"}, id="sources as one string"),
+        pytest.param({"question": "x", "sources": [""]}, id="an empty source"),
+        pytest.param({"question": "x", "sources": [7]}, id="a source not a string"),
+        pytest.param({"question": "x", "sources": ["s"] * 51}, id="51 sources"),
+        pytest.param({"question": "x", "sources": ["s" * 1025]}, id="an overlong source"),
     ],
 )
 def test_a_query_outside_the_contract_is_refused_with_422(
@@ -303,6 +311,103 @@ def test_a_query_outside_the_contract_is_refused_with_422(
     assert model.prompts == []
 
 
+# --- the sources filter (S3-5, FR-3) --------------------------------------------------------
+
+
+def test_a_query_with_sources_is_answered_from_those_documents_only(
+    scratch_config: RagConfig, tmp_path: Path
+) -> None:
+    ingest(scratch_config)
+    with serve(scratch_config, tmp_path) as (client, _):
+        every = sse_events(client.post("/v1/query", json={"question": "Station Kestrel"}).text)
+        assert len({ref["source"] for ref in every[0][1]["sources"]}) > 1
+        body = {"question": "Station Kestrel", "sources": ["sub/report.docx", "notes.txt"]}
+        answer = client.post("/v1/query", json=body)
+        assert answer.status_code == 200
+        events = sse_events(answer.text)
+        assert {ref["source"] for ref in events[0][1]["sources"]} == {
+            "sub/report.docx",
+            "notes.txt",
+        }
+        assert events[-1][0] == "done"
+
+
+def test_sources_the_index_does_not_hold_are_refused_with_422_naming_them(
+    scratch_config: RagConfig, tmp_path: Path
+) -> None:
+    ingest(scratch_config)
+    with serve(scratch_config, tmp_path) as (client, serving):
+        body = {"question": "q", "sources": ["notes.txt", "nope.pdf", "../etc/passwd", "nope.pdf"]}
+        response = client.post("/v1/query", json=body)
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert detail.startswith("unknown sources, not in the index: 'nope.pdf', '../etc/passwd'.")
+        assert "notes.txt" not in detail
+        assert "GET /v1/documents" in detail
+        assert serving.slots.in_use == 0
+        # Matched exactly: a path is a name, so neither stripped nor folded.
+        for near in (" notes.txt", "NOTES.TXT", "corpus/notes.txt"):
+            assert (
+                client.post("/v1/query", json={"question": "q", "sources": [near]}).status_code
+                == 422
+            )
+
+
+def test_without_an_index_a_query_with_sources_gets_the_503_first(
+    scratch_config: RagConfig, tmp_path: Path
+) -> None:
+    # The refusal order (routes.py): the index's 503 before any 422 about the body.
+    with serve(scratch_config, tmp_path) as (client, _):
+        for body in (
+            {"question": "q", "sources": ["nope.pdf"]},
+            {"question": "q", "sources": None},
+        ):
+            response = client.post("/v1/query", json=body)
+            assert (response.status_code, response.json()["detail"]) == (503, NO_INDEX_YET)
+
+
+def test_the_retrieval_half_is_asked_with_the_sources_once_each(
+    fake_config: RagConfig, tmp_path: Path
+) -> None:
+    asked: list[RetrievalQuery] = []
+    chunk = Document(page_content="x", metadata={"source": "notes.txt"})
+
+    def recording(query: RetrievalQuery) -> list[Document]:
+        asked.append(query)
+        return [chunk]
+
+    serving = fake_serving(
+        fake_config, StreamingFakeChatModel(), retrieve=RunnableLambda(recording)
+    )
+    serving.served = Served(generation=None, manifest=held("notes.txt", "a/b.md"), problem=None)
+    with serve(fake_config, tmp_path, serving) as (client, _):
+        body = {"question": " q ", "sources": ["a/b.md", "notes.txt", "a/b.md"]}
+        assert client.post("/v1/query", json=body).status_code == 200
+        assert client.post("/v1/query", json={"question": "q"}).status_code == 200
+    assert asked == [RetrievalQuery("q", ("a/b.md", "notes.txt")), RetrievalQuery("q")]
+
+
+def held(*names: str) -> Manifest:
+    """A manifest whose index holds ``names``, for a server that serves no real index."""
+    record = DocumentRecord(
+        sha256="0" * 64,
+        loader="components.loaders.txt",
+        loader_identity="l",
+        splitter="s",
+        chunks=1,
+        ingested_at="2026-10-21T00:00:00Z",
+    )
+    return Manifest(
+        generation="g",
+        chunking=1,
+        embedder=EmbedderRecord(ref="e", identity="e", dimension=8),
+        splitter=SplitterRecord(ref="s", identity="s"),
+        sparse=None,
+        store=STORE,
+        documents=dict.fromkeys(names, record),
+    )
+
+
 def test_the_longest_question_allowed_is_answered(fake_config: RagConfig, tmp_path: Path) -> None:
     model = StreamingFakeChatModel()
     with serve(fake_config, tmp_path, fake_serving(fake_config, model)) as (client, _):
@@ -310,9 +415,12 @@ def test_the_longest_question_allowed_is_answered(fake_config: RagConfig, tmp_pa
 
 
 def test_a_request_model_has_no_room_for_a_component() -> None:
-    # Nothing a client sends can reach build_object (DEC-18): the question is all there is.
-    assert set(QueryRequest.model_fields) == {"question"}
+    # Nothing a client sends can reach build_object (DEC-18): a question, and since S3-5 the
+    # documents to answer from, a list of strings that only ever filters a search.
+    assert set(QueryRequest.model_fields) == {"question", "sources"}
     assert QueryRequest.model_config["extra"] == "forbid"
+    with pytest.raises(ValidationError):
+        QueryRequest.model_validate({"question": "q", "sources": [{"_target_": "os.system"}]})
 
 
 @pytest.mark.parametrize(

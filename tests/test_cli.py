@@ -36,7 +36,7 @@ from pydantic import Field
 from qdrant_client import QdrantClient
 
 from rag_qa import cli, vectorstore
-from rag_qa.chain import QueryPipeline
+from rag_qa.chain import QueryPipeline, RetrievalQuery
 from rag_qa.cli import EXIT_CANNOT_START, EXIT_OK, HF_CACHE_HINT, describe_failure, repl
 from rag_qa.components import OLLAMA_HINT
 from rag_qa.vectorstore import QDRANT_HINT, StoreError, StoreUnavailableError
@@ -483,6 +483,66 @@ def test_main_runs_the_session_with_the_built_pipeline(
     # The start-up check asked Ollama, as rag-serve's does: validate_model_on_init, then
     # the ping.
     assert fake_ollama.requests.count("/api/tags") == 2
+
+
+# --- --source: the sources filter (S3-5, FR-3) ---------------------------------------------
+
+
+def test_sources_reach_every_answer_once_each_and_the_session_says_so(
+    fake_rag: Path,
+    make_config: MakeConfig,
+    fake_ollama: FakeOllama,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    asked: list[RetrievalQuery] = []
+    model = ScriptedModel(script=["one", "two"])
+    pipeline = dataclasses.replace(
+        fake_pipeline(model),
+        retrieve=RunnableLambda(lambda query: asked.append(query) or []),
+    )
+    monkeypatch.setattr(cli, "build_query_pipeline", lambda config, **kw: pipeline)
+    monkeypatch.setattr("builtins.input", scripted("first", "second"))
+    path = probe_config(make_config, fake_ollama.url)
+    argv = ["--config", str(path), "--source", "sub/report.docx", "--source", "notes.txt"]
+    assert cli.main([*argv, "--source", "sub/report.docx"]) == EXIT_OK
+    sources = ("sub/report.docx", "notes.txt")
+    assert asked == [RetrievalQuery("first", sources), RetrievalQuery("second", sources)]
+    assert "Answering from sub/report.docx, notes.txt only." in capsys.readouterr().out
+
+
+def test_a_source_the_index_does_not_hold_stops_the_start_before_ollama_is_asked(
+    fake_rag: Path, make_config: MakeConfig, fake_ollama: FakeOllama, capsys: Any
+) -> None:
+    path = probe_config(make_config, fake_ollama.url)
+    argv = ["--config", str(path), "--source", "notes.txt", "--source", "note.txt"]
+    assert cli.main([*argv, "--source", "corpus/nope.pdf"]) == EXIT_CANNOT_START
+    err = capsys.readouterr().err
+    assert "--source names documents not in the index:" in err
+    assert "'note.txt' (did you mean 'notes.txt'?)" in err
+    assert "'corpus/nope.pdf'" in err
+    assert "A source is a path relative to the corpus" in err
+    assert "'notes.txt' (" not in err  # the one the index holds is not named
+    assert fake_ollama.requests == []  # refused from the manifest, before the model
+
+
+def test_without_sources_a_session_searches_the_whole_corpus(
+    fake_rag: Path,
+    make_config: MakeConfig,
+    fake_ollama: FakeOllama,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    asked: list[RetrievalQuery] = []
+    pipeline = dataclasses.replace(
+        fake_pipeline(ScriptedModel(script=["one"])),
+        retrieve=RunnableLambda(lambda query: asked.append(query) or []),
+    )
+    monkeypatch.setattr(cli, "build_query_pipeline", lambda config, **kw: pipeline)
+    monkeypatch.setattr("builtins.input", scripted("first"))
+    assert cli.main(["--config", str(probe_config(make_config, fake_ollama.url))]) == EXIT_OK
+    assert asked == [RetrievalQuery("first")]
+    assert "only." not in capsys.readouterr().out
 
 
 # --- main(): the start-up guard (S2-8) -------------------------------------------------

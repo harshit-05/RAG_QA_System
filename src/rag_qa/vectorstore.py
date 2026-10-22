@@ -37,6 +37,16 @@ with the insertion order and across restarts (design review 2). So :func:`search
 more than it needs, widens the request while the point at the cut ties the last one
 fetched, then orders by score and point ID itself, and cuts.
 
+**Hybrid retrieval, fused by us** (DEC-20, S3-5). A generation written with a sparse encoder
+holds a second named vector, ``bm25``, whose IDF Qdrant applies (:mod:`rag_qa.sparse`). A
+hybrid retriever runs two searches, dense and sparse, each cut to ``prefetch`` by the rule
+above, and :func:`fuse` merges them by reciprocal rank fusion with an explicit ``rrf_k``,
+ordered by score, then point ID. Qdrant's own fusion is not used: it breaks no ties, and
+each of its prefetches would cut its own list by the collection's layout.
+
+**A ``sources`` filter** limits every search to the named corpus documents: a ``MatchAny``
+on ``metadata.source``, which each generation indexes.
+
 **The manifest lives in the generation's metadata**, under one key and written whole, so
 no stale field can survive a merge (Qdrant merges top-level metadata keys, and replaces a
 nested object whole). It is read once per generation, never on a hot path:
@@ -64,6 +74,7 @@ from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedR
 from rag_qa.manifest import Manifest, ManifestError, manifest_payload, parse_manifest
 from rag_qa.schema import SEARCH_TYPES, collection_problem
 from rag_qa.settings import StoreSettings
+from rag_qa.sparse import Bm25Encoder, SparseVector
 
 #: What to try when Qdrant cannot be reached, shown under the error.
 QDRANT_HINT: Final = "Is Qdrant running? docker compose up -d qdrant"
@@ -77,8 +88,13 @@ URL_HINT: Final = (
 #: be used: the query side tells "run rag-ingest first" from "re-run rag-ingest" by it.
 NO_INDEX: Final = "there is no index yet"
 
-#: The one named vector of a generation (DEC-20 adds a sparse one beside it).
+#: A generation's dense vector, the embedder's.
 VECTOR: Final = "dense"
+#: Its sparse vector, the BM25 encoder's (DEC-20): only in a generation whose manifest has a
+#: sparse record.
+SPARSE: Final = "bm25"
+#: The payload key a ``sources`` filter matches, which every generation indexes.
+SOURCE_KEY: Final = "metadata.source"
 #: The metadata keys: the manifest, written whole, and whether the generation is complete.
 MANIFEST_KEY: Final = "manifest"
 COMPLETE_KEY: Final = "complete"
@@ -431,12 +447,14 @@ def open_generation(store: QdrantStore, generation: str) -> OpenGeneration:
 
 @dataclass(frozen=True)
 class Embedded:
-    """Chunks ready to add, as parallel lists: their IDs, texts, metadata and vectors."""
+    """Chunks ready to add, as parallel lists: their IDs, texts, metadata and vectors, and
+    their sparse vectors when the manifest has a sparse encoder (``None`` otherwise)."""
 
     ids: list[str]
     texts: list[str]
     metadatas: list[dict[str, Any]]
     vectors: list[list[float]]
+    sparse: list[SparseVector] | None = None
 
 
 @dataclass(frozen=True)
@@ -459,7 +477,11 @@ def write_generation(
     With ``base`` (the live generation), its points are copied, all but ``delete``, then
     ``add`` is upserted: so a document whose loader changed gets its old chunk IDs back with
     new content. Without it, the generation holds ``add`` alone, which must not be empty
-    (a full rebuild). The vectors' size is the manifest's embedder dimension.
+    (a full rebuild). The vectors' size is the manifest's embedder dimension. With a sparse
+    record in the manifest, the generation has a sparse vector as well, with Qdrant's IDF,
+    and ``add`` must carry one per chunk; without one, it must carry none. Copied points
+    keep the vectors they have, so ``base`` must have the same vector configuration:
+    ``rag-ingest`` rebuilds in full whenever the sparse record changes.
 
     Nothing is published until the last request, the switch. An exception before it
     leaves an incomplete generation for :func:`recover`, which the next run calls under
@@ -470,6 +492,12 @@ def write_generation(
     """
     if base is None and not add.ids:
         raise ValueError("a new index needs at least one chunk")
+    hybrid = manifest.sparse is not None
+    if hybrid != (add.sparse is not None):
+        raise ValueError(
+            "the chunks' sparse vectors must come with a sparse record in the manifest, and "
+            "only with one"
+        )
     live = store.alias_target()
     name = f"{store.collection}{SEPARATOR}{_next_stamp(store, live)}-{secrets.token_hex(4)}"
     written = manifest.model_copy(update={"generation": name})
@@ -483,6 +511,11 @@ def write_generation(
                     size=written.embedder.dimension, distance=models.Distance.COSINE
                 )
             },
+            sparse_vectors_config=(
+                {SPARSE: models.SparseVectorParams(modifier=models.Modifier.IDF)}
+                if hybrid
+                else None
+            ),
             metadata={MANIFEST_KEY: manifest_payload(written), COMPLETE_KEY: False},
         )
         client.create_payload_index(
@@ -499,19 +532,21 @@ def write_generation(
             if kept:
                 with _translated(store):
                     client.upsert(name, points=kept, wait=True)
+    sparse = add.sparse if add.sparse is not None else [None] * len(add.ids)
     for start in range(0, len(add.ids), BATCH):
         batch = slice(start, start + BATCH)
         points = [
             models.PointStruct(
                 id=chunk,
-                vector={VECTOR: vector},
+                vector=_vectors(vector, lexical),
                 payload={"page_content": text, "metadata": metadata},
             )
-            for chunk, text, metadata, vector in zip(
+            for chunk, text, metadata, vector, lexical in zip(
                 add.ids[batch],
                 add.texts[batch],
                 add.metadatas[batch],
                 add.vectors[batch],
+                sparse[batch],
                 strict=True,
             )
         ]
@@ -533,6 +568,18 @@ def write_generation(
         if not _switched_to(store, name):
             raise
     return Published(generation=name)
+
+
+def _sparse(vector: SparseVector) -> models.SparseVector:
+    """Our sparse vector as Qdrant's."""
+    return models.SparseVector(indices=list(vector.indices), values=list(vector.values))
+
+
+def _vectors(dense: list[float], sparse: SparseVector | None) -> dict[str, Any]:
+    """A new point's named vectors: the dense one, and the sparse one when there is one."""
+    if sparse is None:
+        return {VECTOR: dense}
+    return {VECTOR: dense, SPARSE: _sparse(sparse)}
 
 
 def _switched_to(store: QdrantStore, generation: str) -> bool:
@@ -606,23 +653,47 @@ def recover(store: QdrantStore) -> list[str]:
 # ---- reading -------------------------------------------------------------------------------
 
 
-def search(store: QdrantStore, generation: str, vector: list[float], k: int) -> list[Any]:
-    """The ``k`` points nearest ``vector`` in ``generation``, by exact cosine search, cut by
-    our own rule: score, then point ID (the module docstring).
+def source_filter(sources: Sequence[str]) -> models.Filter | None:
+    """The filter that keeps the chunks of ``sources``, corpus-relative paths, or ``None``
+    for no filter when there are none."""
+    if not sources:
+        return None
+    return models.Filter(
+        must=[models.FieldCondition(key=SOURCE_KEY, match=models.MatchAny(any=list(sources)))]
+    )
+
+
+def search(
+    store: QdrantStore,
+    generation: str,
+    query: list[float] | SparseVector,
+    k: int,
+    *,
+    sources: Sequence[str] = (),
+) -> list[Any]:
+    """The ``k`` points that score highest for ``query`` in ``generation``, by exact search,
+    cut by our own rule: score, then point ID (the module docstring).
+
+    ``query`` is an embedding, searched against the dense vectors by cosine, or a
+    :class:`~rag_qa.sparse.SparseVector`, against the sparse ones, which Qdrant scores with
+    its IDF; a sparse search finds only points that share a term with it. With ``sources``,
+    only those documents' chunks are searched (:func:`source_filter`).
 
     The request asks for :data:`CUT_MARGIN` more than ``k``, and doubles its limit while
     the last point it got ties the point at the cut: then more tied points may lie beyond
     the limit, and the server would have chosen among them by layout. Once the last point
     scores below the cut, every point tied with the cut is in hand.
     """
+    using, sent = (SPARSE, _sparse(query)) if isinstance(query, SparseVector) else (VECTOR, query)
     limit = k + CUT_MARGIN
     while True:
         try:
             with _translated(store, generation):
                 points = store.client.query_points(
                     generation,
-                    query=vector,
-                    using=VECTOR,
+                    query=sent,
+                    using=using,
+                    query_filter=source_filter(sources),
                     limit=limit,
                     with_payload=True,
                     search_params=models.SearchParams(exact=True),
@@ -637,13 +708,52 @@ def search(store: QdrantStore, generation: str, vector: list[float], k: int) -> 
     return sorted(points, key=lambda point: (-point.score, str(point.id)))[:k]
 
 
+def fuse(
+    ranked: Sequence[Sequence[Any]],
+    *,
+    rrf_k: int,
+    limit: int,
+    weights: Sequence[float] | None = None,
+) -> list[Any]:
+    """Reciprocal rank fusion of ``ranked`` lists of points, each best first (DEC-20).
+
+    A point scores ``weight / (rrf_k + rank)``, summed over the lists it is in, with
+    one-based ranks; every list weighs 1 unless ``weights`` says otherwise. The fused
+    points are ordered by that score, ties by point ID, and cut to ``limit``. Ties are the
+    rule, not the exception: a point at rank r of one list scores the same whichever list
+    that is. Each point keeps its payload from the first list that holds it; its ``score``
+    is left as that list's, since the fused score is ours alone.
+    """
+    if weights is None:
+        weights = [1.0] * len(ranked)
+    if len(weights) != len(ranked):
+        raise ValueError(f"{len(ranked)} lists to fuse, but {len(weights)} weights")
+    scores: dict[str, float] = {}
+    points: dict[str, Any] = {}
+    for weight, found in zip(weights, ranked, strict=True):
+        for rank, point in enumerate(found, 1):
+            key = str(point.id)
+            scores[key] = scores.get(key, 0.0) + weight / (rrf_k + rank)
+            points.setdefault(key, point)
+    order = sorted(scores, key=lambda key: (-scores[key], key))
+    return [points[key] for key in order[:limit]]
+
+
 class QdrantRetriever(BaseRetriever):
-    """Dense retrieval from one generation, as FAISS's retriever returned it.
+    """Retrieval from one generation: dense, as FAISS's retriever returned it, or hybrid.
 
     The same ``page_content``, metadata and ``id`` for each chunk, and nothing else: no
     score or collection keys in the metadata, which the prompt and the sources read.
     Synchronous only, so awaiting it runs this same code in an executor, as every answer
     and tier 1 do (``ainvoke``).
+
+    **Hybrid** (``sparse`` set): the dense and sparse searches each keep ``prefetch``
+    points, and :func:`fuse` merges them with ``rrf_k``, down to ``k``. A question with no
+    tokens, all stopwords, has no sparse search, and the dense list is fused alone.
+
+    **Sources:** ``invoke(question, sources=[...])`` limits every search to those corpus
+    documents. LangChain hands a retriever's extra keyword arguments to
+    :meth:`_get_relevant_documents` once its signature names them.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -652,13 +762,30 @@ class QdrantRetriever(BaseRetriever):
     generation: str
     embeddings: Embeddings
     k: int
+    sparse: Bm25Encoder | None = None
+    prefetch: int | None = None
+    rrf_k: int | None = None
 
     def _get_relevant_documents(
-        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+        self,
+        query: str,
+        *,
+        run_manager: CallbackManagerForRetrieverRun,
+        sources: Sequence[str] = (),
     ) -> list[Document]:
         vector = self.embeddings.embed_query(query)
+        if self.sparse is None or self.prefetch is None or self.rrf_k is None:
+            found = search(self.store, self.generation, vector, self.k, sources=sources)
+        else:
+            lists = [search(self.store, self.generation, vector, self.prefetch, sources=sources)]
+            lexical = self.sparse.encode_query(query)
+            if lexical.indices:
+                lists.append(
+                    search(self.store, self.generation, lexical, self.prefetch, sources=sources)
+                )
+            found = fuse(lists, rrf_k=self.rrf_k, limit=self.k)
         docs = []
-        for point in search(self.store, self.generation, vector, self.k):
+        for point in found:
             payload = point.payload or {}
             docs.append(
                 Document(
@@ -676,15 +803,29 @@ def retriever(
     embeddings: Embeddings,
     spec: Mapping[str, Any],
     *,
+    sparse: Bm25Encoder | None = None,
     k: int,
 ) -> BaseRetriever:
     """A retriever over ``generation``, bound to it, returning ``k`` chunks.
 
     ``spec`` is the config's retriever settings (``RetrieverSpec.kwargs()``); the schema
     has refused any search but similarity already. ``k`` is the caller's: the spec's own,
-    or the reranker's candidates (DEC-16).
+    or the reranker's candidates (DEC-16). A hybrid spec needs ``sparse``, the encoder that
+    wrote the generation's sparse vectors, which encodes the queries too.
     """
     search_type = spec.get("search_type")
     if search_type is not None and search_type not in SEARCH_TYPES:
         raise ValueError(f"search_type {search_type!r} is not supported by the store")
-    return QdrantRetriever(store=store, generation=generation, embeddings=embeddings, k=k)
+    if spec.get("mode", "dense") != "hybrid":
+        return QdrantRetriever(store=store, generation=generation, embeddings=embeddings, k=k)
+    if sparse is None:
+        raise ValueError("a hybrid retriever needs the sparse encoder that wrote the index")
+    return QdrantRetriever(
+        store=store,
+        generation=generation,
+        embeddings=embeddings,
+        k=k,
+        sparse=sparse,
+        prefetch=spec["prefetch"],
+        rrf_k=spec["rrf_k"],
+    )

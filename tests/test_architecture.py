@@ -24,6 +24,8 @@
   imports (``langchain_classic`` is the ADR-007 rule above), and a plain ``uv sync`` installs
   none of the three. Only the ``eval`` extra brings the two LangChain packages back, through
   ragas.
+* DEC-20 (S3-5): ``rag_qa.sparse``, the BM25 encoder, imports the standard library only, on
+  the parsed imports, and loads no LangChain.
 """
 
 import ast
@@ -74,6 +76,7 @@ def test_rag_query_never_loads_the_api_and_does_load_readline() -> None:
         "rag_qa.config",
         "rag_qa.evaluation.dataset",
         "rag_qa.manifest",
+        "rag_qa.sparse",
     ],
 )
 def test_the_config_layer_loads_no_langchain(module: str) -> None:
@@ -216,3 +219,12 @@ def test_a_plain_sync_installs_none_of_the_removed_packages() -> None:
         # The eval extra: ragas brings the two LangChain packages back. FAISS stays out.
         installed -= {"langchain_community", "langchain_classic"}
     assert installed == set()
+
+
+def test_the_bm25_encoder_imports_the_standard_library_only() -> None:
+    # DEC-20: no dependency for the sparse vectors, so none whose release could move them.
+    # The manifest and the store import it; it imports nothing of ours or anyone's.
+    found = _imported_modules(SRC / "sparse.py")
+    outside = sorted(name for name in found if name.split(".")[0] not in sys.stdlib_module_names)
+    assert found, "sparse.py imports nothing: is the scan blind?"
+    assert outside == [], f"sparse.py imports {outside}: the standard library only (DEC-20)"

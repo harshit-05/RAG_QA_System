@@ -42,6 +42,7 @@ embedder (DEC-17): it says to re-run ``rag-ingest``, before loading any model.
 
 import argparse
 import asyncio
+import difflib
 import readline  # noqa: F401  # for its side effect: input() gains line editing and history
 import sys
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -60,6 +61,7 @@ from rag_qa.chain import (
 )
 from rag_qa.components import OLLAMA_HINT, build_store, preflight
 from rag_qa.config import ConfigError, load_config, resolve_config_path
+from rag_qa.manifest import Manifest
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_CONFIG
 from rag_qa.vectorstore import StoreError, StoreUnavailableError
@@ -183,14 +185,15 @@ class _Answer:
     ``None`` only when a Ctrl-C cancelled the task before it first ran.
     """
 
-    def __init__(self, pipeline: QueryPipeline, question: str) -> None:
+    def __init__(self, pipeline: QueryPipeline, question: str, sources: Sequence[str] = ()) -> None:
         self.pipeline = pipeline
         self.question = question
+        self.sources = tuple(sources)
         self.task: asyncio.Task[Any] | None = None
 
     async def run(self) -> None:
         self.task = asyncio.current_task()
-        await render(stream_answer(self.pipeline, self.question))
+        await render(stream_answer(self.pipeline, self.question, sources=self.sources))
 
     def unwinding(self) -> bool:
         """Whether a second Ctrl-C interrupted the cancelled answer before it finished.
@@ -209,9 +212,15 @@ class _Answer:
         return not task.cancelled() and isinstance(task.exception(), KeyboardInterrupt)
 
 
-def ask(runner: asyncio.Runner, pipeline: QueryPipeline, question: str) -> bool:
-    """Answer one question on the session's loop. ``False`` means quit (a second Ctrl-C)."""
-    answer = _Answer(pipeline, question)
+def ask(
+    runner: asyncio.Runner,
+    pipeline: QueryPipeline,
+    question: str,
+    sources: Sequence[str] = (),
+) -> bool:
+    """Answer one question on the session's loop, from ``sources`` only when there are any.
+    ``False`` means quit (a second Ctrl-C)."""
+    answer = _Answer(pipeline, question, sources)
     try:
         runner.run(answer.run())
     # run() raises KeyboardInterrupt after a Ctrl-C, or CancelledError when the task's
@@ -264,14 +273,22 @@ def close_session(runner: asyncio.Runner, pipeline: QueryPipeline) -> None:
         runner.close()
 
 
-def repl(pipeline: QueryPipeline, read: Callable[[str], str] | None = None) -> int:
+def repl(
+    pipeline: QueryPipeline,
+    read: Callable[[str], str] | None = None,
+    *,
+    sources: Sequence[str] = (),
+) -> int:
     """Ask questions until the user leaves; one failed answer never ends the session.
 
     ``read`` defaults to ``input``, looked up at call time (not bound as a default
-    argument) so a patched ``input`` is honoured; tests pass a scripted one.
+    argument) so a patched ``input`` is honoured; tests pass a scripted one. With
+    ``sources``, every answer comes from those corpus documents only (``--source``).
     """
     read = read or input
     print(f"\n{GREEN}System is ready. Ask questions.{RESET}")
+    if sources:
+        print(f"{YELLOW}Answering from {', '.join(sources)} only.{RESET}")
     print(f"{YELLOW}Type 'exit' or 'quit' to end.{RESET}")
 
     runner = asyncio.Runner()
@@ -292,7 +309,7 @@ def repl(pipeline: QueryPipeline, read: Callable[[str], str] | None = None) -> i
                 continue
 
             print("Searching for an answer...")
-            if not ask(runner, pipeline, query):
+            if not ask(runner, pipeline, query, sources):
                 print("\nExiting...")
                 return EXIT_OK
     finally:
@@ -313,10 +330,39 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help=f"config file to use (default: ${ENV_CONFIG}, then ./config.yaml)",
     )
+    parser.add_argument(
+        "--source",
+        metavar="PATH",
+        action="append",
+        default=[],
+        dest="sources",
+        help="answer from this corpus document only, named by its path relative to the "
+        "corpus (e.g. report.pdf, or sub/notes.md); repeat it for several. It must be in the "
+        "index",
+    )
     return parser
 
 
-def start(config: RagConfig, config_dir: Path | None = None) -> QueryPipeline | str:
+def unknown_sources(sources: Sequence[str], manifest: Manifest) -> str | None:
+    """Why ``rag-query`` cannot answer from ``sources``, or ``None`` when the index holds
+    every one: each is named, with the nearest document it does hold when one is close."""
+    unknown = [source for source in sources if source not in manifest.documents]
+    if not unknown:
+        return None
+    named = []
+    for source in unknown:
+        near = difflib.get_close_matches(source, list(manifest.documents), n=1)
+        named.append(f"{source!r}" + (f" (did you mean {near[0]!r}?)" if near else ""))
+    return (
+        f"--source names {'a document' if len(unknown) == 1 else 'documents'} not in the index: "
+        f"{', '.join(named)}. A source is a path relative to the corpus, as rag-ingest indexed "
+        f"it, such as {next(iter(sorted(manifest.documents)), 'report.pdf')!r}."
+    )
+
+
+def start(
+    config: RagConfig, config_dir: Path | None = None, *, sources: Sequence[str] = ()
+) -> QueryPipeline | str:
     """The session's pipeline, or why the session cannot start (exit 2).
 
     Cheapest first, so a refusal never waits on a later step:
@@ -326,7 +372,8 @@ def start(config: RagConfig, config_dir: Path | None = None) -> QueryPipeline | 
     2. the index, from its metadata alone (:class:`NoIndexError`, or its
        ``IncompatibleIndexError``): one from another embedder would answer with wrong
        chunks. "No index" mentions v0.3's FAISS folder when it is still beside the config
-       file, in ``config_dir``;
+       file, in ``config_dir``. Then ``sources``, ``--source``'s documents, against its
+       manifest (:func:`unknown_sources`);
     3. the language model's server (:func:`~rag_qa.components.preflight`): Ollama down, or
        a model it lacks, before the embedder and the reranker take seconds to load;
     4. the models, in :func:`build_query_pipeline`.
@@ -340,7 +387,8 @@ def start(config: RagConfig, config_dir: Path | None = None) -> QueryPipeline | 
     except (ConfigError, StoreUnavailableError) as e:
         return str(e)
     try:
-        check_index(config, store=store)  # build_query_pipeline checks again; a few reads
+        # build_query_pipeline checks again; a few reads
+        _, manifest = check_index(config, store=store)
     except IncompatibleIndexError as e:
         return str(e)
     except NoIndexError as e:
@@ -350,6 +398,9 @@ def start(config: RagConfig, config_dir: Path | None = None) -> QueryPipeline | 
     # Hugging Face hint is not shown for a problem with the index (S2-8's review).
     except StoreError as e:
         return f"cannot read the index: {e}"
+    unknown = unknown_sources(sources, manifest)
+    if unknown is not None:
+        return unknown
     try:
         problem = preflight(config)
         if problem is not None:
@@ -378,8 +429,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_CANNOT_START
 
     print("Loading vector store and models...")
+    sources = tuple(dict.fromkeys(args.sources))  # a source given twice counts once
     try:
-        started = start(config, resolve_config_path(args.config).resolve().parent)
+        started = start(config, resolve_config_path(args.config).resolve().parent, sources=sources)
     # Ctrl-C while the models load: the user chose to leave, so no traceback. During the
     # start-up check's ping, its asyncio.run raises KeyboardInterrupt, or CancelledError as
     # ask() describes; both mean the same.
@@ -389,7 +441,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if isinstance(started, str):
         print(f"Error: {started}", file=sys.stderr)
         return EXIT_CANNOT_START
-    return repl(started)
+    return repl(started, sources=sources)
 
 
 if __name__ == "__main__":

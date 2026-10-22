@@ -128,11 +128,43 @@ components:
       num_thread: 10
       validate_model_on_init: true
 
+  sparse_encoders:
+    # BM25 sparse vectors, for hybrid retrieval (DEC-20): our own encoder, no model and no
+    # download. pipeline.ingestion.sparse_encoder below picks one; rag-ingest then writes
+    # each chunk's sparse vector beside its embedding, and rebuilds the index in full to
+    # add them. Set by nothing yet: S3-11b switches hybrid on, if tier 1 earns it.
+    # k1 and b are BM25's usual settings. avg_len is the corpus's mean chunk length in
+    # tokens, measured once (S3-5, 2026-10-21: 100.76 over the 1,708 chunks) and fixed
+    # here: a figure that moved with every ingest would rewrite every sparse vector.
+    bm25:
+      _target_: rag_qa.sparse.Bm25Encoder
+      k1: 1.2
+      b: 0.75
+      avg_len: 100.76
+
   retrievers:
     vector_search:
       # How the store's retriever searches: by similarity, for k chunks. The only search
       # it runs, and the only option it takes; anything else is refused at load.
       search_kwargs: {"k": 5}
+    # Hybrid retrieval (DEC-20): a dense search and a BM25 search, each keeping `prefetch`
+    # points, fused by reciprocal rank (1 / (rrf_k + rank), summed over both lists), then
+    # cut to the reranker's candidates. It needs pipeline.ingestion.sparse_encoder.
+    # Measured by tier 1 (S3-5, 2026-10-21) but not switched on: S3-11 decides, and S3-11b
+    # switches it with the tier-2 re-run. On the 20 answerable golden questions, both
+    # reranked to 5:
+    #                                     hit rate      MRR     recall
+    #   dense (vector_search)             0.950     0.7958   0.8583
+    #   hybrid, rrf_k 60, prefetch 40     1.000     0.8333   0.9333
+    #   Question by question, hybrid wins 2 (glider-slm, miss -> 2; glider-data-filtering,
+    #   4 -> 2), loses none and ties 18. rrf_k 10 and prefetch 20 tie these settings on all
+    #   20. Before the rerank, the 20 candidates hold an expected page for 19 questions
+    #   dense, and for all 20 hybrid. Detail in stories/phase-3/S3-5-hybrid-retrieval.md.
+    hybrid:
+      mode: hybrid
+      search_kwargs: {"k": 5}
+      prefetch: 40
+      rrf_k: 60
 
   rerankers:
     # Our own cross-encoder (DEC-16, S2-4). It reads the question with each of the
@@ -140,7 +172,9 @@ components:
     # top_n. Named by model and device, like the embedders; pipeline.query.reranker
     # below picks one. The first use downloads the model, about 90 MB.
     # min_score (off unless set) drops chunks scoring below it, in the model's own
-    # units (logits for ms-marco). Tuning it waits for tier 2 (S2-5).
+    # units (logits for ms-marco). S3-5 measured it by tier 1: -4 loses no answerable
+    # hit, dense or hybrid, and leaves one unanswerable question no chunk; -2 already
+    # loses a hit. S3-11 decides it (stories/phase-3/S3-5-hybrid-retrieval.md).
     ms_marco_minilm_cpu:
       _target_: rag_qa.rerankers.CrossEncoderReranker
       model_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -198,6 +232,9 @@ pipeline:
     #   components.embedders.minilm_cuda              GPU: the CUDA variant (see note 2 above)
     #   components.embedders.multilingual_mpnet_cpu   non-English corpora
     embedder: components.embedders.minilm_cpu
+    # BM25 sparse vectors beside the embeddings, for a hybrid retriever (DEC-20). Unset:
+    # the index has none, and a hybrid retriever is refused at load.
+    #   sparse_encoder: components.sparse_encoders.bm25
 
   query:
     llm: components.llms.mistral_ollama

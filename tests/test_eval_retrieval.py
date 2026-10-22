@@ -28,7 +28,13 @@ from langchain_core.runnables import RunnableLambda
 
 from rag_qa import answering
 from rag_qa.answering import stream_answer
-from rag_qa.chain import QueryPipeline, build_prompt, build_retrieve, format_docs
+from rag_qa.chain import (
+    QueryPipeline,
+    RetrievalQuery,
+    build_prompt,
+    build_retrieve,
+    format_docs,
+)
 from rag_qa.components import build_embedder
 from rag_qa.config import load_config
 from rag_qa.evaluation import cli, retrieval
@@ -434,11 +440,12 @@ def test_tier_1_retrieves_through_ainvoke_as_every_answer_does(
     def async_only(*args: Any, **kwargs: Any) -> Any:
         retrieve = real(*args, **kwargs)
 
-        def not_this_path(question: str) -> Any:
+        def not_this_path(asked: RetrievalQuery) -> Any:
             raise AssertionError("tier 1 retrieved through invoke")
 
-        async def answers_path(question: str) -> Any:
-            return await retrieve.ainvoke(question)
+        async def answers_path(asked: RetrievalQuery) -> Any:
+            assert asked.sources == ()  # a golden question searches the whole corpus
+            return await retrieve.ainvoke(asked)
 
         return RunnableLambda(not_this_path, afunc=answers_path)
 
@@ -455,9 +462,9 @@ def test_without_contexts_out_an_unanswerable_question_is_not_retrieved(
     def counting(*args: Any, **kwargs: Any) -> Any:
         retrieve = real(*args, **kwargs)
 
-        def ask(question: str) -> Any:
-            asked.append(question)
-            return retrieve.invoke(question)
+        def ask(query: RetrievalQuery) -> Any:
+            asked.append(query.question)
+            return retrieve.invoke(query)
 
         return RunnableLambda(ask)
 

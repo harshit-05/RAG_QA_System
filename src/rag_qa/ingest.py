@@ -18,9 +18,14 @@ or an exception publishes nothing.
 
 A run rebuilds the index in full, and logs why, when there is no index or no usable
 manifest, when the embedder's identity changed, when this code makes chunks differently
-(:data:`rag_qa.manifest.CHUNKING_VERSION`), when the manifest disagrees with its
-generation, or with ``--rebuild``. A changed splitter rebuilds nothing in full: it changes
-the documents it chunks, which are re-embedded (S3-4).
+(:data:`rag_qa.manifest.CHUNKING_VERSION`), when the sparse encoder appeared, went or
+changed (S3-5), when the manifest disagrees with its generation, or with ``--rebuild``. A
+changed splitter rebuilds nothing in full: it changes the documents it chunks, which are
+re-embedded (S3-4).
+
+**Sparse vectors** (DEC-20, S3-5). With ``pipeline.ingestion.sparse_encoder`` set, every
+chunk embedded also gets its BM25 vector (:mod:`rag_qa.sparse`), and the generation holds
+both; an update copies the unchanged chunks' sparse vectors with their dense ones.
 
 **What the walk leaves out** (:func:`scan_corpus`): hidden and lock files, symlinks, a file
 whose extension has no loader, and, since S3-4, a file above ``max_file_mb``. Each is
@@ -72,7 +77,14 @@ from typing import Any
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
-from rag_qa.components import build_embedder, build_loader, build_splitter, build_store
+from rag_qa.components import (
+    build_embedder,
+    build_loader,
+    build_sparse_encoder,
+    build_splitter,
+    build_store,
+    configured_sparse,
+)
 from rag_qa.config import ConfigError, load_config
 from rag_qa.manifest import (
     CHUNKING_VERSION,
@@ -81,11 +93,13 @@ from rag_qa.manifest import (
     EmbedderRecord,
     FileState,
     Manifest,
+    SparseRecord,
     SplitterRecord,
     chunk_id,
     diff,
     embedder_identity,
     file_sha256,
+    same_sparse,
     spec_identity,
 )
 from rag_qa.schema import RagConfig
@@ -488,12 +502,13 @@ def scan_corpus(config: RagConfig, report: IngestReport) -> CorpusScan:
 
 @dataclass(frozen=True)
 class _Identities:
-    """The embedder and the default splitter the config asks for, as the manifest records
-    them at the top level."""
+    """The embedder, the default splitter and the sparse encoder the config asks for, as
+    the manifest records them at the top level."""
 
     embedder_ref: str
     embedder: str
     splitter: SplitterRecord
+    sparse: SparseRecord | None
 
     @classmethod
     def of(cls, config: RagConfig) -> "_Identities":
@@ -505,6 +520,7 @@ class _Identities:
                 ref=ingestion.splitter,
                 identity=spec_identity(config.component(ingestion.splitter).spec()),
             ),
+            sparse=configured_sparse(config),
         )
 
     def changed_since(self, manifest: Manifest) -> str | None:
@@ -513,6 +529,11 @@ class _Identities:
         Not the splitter (S3-4): each document records its own, so :func:`diff` re-embeds
         the documents a changed splitter chunks, and the rest keep their chunks. DEC-17
         rebuilt in full here, when one splitter chunked every document.
+
+        The sparse encoder does rebuild in full (S3-5): one appearing or going changes the
+        generation's vector configuration, and another one, or another
+        :data:`~rag_qa.sparse.SPARSE_VERSION`, changes every sparse vector. A renamed entry
+        with the same spec changes nothing.
         """
         if manifest.embedder.identity != self.embedder:
             compared = _compared(manifest.embedder.ref, self.embedder_ref)
@@ -522,7 +543,25 @@ class _Identities:
                 f"this version makes chunks differently (chunking version "
                 f"{manifest.chunking} then, {CHUNKING_VERSION} now)"
             )
+        return _sparse_changed(manifest.sparse, self.sparse)
+
+
+def _sparse_changed(then: SparseRecord | None, now: SparseRecord | None) -> str | None:
+    """Why an index with sparse record ``then`` cannot be updated to ``now``, or ``None``."""
+    if same_sparse(then, now):
         return None
+    if then is None and now is not None:
+        return f"a sparse encoder is now set ({now.ref}), and the index has no sparse vectors"
+    if now is None and then is not None:
+        return f"no sparse encoder is set now, and the index has {then.ref}'s sparse vectors"
+    assert then is not None and now is not None
+    if then.version != now.version:
+        return (
+            f"this version makes sparse vectors differently (sparse version {then.version} "
+            f"then, {now.version} now)"
+        )
+    compared = _compared(then.ref, now.ref)
+    return f"the sparse encoder is not the one that built the index ({compared})"
 
 
 def _compared(then: str, now: str) -> str:
@@ -754,6 +793,7 @@ def _prepare(config: RagConfig, plan: _Plan, report: IngestReport) -> _Prepared:
 def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestReport) -> None:
     """Prepare, embed, apply and publish what ``plan`` says; fill in ``report``."""
     wanted = _Identities.of(config)
+    encoder = build_sparse_encoder(config)  # before any work: a bad spec stops the run here
     live = plan.live
     prepared = _prepare(config, plan, report)
     report.chunks = len(prepared.texts)
@@ -792,6 +832,8 @@ def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestRe
         # texts by length before batching, so these are the batches v0.2 embedded, and a
         # full rebuild reproduces its vectors exactly.
         vectors = _embed_with_progress(embeddings, prepared.texts)
+    # The BM25 vectors beside them (DEC-20, S3-5): arithmetic on the texts, no model.
+    sparse = None if encoder is None else encoder.encode_documents(prepared.texts)
     dimension = len(vectors[0]) if live is None else live.embedder.dimension
     manifest = Manifest(
         generation="",  # write_generation names it after the collection it creates
@@ -800,7 +842,7 @@ def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestRe
             ref=wanted.embedder_ref, identity=wanted.embedder, dimension=dimension
         ),
         splitter=wanted.splitter,
-        sparse=None,
+        sparse=wanted.sparse,
         store=STORE,
         documents=dict(sorted(documents.items())),
     )
@@ -814,6 +856,7 @@ def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestRe
             texts=prepared.texts,
             metadatas=prepared.metadatas,
             vectors=vectors,
+            sparse=sparse,
         ),
     )
     report.published = published.generation

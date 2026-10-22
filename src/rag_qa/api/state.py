@@ -50,6 +50,7 @@ from rag_qa.chain import (
     NoIndexError,
     QueryPipeline,
     Retrieval,
+    RetrievalQuery,
     build_prompt,
     live_generation,
     open_retrieval,
@@ -103,7 +104,7 @@ def open_served(
     store: QdrantStore,
     embeddings: Embeddings,
     reranker: BaseDocumentCompressor | None,
-) -> tuple[Runnable[str, list[Document]] | None, Served]:
+) -> tuple[Runnable[RetrievalQuery, list[Document]] | None, Served]:
     """Open the live index as a retrieval half, or say why it cannot be served."""
     try:
         seen = live_generation(store)
@@ -154,8 +155,8 @@ def _try_open(
 
 
 def serialized(
-    retrieve: Runnable[str, list[Document]], lock: threading.Lock
-) -> Runnable[str, list[Document]]:
+    retrieve: Runnable[RetrievalQuery, list[Document]], lock: threading.Lock
+) -> Runnable[RetrievalQuery, list[Document]]:
     """``retrieve``, run under ``lock``, taken inside the worker thread.
 
     The thread holds the lock until its retrieval ends, even after the request awaiting it
@@ -164,16 +165,16 @@ def serialized(
     lock does no work at all.
     """
 
-    def run(question: str, abandoned: threading.Event | None = None) -> list[Document]:
+    def run(asked: RetrievalQuery, abandoned: threading.Event | None = None) -> list[Document]:
         with lock:
             if abandoned is not None and abandoned.is_set():
                 return []  # its client left while it waited: nobody will read the result
-            return retrieve.invoke(question)
+            return retrieve.invoke(asked)
 
-    async def arun(question: str) -> list[Document]:
+    async def arun(asked: RetrievalQuery) -> list[Document]:
         abandoned = threading.Event()
         try:
-            return await asyncio.get_running_loop().run_in_executor(None, run, question, abandoned)
+            return await asyncio.get_running_loop().run_in_executor(None, run, asked, abandoned)
         except asyncio.CancelledError:
             abandoned.set()
             raise
@@ -303,8 +304,8 @@ class Serving:
         )
 
     def _serialized(
-        self, retrieve: Runnable[str, list[Document]] | None
-    ) -> Runnable[str, list[Document]] | None:
+        self, retrieve: Runnable[RetrievalQuery, list[Document]] | None
+    ) -> Runnable[RetrievalQuery, list[Document]] | None:
         return None if retrieve is None else serialized(retrieve, self.retrieval_lock)
 
     async def _current(self) -> str | None | StoreError:
@@ -348,7 +349,7 @@ class Serving:
             self.served = served
             self.pipeline = replace(self.pipeline, retrieve=self._serialized(retrieve))
 
-    def _reopen(self) -> tuple[Runnable[str, list[Document]] | None, Served]:
+    def _reopen(self) -> tuple[Runnable[RetrievalQuery, list[Document]] | None, Served]:
         with self.retrieval_lock:
             return open_served(self.config, self.store, self.embeddings, self.reranker)
 

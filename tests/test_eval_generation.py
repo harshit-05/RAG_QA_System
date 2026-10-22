@@ -179,6 +179,22 @@ def test_an_index_built_by_another_splitter_is_refused(
     assert f"not up to date with the corpus and config: {stale}." in err
 
 
+def test_an_index_without_the_configured_sparse_vectors_is_refused(
+    evals: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # S3-5: rag-ingest would rebuild it with them, so the answers would come from an index
+    # the run's fingerprint does not describe. A dense retriever would not even notice.
+    data: dict[str, Any] = yaml.safe_load(evals.read_text())
+    data["pipeline"]["ingestion"]["sparse_encoder"] = "components.sparse_encoders.bm25"
+    evals.write_text(yaml.safe_dump(data, sort_keys=False))
+    assert generate(evals) == EXIT_CANNOT_RUN
+    err = capsys.readouterr().err
+    assert (
+        "not up to date with the corpus and config: its sparse vectors are not the "
+        "configured sparse encoder's." in err
+    )
+
+
 def test_an_index_whose_top_level_splitter_alone_differs_is_current(
     fake_rag: Path, sample_corpus: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

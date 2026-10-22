@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -26,9 +27,11 @@ from rag_qa.manifest import (
     DocumentRecord,
     EmbedderRecord,
     Manifest,
+    SparseRecord,
     SplitterRecord,
     chunk_id,
 )
+from rag_qa.sparse import SPARSE_VERSION, Bm25Encoder, SparseVector
 from rag_qa.vectorstore import (
     NO_INDEX,
     QDRANT_HINT,
@@ -630,6 +633,258 @@ def test_open_generation_lists_its_point_ids(qdrant: QdrantClient) -> None:
     assert open_generation(store, generation).ids == {
         chunk_id("a.txt", "a" * 64, i) for i in range(300)
     }
+
+
+# ---- hybrid retrieval and the sources filter (S3-5, DEC-20) -------------------------------
+
+ENCODER = Bm25Encoder(k1=1.2, b=0.75, avg_len=3.0)
+SPARSE_RECORD = SparseRecord(
+    ref="components.sparse_encoders.bm25", identity="b", version=SPARSE_VERSION
+)
+#: A hybrid retriever's settings, as RetrieverSpec.kwargs() dumps them.
+HYBRID = {"mode": "hybrid", "search_kwargs": {"k": 2}, "prefetch": 10, "rrf_k": 60}
+
+
+def texts_of(name: str, texts: list[str]) -> Embedded:
+    """``name``'s chunks with these texts, ranked by the dense query of
+    :class:`FixedEmbeddings` in their order, and BM25 vectors of their texts."""
+    plain = chunks_of(name, len(texts))
+    return Embedded(
+        ids=plain.ids,
+        texts=texts,
+        metadatas=plain.metadatas,
+        vectors=plain.vectors,
+        sparse=ENCODER.encode_documents(texts),
+    )
+
+
+def publish_hybrid(store: QdrantStore, **documents: list[str]) -> str:
+    """A full rebuild with sparse vectors, of ``documents`` (name → chunk texts)."""
+    parts = [texts_of(name, texts) for name, texts in documents.items()]
+    add = Embedded(
+        ids=[i for p in parts for i in p.ids],
+        texts=[t for p in parts for t in p.texts],
+        metadatas=[m for p in parts for m in p.metadatas],
+        vectors=[v for p in parts for v in p.vectors],
+        sparse=[s for p in parts for s in p.sparse or []],
+    )
+    records = {name: doc(name, len(texts)) for name, texts in documents.items()}
+    hybrid = manifest(**records).model_copy(update={"sparse": SPARSE_RECORD})
+    return write_generation(store, hybrid, base=None, delete=[], add=add).generation
+
+
+def point(pid: str, payload: str = "") -> Any:
+    return SimpleNamespace(id=pid, payload={"from": payload}, score=0.0)
+
+
+def test_rrf_sums_one_over_rrf_k_plus_the_one_based_rank_over_the_lists() -> None:
+    dense = [point("a"), point("b"), point("c")]
+    sparse = [point("c"), point("d")]
+    fused = vectorstore.fuse([dense, sparse], rrf_k=60, limit=10)
+    scores = {"a": 1 / 61, "b": 1 / 62, "c": 1 / 63 + 1 / 61, "d": 1 / 62}
+    assert [p.id for p in fused] == sorted(scores, key=lambda pid: (-scores[pid], pid))
+    assert [p.id for p in fused] == ["c", "a", "b", "d"]  # b and d tie: by point ID
+
+
+def test_a_fused_tie_is_ordered_by_point_id_and_cut_where_it_falls() -> None:
+    # Ties are the rule in RRF: rank r of either list scores the same (DEC-20).
+    dense = [point("x"), point("m")]
+    sparse = [point("y"), point("b")]
+    assert [p.id for p in vectorstore.fuse([dense, sparse], rrf_k=60, limit=3)] == ["x", "y", "b"]
+    assert [p.id for p in vectorstore.fuse([sparse, dense], rrf_k=60, limit=3)] == ["x", "y", "b"]
+
+
+def test_rrf_k_and_the_weights_are_the_caller_s() -> None:
+    dense = [point("a"), point("b")]
+    sparse = [point("b"), point("a")]
+    # Equal weights: a tie, by ID. A heavier sparse list puts its own first first.
+    assert [p.id for p in vectorstore.fuse([dense, sparse], rrf_k=1, limit=2)] == ["a", "b"]
+    weighted = vectorstore.fuse([dense, sparse], rrf_k=1, limit=2, weights=[1.0, 2.0])
+    assert [p.id for p in weighted] == ["b", "a"]
+    with pytest.raises(ValueError, match="2 lists to fuse, but 1 weights"):
+        vectorstore.fuse([dense, sparse], rrf_k=1, limit=2, weights=[1.0])
+
+
+def test_a_fused_point_keeps_the_payload_of_the_first_list_that_holds_it() -> None:
+    fused = vectorstore.fuse([[point("a", "dense")], [point("a", "sparse")]], rrf_k=60, limit=1)
+    assert fused[0].payload == {"from": "dense"}
+    assert vectorstore.fuse([[], []], rrf_k=60, limit=5) == []
+
+
+def test_a_hybrid_generation_holds_both_vectors_with_qdrant_s_idf(qdrant: QdrantClient) -> None:
+    store = make_store(qdrant)
+    generation = publish_hybrid(store, **{"a.txt": ["glider small", "zebra stripes"]})
+    params = qdrant.get_collection(generation).config.params
+    assert params.sparse_vectors is not None
+    assert params.sparse_vectors["bm25"].modifier == models.Modifier.IDF
+    found, _ = qdrant.scroll(generation, limit=10, with_vectors=True)
+    by_id = {str(p.id): p.vector for p in found}
+    first = by_id[chunk_id("a.txt", "a" * 64, 0)]
+    expected = ENCODER.encode_document("glider small")
+    assert first["bm25"].indices == list(expected.indices)
+    assert first["bm25"].values == pytest.approx(list(expected.values))
+    assert metadata(qdrant, generation)["manifest"]["sparse"] == SPARSE_RECORD.model_dump()
+
+
+def test_a_generation_without_a_sparse_record_has_no_sparse_vector(qdrant: QdrantClient) -> None:
+    generation = publish(make_store(qdrant), **{"a.txt": 1})
+    assert not qdrant.get_collection(generation).config.params.sparse_vectors
+
+
+def test_sparse_vectors_come_with_a_sparse_record_and_only_with_one(qdrant: QdrantClient) -> None:
+    store = make_store(qdrant)
+    with_sparse = texts_of("a.txt", ["glider"])
+    without = chunks_of("a.txt", 1)
+    hybrid = manifest(**{"a.txt": doc("a.txt", 1)}).model_copy(update={"sparse": SPARSE_RECORD})
+    for record, add in ((manifest(**{"a.txt": doc("a.txt", 1)}), with_sparse), (hybrid, without)):
+        with pytest.raises(ValueError, match="sparse vectors must come with a sparse record"):
+            write_generation(store, record, base=None, delete=[], add=add)
+    assert generations(qdrant) == []  # refused before anything was created
+
+
+def test_an_update_of_a_hybrid_index_copies_the_sparse_vectors_too(qdrant: QdrantClient) -> None:
+    store = make_store(qdrant)
+    live = publish_hybrid(store, **{"a.txt": ["glider small", "zebra stripes"]})
+    added = texts_of("b.txt", ["kestrel island"])
+    hybrid = manifest(**{"a.txt": doc("a.txt", 2), "b.txt": doc("b.txt", 1)}).model_copy(
+        update={"sparse": SPARSE_RECORD}
+    )
+    copied = write_generation(
+        store, hybrid, base=open_generation(store, live), delete=[], add=added
+    ).generation
+
+    def sparse_of(generation: str) -> dict[str, Any]:
+        found, _ = qdrant.scroll(generation, limit=10, with_vectors=True)
+        return {str(p.id): p.vector["bm25"] for p in found}
+
+    before, after = sparse_of(live), sparse_of(copied)
+    assert after.keys() == {*before, *added.ids}
+    for pid, vector in before.items():
+        assert after[pid].indices == vector.indices
+        assert after[pid].values == pytest.approx(vector.values)
+
+
+def test_a_hybrid_retriever_finds_the_word_the_embedding_ranks_low(qdrant: QdrantClient) -> None:
+    # FixedEmbeddings ranks the chunks in order, so dense k=2 keeps the first two. "zebra"
+    # is only in the fifth: the sparse search ranks it first, and the fusion lifts it.
+    store = make_store(qdrant)
+    texts = ["alpha one", "beta two", "gamma three", "delta four", "zebra five"]
+    generation = publish_hybrid(store, **{"a.txt": texts})
+    dense = retriever(store, generation, FixedEmbeddings(), {"search_kwargs": {"k": 2}}, k=2)
+    assert [d.page_content for d in dense.invoke("zebra")] == ["alpha one", "beta two"]
+    hybrid = retriever(store, generation, FixedEmbeddings(), HYBRID, sparse=ENCODER, k=2)
+    # zebra: 1/61 (sparse) + 1/65 (dense rank 5); alpha: 1/61 (dense rank 1).
+    found = hybrid.invoke("zebra")
+    assert [d.page_content for d in found] == ["zebra five", "alpha one"]
+    assert found[0].metadata == {"source": "a.txt", "page": 4, "page_label": "5"}  # as dense
+
+
+def test_a_hybrid_retriever_needs_the_encoder(qdrant: QdrantClient) -> None:
+    with pytest.raises(ValueError, match="needs the sparse encoder"):
+        retriever(make_store(qdrant), "g", FixedEmbeddings(), HYBRID, k=2)
+
+
+def test_a_question_of_stopwords_alone_searches_dense_only(
+    qdrant: QdrantClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An empty sparse query finds nothing, so it is not sent (S3-5's plan, D7).
+    store = make_store(qdrant)
+    generation = publish_hybrid(store, **{"a.txt": ["alpha one", "beta two", "gamma three"]})
+    used: list[str] = []
+    real = qdrant.query_points
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        used.append(kwargs["using"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(qdrant, "query_points", spy)
+    hybrid = retriever(store, generation, FixedEmbeddings(), HYBRID, sparse=ENCODER, k=2)
+    assert [d.page_content for d in hybrid.invoke("what is it?")] == ["alpha one", "beta two"]
+    assert used == ["dense"]
+    used.clear()
+    hybrid.invoke("gamma")
+    assert used == ["dense", "bm25"]
+
+
+@pytest.mark.parametrize("hybrid", [False, True], ids=["dense", "hybrid"])
+def test_sources_limit_every_search_to_those_documents(qdrant: QdrantClient, hybrid: bool) -> None:
+    store = make_store(qdrant)
+    generation = publish_hybrid(
+        store,
+        **{"a.txt": ["alpha one", "zebra a"], "b.txt": ["beta two", "zebra b"], "c.txt": ["c"]},
+    )
+    spec = HYBRID if hybrid else {"search_kwargs": {"k": 2}}
+    found = retriever(store, generation, FixedEmbeddings(), spec, sparse=ENCODER, k=2)
+    # Unfiltered, each document's first chunk ties on the dense vector, so the two kept
+    # come from two documents.
+    assert len({d.metadata["source"] for d in found.invoke("zebra")}) == 2
+    only_b = found.invoke("zebra", sources=("b.txt",))
+    assert [d.metadata["source"] for d in only_b] == ["b.txt", "b.txt"]
+    both = found.invoke("zebra", sources=("b.txt", "c.txt"))
+    assert {d.metadata["source"] for d in both} <= {"b.txt", "c.txt"}
+    assert found.invoke("zebra", sources=("gone.txt",)) == []
+
+
+def test_the_filter_is_a_match_any_on_the_indexed_source() -> None:
+    assert vectorstore.source_filter(()) is None
+    flt = vectorstore.source_filter(["a.pdf", "sub/b.md"])
+    assert flt == models.Filter(
+        must=[
+            models.FieldCondition(
+                key="metadata.source", match=models.MatchAny(any=["a.pdf", "sub/b.md"])
+            )
+        ]
+    )
+
+
+def sparse_tied_collection(client: QdrantClient, name: str, order: list[int]) -> list[str]:
+    """``name`` with 30 points whose sparse vectors tie exactly for any query on index 1,
+    inserted in ``order``, and 5 that score higher; returns the tied points' IDs."""
+    client.create_collection(
+        name,
+        vectors_config={"dense": models.VectorParams(size=2, distance=models.Distance.COSINE)},
+        sparse_vectors_config={"bm25": models.SparseVectorParams(modifier=models.Modifier.IDF)},
+    )
+    ids = [chunk_id("tie.txt", "0" * 64, i) for i in range(30)]
+    near = [chunk_id("near.txt", "0" * 64, i) for i in range(5)]
+
+    def vector(value: float) -> dict[str, Any]:
+        return {"dense": [1.0, 1.0], "bm25": models.SparseVector(indices=[1], values=[value])}
+
+    points = [models.PointStruct(id=ids[i], vector=vector(1.0), payload={}) for i in order]
+    points += [
+        models.PointStruct(id=pid, vector=vector(2.0 + n), payload={}) for n, pid in enumerate(near)
+    ]
+    client.upsert(name, points=points, wait=True)
+    return ids
+
+
+QUERY_1 = SparseVector(indices=(1,), values=(1.0,))
+
+
+def test_a_sparse_search_is_cut_by_our_rule_too(
+    qdrant: QdrantClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The cut rule holds in each branch (DEC-20): ties at the cut widen the request, and
+    # the tied points are kept by point ID, whatever order they were inserted in.
+    store = make_store(qdrant)
+    limits: list[int] = []
+    real = qdrant.query_points
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        limits.append(kwargs["limit"])
+        assert kwargs["using"] == "bm25" and kwargs["search_params"].exact is True
+        return real(*args, **kwargs)
+
+    results = []
+    for n, order in enumerate([list(range(30)), list(reversed(range(30)))]):
+        ids = sparse_tied_collection(qdrant, f"sparse_ties_{n}", order)
+        monkeypatch.setattr(qdrant, "query_points", spy)
+        results.append([str(p.id) for p in search(store, f"sparse_ties_{n}", QUERY_1, 8)])
+        monkeypatch.setattr(qdrant, "query_points", real)
+    assert limits == [18, 36, 18, 36]
+    assert results[0] == results[1]
+    assert results[0][5:] == sorted(ids)[:3]
 
 
 # ---- the store, its settings and its errors -------------------------------------------------

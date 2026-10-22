@@ -41,6 +41,7 @@ from langchain_core.runnables import RunnableLambda
 
 from rag_qa.api.app import create_app
 from rag_qa.api.state import Serving, Slot
+from rag_qa.chain import RetrievalQuery
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ServerSettings
 
@@ -156,10 +157,10 @@ def test_a_drop_before_the_first_event_frees_the_slot_and_the_next_retrieval_wai
     spans: list[tuple[str, float, float]] = []
     chunk = Document(page_content="x", metadata={"source": "notes.txt"})
 
-    def slow_retrieval(question: str) -> list[Document]:
+    def slow_retrieval(asked: RetrievalQuery) -> list[Document]:
         started = time.monotonic()
         time.sleep(1.0)
-        spans.append((question, started, time.monotonic()))
+        spans.append((asked.question, started, time.monotonic()))
         return [chunk]
 
     model = StreamingFakeChatModel()

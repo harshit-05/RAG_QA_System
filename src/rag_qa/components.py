@@ -30,9 +30,11 @@ from langchain_core.language_models import BaseChatModel
 from pydantic import ValidationError
 
 from rag_qa.config import ConfigError
+from rag_qa.manifest import SparseRecord, sparse_record
 from rag_qa.registry import build_object
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_QDRANT_PREFIX, describe_settings_error
+from rag_qa.sparse import Bm25Encoder
 from rag_qa.vectorstore import QdrantStore
 
 #: What to try when an Ollama model cannot be reached, shown under the error.
@@ -66,6 +68,38 @@ def build_store(config: RagConfig) -> QdrantStore:
             f"rag_qa.vectorstore.QdrantStore"
         )
     return store
+
+
+def build_sparse_encoder(config: RagConfig) -> Bm25Encoder | None:
+    """The sparse encoder for both ingestion and hybrid queries: always
+    ``pipeline.ingestion.sparse_encoder``, as :func:`build_embedder` is always the
+    ingestion embedder (DEC-20). ``None`` when it is unset.
+
+    Raises :class:`~rag_qa.config.ConfigError` when the entry cannot make one: its
+    settings, or a ``_target_`` that is not one.
+    """
+    ref = config.pipeline.ingestion.sparse_encoder
+    if ref is None:
+        return None
+    try:
+        encoder = build_object(config.component(ref).spec())
+    except (TypeError, ValueError) as e:
+        raise ConfigError(f"Cannot build the sparse encoder {ref}: {e}") from e
+    if not isinstance(encoder, Bm25Encoder):
+        raise ConfigError(
+            f"{ref} builds a {type(encoder).__name__}, not a sparse encoder: its _target_ "
+            f"must be rag_qa.sparse.Bm25Encoder"
+        )
+    return encoder
+
+
+def configured_sparse(config: RagConfig) -> SparseRecord | None:
+    """The sparse record an index built with ``config`` has: the ingestion sparse encoder's
+    identity and :data:`~rag_qa.sparse.SPARSE_VERSION`, or ``None`` when none is set.
+    ``rag-ingest`` writes it, and the query side and ``rag-eval generate`` compare with it
+    (:func:`rag_qa.manifest.same_sparse`)."""
+    ref = config.pipeline.ingestion.sparse_encoder
+    return None if ref is None else sparse_record(ref, config.component(ref).spec())
 
 
 def build_splitter(config: RagConfig, extension: str | None = None) -> Any:

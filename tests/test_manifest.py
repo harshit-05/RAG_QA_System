@@ -28,6 +28,7 @@ from rag_qa.manifest import (
     FileState,
     Manifest,
     ManifestError,
+    SparseRecord,
     SplitterRecord,
     chunk_id,
     diff,
@@ -35,8 +36,11 @@ from rag_qa.manifest import (
     file_sha256,
     manifest_payload,
     parse_manifest,
+    same_sparse,
+    sparse_record,
     spec_identity,
 )
+from rag_qa.sparse import SPARSE_VERSION
 
 # --- hashing and identities --------------------------------------------------------------
 
@@ -252,6 +256,31 @@ def test_the_architecture_s_example_manifest_parses() -> None:
     assert parse_manifest(example).documents["2412.14140v2.pdf"].chunks == 412
 
 
+def test_a_sparse_record_round_trips_and_a_null_still_parses() -> None:
+    # S3-5 widened the type: a generation with sparse vectors records their encoder, and
+    # every manifest written since S3-2, with null, stays readable.
+    spec = {"_target_": "rag_qa.sparse.Bm25Encoder", "k1": 1.2, "b": 0.75, "avg_len": 100.76}
+    sparse = sparse_record("components.sparse_encoders.bm25", spec)
+    assert sparse == SparseRecord(
+        ref="components.sparse_encoders.bm25", identity=spec_identity(spec), version=SPARSE_VERSION
+    )
+    hybrid = manifest(**{"a.txt": record()}).model_copy(update={"sparse": sparse})
+    data = json.loads(json.dumps(manifest_payload(hybrid)))
+    assert sorted(data["sparse"]) == ["identity", "ref", "version"]
+    assert parse_manifest(data) == hybrid
+    assert parse_manifest(manifest_payload(manifest(**{"a.txt": record()}))).sparse is None
+
+
+def test_the_same_sparse_vectors_are_told_by_identity_and_version_never_the_name() -> None:
+    a = SparseRecord(ref="components.sparse_encoders.bm25", identity="i", version=1)
+    assert same_sparse(None, None)
+    assert not same_sparse(a, None)
+    assert not same_sparse(None, a)
+    assert same_sparse(a, a.model_copy(update={"ref": "components.sparse_encoders.renamed"}))
+    assert not same_sparse(a, a.model_copy(update={"identity": "j"}))
+    assert not same_sparse(a, a.model_copy(update={"version": 2}))
+
+
 def test_chunk_ids_are_derived_from_each_document_s_count() -> None:
     # Version 2 counts chunks rather than listing their IDs (DEC-19): chunk_id makes them.
     m = manifest(**{"a.txt": record("1" * 64, chunks=2), "b.txt": record("2" * 64, chunks=0)})
@@ -283,6 +312,8 @@ def test_an_unusable_manifest_is_refused_with_the_reason(data: Any, problem: str
         (lambda d: d["store"].update(distance="dot"), r"store\.distance"),
         (lambda d: d["store"].update(exact=False), r"store\.exact"),
         (lambda d: d.update(sparse={"ref": "x"}), "sparse"),
+        (lambda d: d.update(sparse={"ref": "x", "identity": "i", "version": "1"}), "sparse"),
+        (lambda d: d.update(sparse={"ref": "x", "identity": "i", "version": 1, "k1": 1}), "sparse"),
         (lambda d: d.pop("sparse"), "sparse: Field required"),
         (lambda d: d["documents"]["a.txt"].update(chunks=-1), r"documents\.a\.txt\.chunks"),
         (lambda d: d["documents"]["a.txt"].update(chunk_ids=[]), "Extra inputs"),
@@ -292,7 +323,9 @@ def test_an_unusable_manifest_is_refused_with_the_reason(data: Any, problem: str
         "a mistyped dimension",
         "another distance",
         "an approximate search",
-        "a sparse record, before S3-5 widens the type",
+        "a sparse record missing its identity and version",
+        "a sparse version as text",
+        "a sparse record with a field it does not have",
         "no sparse key",
         "a negative count",
         "version 1's chunk_ids",

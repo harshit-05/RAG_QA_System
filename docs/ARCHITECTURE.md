@@ -2374,6 +2374,14 @@ the dense and sparse candidates with RRF, and the cross-encoder ranks what survi
     re-run covers it. `ingestion` leaves an absent key out of its hash, so v0.3's hash holds
     until then.
 
+_As built in S3-5 (2026-10-21):_ the tokenizer also joins a soft hyphen (U+00AD) with the
+whitespace after it, since the CADE proceedings mark 823 line-break hyphenations with one, and
+the stopwords are NLTK's English list less its 26 forms with an apostrophe (153). `avg_len` is
+100.76. A hybrid retriever must state `prefetch` and `rrf_k`, with no default in code, so the
+dump tier 2 hashes says everything it does; an explicit `mode: dense` dumps as no mode. A query
+with no tokens runs the dense search alone. Tier 1 recommends hybrid on with `rrf_k` 60 and
+`prefetch` 40, and `min_score` −4 (S3-5's story, "Tier 1"); S3-11 decides.
+
 **DEC-21 — Network calls get timeouts, retries where a retry is safe, and circuit breakers;
 Ollama gets an opt-in hosted fallback.** This resolves DEC-9, and NFR-6.
 
@@ -2738,6 +2746,11 @@ a separate ingest worker (on one host there is no CPU to isolate it on).
   - **The audit policy** (a backlog line, decided here):
     - `pip-audit --ignore-vuln ID` only for an advisory with no fixed release, with a
       reason and a date beside it in `ci.yml`, and a line in STATUS.md;
+      _One exception, taken by the maintainer on 2026-10-22 (S3-5; STATUS.md caveat 37):_
+      five pypdf 6.19.0 advisories with fixed releases are ignored, because those releases
+      extract the corpus differently and change 7 of the 25 golden contexts. The bump rides
+      S3-11b's one re-run with `CHUNKING_VERSION` 2. The step fails on its own after
+      2027-01-20, 90 days out, as Trivy's ignores expire;
     - Trivy's ignores in `.trivyignore.yaml`, each with a statement and an `expired_at` at
       most 90 days out;
     - a weekly scheduled run of the whole workflow on `main`, so an advisory surfaces
@@ -3094,7 +3107,9 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
 - `QueryPipeline` gains `fallback_llm: BaseChatModel | None`.
 - `stream_answer(pipeline, question, *, sources=())`.
 - `retrieve` takes a `RetrievalQuery(question, sources=())`. Tier 1 passes no sources; S3-5's
-  plan settles the exact type.
+  plan settles the exact type. _As built in S3-5:_ a frozen dataclass in `chain.py`, and the
+  retrieval half is `Runnable[RetrievalQuery, list[Document]]`, with no `str` form; tier 1
+  passes `RetrievalQuery(item.question)`.
 - `Done(ttft_ms, total_ms, model, input_tokens, output_tokens)`.
 
 **HTTP changes** (to §2.4's table):

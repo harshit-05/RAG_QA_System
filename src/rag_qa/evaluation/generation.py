@@ -27,7 +27,8 @@ from langchain_core.documents import Document
 from langchain_core.runnables import RunnableLambda
 
 from rag_qa.answering import Done, Sources, Token, stream_answer
-from rag_qa.chain import QueryPipeline, build_query_pipeline, check_index
+from rag_qa.chain import QueryPipeline, RetrievalQuery, build_query_pipeline, check_index
+from rag_qa.components import configured_sparse
 from rag_qa.evaluation.checkpoint import Checkpoint, CheckpointError
 from rag_qa.evaluation.dataset import GoldenItem
 from rag_qa.evaluation.fingerprint import GENERATION_PARTS, corpus_part, corpus_scan, fingerprint
@@ -41,7 +42,7 @@ from rag_qa.evaluation.gate import (
     ollama_tag,
 )
 from rag_qa.ingest import CorpusScan
-from rag_qa.manifest import CHUNKING_VERSION, Manifest, diff
+from rag_qa.manifest import CHUNKING_VERSION, Manifest, diff, same_sparse
 from rag_qa.schema import RagConfig
 
 #: The ``_target_`` whose model is an Ollama tag, so has a digest to record.
@@ -59,11 +60,11 @@ def check_index_current(
 
     Raises :class:`~rag_qa.chain.NoIndexError` or its subclass first, as every front end
     does; then :class:`StaleIndexError` when the manifest's documents (their bytes, loader
-    or splitter, :func:`~rag_qa.manifest.diff`) or chunking version differ from what
-    ``rag-ingest`` would build now. The manifest's top-level splitter decides nothing, as
-    in ``rag-ingest`` (S3-4). The embedder's identity is :func:`~rag_qa.chain.check_index`'s
-    own check. Reads the live generation's metadata only, or nothing when given its
-    ``manifest``.
+    or splitter, :func:`~rag_qa.manifest.diff`), chunking version or sparse record (S3-5)
+    differ from what ``rag-ingest`` would build now. The manifest's top-level splitter
+    decides nothing, as in ``rag-ingest`` (S3-4). The embedder's identity is
+    :func:`~rag_qa.chain.check_index`'s own check. Reads the live generation's metadata
+    only, or nothing when given its ``manifest``.
     """
     if manifest is None:
         _, manifest = check_index(config)
@@ -83,6 +84,9 @@ def check_index_current(
         problems.append(f"documents {', '.join(counts)} (e.g. {', '.join(named)})")
     if manifest.chunking != CHUNKING_VERSION:
         problems.append(f"it was chunked by version {manifest.chunking}, not {CHUNKING_VERSION}")
+    if not same_sparse(manifest.sparse, configured_sparse(config)):
+        # rag-ingest would rebuild it (S3-5): its sparse vectors are not the config's.
+        problems.append("its sparse vectors are not the configured sparse encoder's")
     if problems:
         raise StaleIndexError(
             f"the index is not up to date with the corpus and config: {'; '.join(problems)}. "
@@ -115,8 +119,8 @@ def _recording(pipeline: QueryPipeline, captured: list[Document]) -> QueryPipeli
     if inner is None:  # build_query_pipeline(require_index=True) never leaves it unset
         raise ValueError("the pipeline has no retrieval half")
 
-    async def retrieve(question: str) -> list[Document]:
-        docs = await inner.ainvoke(question)
+    async def retrieve(asked: RetrievalQuery) -> list[Document]:
+        docs = await inner.ainvoke(asked)
         captured[:] = docs
         return docs
 
