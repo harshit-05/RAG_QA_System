@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In progress (2026-10-22): the plan below was approved in plan mode on 2026-10-22, on `feat/s3-6-resilience`. |
+| **Status** | Done (2026-10-23): PR #24 on `feat/s3-6-resilience`. `97cb2b6` S3-5's merge and this plan; `81af84d` the dependencies; `2269a2c` the feature (breaking: an `api_key` in a component); `626358d` the docs; the `ci(audit)` commit extending the pypdf exception, and this record. Verification 1–14 run and shown below, all as expected; the one real check ran against Groq on 2026-10-23. CI went red on `626358d` (run 39916798730) in Audit alone, on three pypdf advisories published on 2026-10-22: the maintainer extended caveat 37's exception (Discovered). On Opus 5.5 at max effort (Deviation). |
 | **Closes** | NFR-6; DEC-9; DEC-21; SRS §2.4 (a hosted-provider fallback); SRS §11 resilience; backlog: the hosted-LLM fallback, NFR-6, the back-off after a failed index reopen |
 | **Depends on** | S3-2 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -140,6 +140,37 @@ sudo systemctl start ollama && uv sync
 gh pr checks
 ```
 
+## Verification record (2026-10-22/23)
+
+Run on the working tree on `main`'s `1815e00`, before the branch's commits, except 15. Steps
+10–14 ran in the maintainer's terminal (sudo, the key), each logged with `tee` to
+`~/dev/rag-s3-6/`. The scratch config is `config.local.yaml` (gitignored): `config.yaml` with
+`fallback_llm: components.llms.groq_fallback` uncommented, one line.
+
+| # | Command | Result |
+| --- | --- | --- |
+| 1 | `uv run rag-eval check` | exit 0: all six parts `ok`, every floor met, with the Ollama timeouts, the fallback entry and `deadline_s` in `config.yaml` |
+| 2 | `uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-6/contexts.json` | 0.950 (19 of 20) / 0.796 / 0.858, every floor met |
+| 3 | `diff ~/dev/rag-s3-2/contexts-qdrant.json ~/dev/rag-s3-6/contexts.json` | IDENTICAL; both `5a36e2f9d00bbdaf49edaf07b8ba6af6f0e2ed52a5cf4c2e16c39aa66a074cbc` |
+| 4 | `HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q` | 1391 passed, 18 skipped (the 15 server tests, the fallback module, 2 import tests that need the extra), 5 xfailed; coverage 98.30%; `HF_HOME` stayed empty. Three tests were added after it (preflight's two fallback failures, a missing `langchain_openai`): `tests/test_components.py` 53 passed |
+| 5 | the suite again under `uv sync --extra fallback` | 1399 passed, 15 skipped, 5 xfailed: the 6 real-`ChatOpenAI` tests and the 2 import tests run; then `uv sync` |
+| 6 | `uv run ruff check && uv run ruff format --check && uv run mypy` | all checks passed; 65 files formatted; no issues in 32 source files, with and without the extra |
+| 7 | `RAG_TEST_QDRANT_URL=… uv run pytest -m qdrant_server -q`, on a throwaway v1.19.2 (port 6390) | 11 passed; the probes of what a repeat counts as done ran there too (Discovered); the container is removed, and the live alias was never touched |
+| 8 | `uv lock`, then `git diff uv.lock` | the project's own metadata only: 178 packages, every version as before, pypdf 6.19.0 |
+| 9 | `rag-query --config config.local.yaml` without the key; `echo exit \| rag-query` | exit 2 before any model: "the hosted fallback components.llms.groq_fallback needs its API key in RAG_FALLBACK_API_KEY, which is not set."; a plain session starts and exits 0 |
+| 10 | `sudo systemctl stop ollama`; `uv run rag-query; echo "exit $?"` | exit 2 within seconds: "cannot build the language model components.llms.mistral_ollama: ConnectionError: Failed to connect to Ollama…", and the hint |
+| 11 | `rag-serve` started with Ollama up, then Ollama stopped; three queries, health | 200 with `error` "the language model is unreachable" (both attempts); 200 with `error` "Ollama is not answering" (its first attempt opened the breaker, which refused the second); `503`, `retry-after: 30`, no stream. Health 503: the `llm` breaker `open`, `retry_after_s` 30 |
+| 12 | Ollama started, `sleep 31`, a query, health | the probe answered: first token at 150.6 s, done at 168.8 s, `model` `components.llms.mistral_ollama`; health `ready`, every breaker `closed` |
+| 13 | the real check, `rag-query --config config.local.yaml`, Ollama stopped, the key set | the warning (Ollama did not answer; questions and chunks go to `https://api.groq.com/openai/v1`), the banner, then answers from Groq each followed by "(answered by the hosted fallback, components.llms.groq_fallback)": GLIDER's described correctly, with no reasoning text, and the refusal sentence for a question the corpus cannot answer. Ctrl-C mid-answer: "(answer interrupted; …)" and nothing after it |
+| 14 | `rag-serve --config config.local.yaml`, Ollama stopped; four queries, health, a drop | four `200`s, each `done` naming `components.llms.groq_fallback`, first token in 1.6–2.0 s, and no `503` once Ollama's breaker opened; the server logged "Answered by the hosted fallback …" for each. Health 200: "the hosted fallback answers in its place", `llm` open (23 s left), `fallback` closed. The `curl --max-time 2` drop: Groq finished the answer first, so it logged an answer, not a cancel (Discovered). No key-shaped string in any log |
+| 15 | `gh pr checks` | red on `626358d` (run 39916798730): `check` failed in Audit alone, on three new pypdf advisories, and `eval-retrieval` was skipped behind it. Lint, Format, Types and Test passed: 1394 passed, coverage 98.44% |
+
+The first attempt at 13 and 14 stopped at start-up, as it should: the key was not set in
+those terminals, and both commands exited 2 naming the variable. In the second, Ollama was
+started again 8 s after `rag-serve` (its journal), so the HTTP queries went to mistral; the
+third kept it stopped. Row 13's answers come from the second attempt and its Ctrl-C from the
+third; row 14 is the third's.
+
 ## Review notes for the human
 
 - **The stream path:** no new task, no `.with_fallbacks()`, and the same `finally` closing
@@ -179,8 +210,74 @@ the feature (`feat(resilience)!`); the docs; the close-out record.
 
 ## Discovered
 
-(Filled during implementation.)
+- **CI went red on `626358d` in Audit alone** (run 39916798730). Three pypdf 6.19.0
+  advisories were published on 2026-10-22 at 16:49 UTC, after `main`'s last green run, so
+  `main`'s lock fails them too:
+  - GHSA-6vvc-x485-93v7 (CVE-2026-113789), form fields: unreachable, since `get_fields` is
+    called only by itself and `get_form_text_fields`;
+  - GHSA-cgf9-327m-v77c (CVE-2026-113791), content streams: reached by `extract_text`
+    (`_page.py`, `_extract_text`);
+  - GHSA-f54x-cmq8-qg57 (CVE-2026-113790), arrays and dictionaries: reached by any read.
+
+  All three are fixed in 6.21.0, which S3-11b's bump to 6.21.1 or later covers. Caveat 37
+  made this the maintainer's decision; on 2026-10-23 they extended the exception rather than
+  bump pypdf here, which would have cost a tier-2 re-run outside S3-11b's. pip-audit prints
+  the CVE IDs, and the GHSA ignores match them through their aliases (checked locally: "No
+  known vulnerabilities found, 8 ignored").
+- **langchain-openai 1.6.2 shares one async HTTP client between instances,** cached per
+  base URL and timeout (`_client_utils._cached_async_httpx_client`, an `lru_cache`).
+  Closing one model's would close every other's, so the fallback gets its own (D9;
+  caveat 38).
+- **openai 3.3.0 is built on httpx2,** pydantic's fork of httpx: its `Timeout` and its
+  transport errors are httpx2's. `resilience.classify` reads both by module name. httpx2 is
+  in the plain environment already, through langsmith.
+- **The read-back after a failed alias switch must not wait on the breaker.** The switch's
+  own three failed attempts open it, and the read that decides "published or nothing" was
+  then refused. S3-2's `test_a_switch_the_server_applied_but_whose_answer_was_lost_is_published`
+  caught it once the retries landed; `_switched_to` now retries without the breaker.
+- **pydantic's `ValidationError` repeats its input in its text, a value included**
+  (`input_value=…`). `load_config` raises `ConfigError` `from None` and renders the messages
+  only, so a key in a config never reaches a terminal; the schema test reads the rendered
+  messages.
+- **qdrant-client 1.19.1 uses a request's `timeout` as that HTTP request's own timeout too**
+  (`http/api_client.py`), which D6 relies on to cut a hung search at the deadline.
+- **What a repeat counts as done, on a throwaway Qdrant 1.19.2:** deleting a missing
+  collection answers `False`; creating an existing one, 409; a repeated
+  `create_payload_index` and a repeated alias switch both succeed with nothing changed.
+- **The `fallback` extra's four packages** (jiter 0.14.0, langchain-openai 1.6.2, openai
+  3.3.0, tiktoken 0.14.0) are all in the `eval` extra already, so S3-9's `eval` Audit step
+  covers them.
+- **langchain-ollama 1.1.0's `validate_model` catches httpx's `ConnectError`,** but ollama's
+  client has wrapped it in the builtin `ConnectionError` by then, which escapes: a stopped
+  Ollama at build is "ConnectionError: Failed to connect to Ollama…", not the `ValueError` its
+  docstring promises. Harmless: `preflight` reports either.
+- **An open breaker mid-stream logs a full traceback** ("An answer failed after its stream
+  began", the real check's `2-serve.log`). It is an expected refusal, so one warning line
+  would do: a backlog line for S3-7, whose structured logs take that log over.
+- **S3-9: the image installs no extra.** A stack that wants the fallback needs the `fallback`
+  extra in the image and `RAG_FALLBACK_API_KEY` in `.env`, which compose's `env_file` passes.
+  A backlog line for S3-9.
+- **The real check's drop could not land mid-stream:** Groq answered within `curl
+  --max-time 2`. The two real-uvicorn drops through the fallback, during its prefill and
+  mid-stream, are the proof that its stream closes.
+- **A dropped answer is a cut-off chunked body:** a fake Ollama speaking HTTP/1.0 ends a body
+  by closing the connection, which the client reads as a clean end. The test's fake speaks
+  HTTP/1.1 with chunked transfer.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **Model:** fable-routed, run on Opus 5.5 at max effort, since Fable is unavailable
+  (CLAUDE.md, "Model routing").
+- **`langchain-openai>=1,<2`,** where the story says `>=1`: the bound the other LangChain
+  packages carry (D12, as approved).
+- **Additions the plan left implicit:**
+  - `QueryPipeline` also carries `llm_ref` and `fallback_ref`, what `Done.model` names;
+  - `chain.assemble`, the one composition the CLI and the API share;
+  - `components.Preflight(problem, warning)`, in place of a reason or `None`;
+  - `rag-serve` logs at start-up that a fallback can answer, when Ollama is up.
+- **The S3-3 backlog line's debug-logging suggestion was not taken:** the timeout never
+  reproduced, the retries absorb one, and an exhausted one now says "did not answer in time"
+  (D13).
+- **A CI change outside the story's scope** (maintainer, 2026-10-23): the Audit step's pypdf
+  exception grew by three advisories (Discovered), in a `ci(audit)` commit of its own, as
+  S3-5's `ba00edc` did for the first five.

@@ -2790,7 +2790,9 @@ a separate ingest worker (on one host there is no CPU to isolate it on).
       five pypdf 6.19.0 advisories with fixed releases are ignored, because those releases
       extract the corpus differently and change 7 of the 25 golden contexts. The bump rides
       S3-11b's one re-run with `CHUNKING_VERSION` 2. The step fails on its own after
-      2027-01-20, 90 days out, as Trivy's ignores expire;
+      2027-01-20, 90 days out, as Trivy's ignores expire. _Extended by the maintainer on
+      2026-10-23 (S3-6's CI) to three more pypdf advisories published on 2026-10-22, for
+      the same reasons and to the same end: eight in all;_
     - Trivy's ignores in `.trivyignore.yaml`, each with a statement and an `expired_at` at
       most 90 days out;
     - a weekly scheduled run of the whole workflow on `main`, so an advisory surfaces

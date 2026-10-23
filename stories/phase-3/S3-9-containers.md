@@ -151,10 +151,11 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
   - **The audit policy,** as DEC-24 states it:
     - `--ignore-vuln` entries only for advisories with no fixed release, each with a reason
       and a date in `ci.yml` and a STATUS.md line. One exception exists already, and S3-9
-      keeps it as it is (added 2026-10-22): five pypdf advisories, with a date check, until
-      S3-11b (caveat 37). The weekly run also turns red on it after 2027-01-20. The `eval`
-      extra's Audit step below carries the same five ignores under the same date check: its
-      export holds pypdf 6.19.0 too (S3-5's second review);
+      keeps it as it is (added 2026-10-22, extended 2026-10-23 in S3-6): eight pypdf
+      advisories, with a date check, until S3-11b (caveat 37). The weekly run also turns red
+      on it after 2027-01-20. The `eval` extra's Audit step below carries the same eight
+      ignores under the same date check: its export holds pypdf 6.19.0 too (S3-5's second
+      review);
     - `.trivyignore.yaml` entries, each with a statement and an `expired_at` at most 90 days
       out;
     - a weekly `schedule` run of the whole workflow on `main`. It also runs `trivy image`
@@ -201,7 +202,7 @@ HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q
 uv run ruff check && uv run ruff format --check && uv run mypy
 
 # the bumps: exactly six packages' version lines move (langchain's five and Pillow), then
-# the eval extra's audit as CI runs it, with pypdf's five ignores until S3-11b (caveat 37)
+# the eval extra's audit as CI runs it, with pypdf's eight ignores until S3-11b (caveat 37)
 git diff main -- uv.lock | grep -E '^[-+]version = '
 uv export --no-dev --extra eval --no-emit-project --no-hashes | grep -v "sys_platform == 'darwin'" \
   | sed 's/^\(torch==[^ ;]*\)+cpu/\1/' > /tmp/s3-9-eval.txt
