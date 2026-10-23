@@ -26,6 +26,8 @@ dependencies = [
     "uvicorn>=0.32.1",
     "requests>=2.34.2",   # scripts/fetch_dataset.py; declared, not left transitive (S2-8)
     "qdrant-client>=1.19.1",   # the index (DEC-19, S3-2); only rag_qa.vectorstore imports it
+    "tenacity>=9.1.4",   # retries around Qdrant's calls (NFR-6, DEC-21, S3-6)
+    "httpx>=0.28.1",   # the timeouts of Ollama's client (S3-6); it came through ollama before
 ]
 
 [project.scripts]
@@ -42,6 +44,13 @@ eval = [
     "ragas>=0.4",
     "openai>=1",
     "instructor>=1.17",
+]
+# The hosted fallback (DEC-21, S3-6): an OpenAI-compatible provider that answers when Ollama
+# cannot. Off unless pipeline.query.fallback_llm names an llms entry. Install it with
+# `uv sync --extra fallback`; a plain `uv sync` removes it again. Its key comes from
+# RAG_FALLBACK_API_KEY only.
+fallback = [
+    "langchain-openai>=1,<2",
 ]
 
 [dependency-groups]
@@ -64,7 +73,6 @@ dev = [
     "pytest-cov>=7.1.0",
     "pip-audit>=2.10.1",   # CI's Audit step (S1-8); see ci.yml for why it reads a freeze
     "types-pyyaml>=6.0.12.20260906",   # types the YAML boundary in config.py (S2-1)
-    "httpx>=0.28.1",
 ]
 
 # This host is CPU-only (no NVIDIA GPU). `explicit = true` is load-bearing on BOTH
