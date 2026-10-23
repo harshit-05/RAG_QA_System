@@ -94,21 +94,25 @@ jobs:
       # pipefail, and pip-audit reports "no vulnerabilities" for an empty input.
       #
       # One exception to the audit policy, which allows no ignore for an advisory with a
-      # fixed release (DEC-24). The maintainer took it on 2026-10-22 (STATUS.md, caveat 37).
-      # Five pypdf 6.19.0 advisories were published on 2026-10-21. The releases that fix
-      # them (6.20.0 to 6.21.1) extract the corpus's text differently: 7 of the 25 golden
+      # fixed release (DEC-24). The maintainer took it on 2026-10-22 (STATUS.md, caveat 37),
+      # and extended it on 2026-10-23 to three more found by S3-6's CI. Five pypdf 6.19.0
+      # advisories were published on 2026-10-21, and three on 2026-10-22. The releases that
+      # fix them (6.20.0 to 6.21.1) extract the corpus's text differently: 7 of the 25 golden
       # contexts change, so the bump needs CHUNKING_VERSION 2 and a tier-2 re-run, which
       # S3-11b's one re-run carries (DEC-26). Until then:
       #   GHSA-5hx5-vpf9-5wcv  JPEG data handed to Pillow: image extraction, never called
       #   GHSA-9mx8-4j7g-633p  a loop removing tree items: editing, never called
       #   GHSA-qfv9-64jg-mh7p  a loop in PdfWriter.find_outline_item: writing, never called
+      #   GHSA-6vvc-x485-93v7  memory or time retrieving form fields: get_fields, never called
       #   GHSA-39mj-jf6j-2qj3  a loop at EOF in a standard xref table: reached by any read
       #   GHSA-7mh2-4gg2-979f  memory for streams with many filters: reached by extract_text
-      # The last two need a hostile PDF in corpus/, which only the operator fills: the
+      #   GHSA-cgf9-327m-v77c  memory for content streams of many operations: extract_text
+      #   GHSA-f54x-cmq8-qg57  memory for arrays or dictionaries of many items: any read
+      # The last four need a hostile PDF in corpus/, which only the operator fills: the
       # corpus is trusted, and nothing uploads into it (ARCHITECTURE.md, Phase 3, item 9).
       # The exception ends with S3-11b's bump, or on 2027-01-20 (90 days, as DEC-24 limits
       # Trivy's ignores), whichever comes first: after that date this step fails until the
-      # date check and the five ignores are removed.
+      # date check and the eight ignores are removed.
       - name: Audit
         run: |
           set -o pipefail
@@ -120,8 +124,9 @@ jobs:
           test -s "$RUNNER_TEMP/audit.txt"
           uv run --no-sync pip-audit --no-deps --disable-pip --progress-spinner off -r "$RUNNER_TEMP/audit.txt" \
             --ignore-vuln GHSA-5hx5-vpf9-5wcv --ignore-vuln GHSA-9mx8-4j7g-633p \
-            --ignore-vuln GHSA-qfv9-64jg-mh7p --ignore-vuln GHSA-39mj-jf6j-2qj3 \
-            --ignore-vuln GHSA-7mh2-4gg2-979f
+            --ignore-vuln GHSA-qfv9-64jg-mh7p --ignore-vuln GHSA-6vvc-x485-93v7 \
+            --ignore-vuln GHSA-39mj-jf6j-2qj3 --ignore-vuln GHSA-7mh2-4gg2-979f \
+            --ignore-vuln GHSA-cgf9-327m-v77c --ignore-vuln GHSA-f54x-cmq8-qg57
 
       # Tier 2 of the quality bar (DEC-15, S2-5b): the committed run in eval/runs/ against
       # eval/thresholds.yaml and this checkout. It needs no models, no Ollama and no eval
