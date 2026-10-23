@@ -167,7 +167,7 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
       advisories have no fixed release, and are the policy's first entries: `diskcache`
       5.6.3, PYSEC-2026-2447 (unsafe unpickling, which reaches only ragas's cache folder on a
       scoring machine), and `ragas` 0.4.3, PYSEC-2026-3046 (SSRF in the multimodal
-      faithfulness metric, which the judge does not use). It also carries pypdf's five,
+      faithfulness metric, which the judge does not use). It also carries pypdf's eight,
       above, and Pillow's 24 are gone with its bump.
   - **The ruleset recipe,** for the maintainer to run: a `gh api` call that requires
     `check`, `eval-retrieval`, `deploy-config` and `container` on `main`. The repository is
@@ -209,8 +209,9 @@ uv export --no-dev --extra eval --no-emit-project --no-hashes | grep -v "sys_pla
 uv run --no-sync pip-audit --no-deps --disable-pip -r /tmp/s3-9-eval.txt \
   --ignore-vuln PYSEC-2026-2447 --ignore-vuln PYSEC-2026-3046 \
   --ignore-vuln GHSA-5hx5-vpf9-5wcv --ignore-vuln GHSA-9mx8-4j7g-633p \
-  --ignore-vuln GHSA-qfv9-64jg-mh7p --ignore-vuln GHSA-39mj-jf6j-2qj3 \
-  --ignore-vuln GHSA-7mh2-4gg2-979f                            # no known vulnerabilities
+  --ignore-vuln GHSA-qfv9-64jg-mh7p --ignore-vuln GHSA-6vvc-x485-93v7 \
+  --ignore-vuln GHSA-39mj-jf6j-2qj3 --ignore-vuln GHSA-7mh2-4gg2-979f \
+  --ignore-vuln GHSA-cgf9-327m-v77c --ignore-vuln GHSA-f54x-cmq8-qg57   # no known vulnerabilities
 
 docker build -t rag-qa:s3-9 .                              # fails if torch is not +cpu
 docker run --rm --entrypoint python rag-qa:s3-9 -c "import torch; print(torch.__version__)"   # +cpu

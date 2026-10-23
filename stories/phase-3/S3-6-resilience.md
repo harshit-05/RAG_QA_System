@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Reviewed (2026-10-23): PR #24 on `feat/s3-6-resilience`. `97cb2b6` S3-5's merge and this plan; `81af84d` the dependencies; `2269a2c` the feature (breaking: an `api_key` in a component); `626358d` the docs; the `ci(audit)` commit extending the pypdf exception, and this record. Verification 1–14 run and shown below, all as expected; the one real check ran against Groq on 2026-10-23. CI went red on `626358d` (run 39916798730) in Audit alone, on three pypdf advisories published on 2026-10-22: the maintainer extended caveat 37's exception (Discovered). On Opus 5.5 at max effort (Deviation). The first review (2026-10-23) found no blocker and fixed two things on the PR ("First review"). |
+| **Status** | Reviewed (2026-10-23): PR #24 on `feat/s3-6-resilience`. `97cb2b6` S3-5's merge and this plan; `81af84d` the dependencies; `2269a2c` the feature (breaking: an `api_key` in a component); `626358d` the docs; the `ci(audit)` commit extending the pypdf exception, and this record. Verification 1–14 run and shown below, all as expected; the one real check ran against Groq on 2026-10-23. CI went red on `626358d` (run 39916798730) in Audit alone, on three pypdf advisories published on 2026-10-22: the maintainer extended caveat 37's exception (Discovered). On Opus 5.5 at max effort (Deviation). The first review (2026-10-23) found no blocker and fixed two things on the PR ("First review"); its commits are `fb66a39` and `a0b77bd`, and CI is green on `a0b77bd` (run 39932776608, both jobs). The second review (2026-10-23) found one defect, a readiness poll during Qdrant's half-open probe unserving the index, and fixed it on the PR with three tests ("Second review"). Once CI is green on its commits, merge it with a merge commit. |
 | **Closes** | NFR-6; DEC-9; DEC-21; SRS §2.4 (a hosted-provider fallback); SRS §11 resilience; backlog: the hosted-LLM fallback, NFR-6, the back-off after a failed index reopen |
 | **Depends on** | S3-2 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -334,6 +334,85 @@ extra.
 Not re-run: the 15 hermetic cancel tests of DEC-14 one by one (they pass in the suite), and
 the Groq check itself, which is the maintainer's key.
 
+## Second review (2026-10-23, Opus 5.5)
+
+**1 defect, fixed on the PR with three tests; S3-9's plan corrected.** Run on the PR's head,
+`a0b77bd`, with both earlier records treated as claims to check. The live Qdrant was only
+read: the alias still names `…7f20891e`. The server tests ran on a throwaway Qdrant v1.19.2
+from the compose file's digest (`review-s3-6-qdrant`, port 16333, removed afterwards), and
+the reproductions in a scratch copy of `HEAD`. The maintainer's Ollama and the Groq key were
+not used.
+
+- **Reproduced on `a0b77bd`:** ruff, format, mypy and `uv lock --check` clean, with and
+  without the extra; **1403 passed, 18 skipped, 5 xfailed**, coverage **98.45%**, the HF
+  cache empty; **1411 passed** with `--extra fallback`; the 11 `qdrant_server` tests;
+  `rag-eval check` exit 0; tier 1 0.950 / 0.796 / 0.858, the contexts digest `5a36e2f9…`,
+  IDENTICAL; CI green on the head (run 39932776608).
+- **The breaker under contention:** 300 races of 64 threads on a half-open breaker, each
+  granted exactly one probe; `abandoned()` freed exactly one successor; only the first
+  outcome counted.
+- **The Ollama timeouts are real:** the `ChatOllama` that `build_llm` makes from
+  `config.yaml` has `Timeout(connect=5, read=600, write=30, pool=30)` on its async client
+  and its sync one.
+- **Every attempt is ended, on every path,** so no probe can leak and leave a breaker
+  refusing for good: `_call` records a transient error as a failure, any other exception as
+  an answer, and a `BaseException` as abandoned; `stream_answer` judges at the first token,
+  by `_judge` on an exception, and abandons on a cancel or a `GeneratorExit`. Qdrant's
+  wrapped transport errors are classified by their `.source`; the deadline is set inside the
+  worker thread, where the `ContextVar` holds.
+- **Secrets:** an HTTP client is sent fixed text per verdict, so no provider's body
+  (OpenAI's 401 repeats a masked key) leaves the server; the key is a `SecretStr` our code
+  passes.
+- **The audit exception, today:** CI's Audit command finds exactly the eight pypdf
+  advisories and clears them with `ci.yml`'s eight ignores. The three new ones match their
+  reasons (GHSA-6vvc form fields, GHSA-cgf9 content streams, GHSA-f54x arrays and
+  dictionaries; medium, fixed in 6.21.0), and `get_fields` is reached only through itself
+  (`_build_field`, `_check_kids`) and `get_form_text_fields`, neither of which the loader
+  calls.
+- **Commits:** the eight on the PR have parseable trailers, the `!` and a
+  `BREAKING-CHANGE:` trailer on the feat commit, no body line over 72 and no attribution,
+  nor does the PR body.
+
+Findings, both fixed:
+
+1. **A readiness poll during Qdrant's half-open probe unserved a healthy index.**
+   `Serving.refresh()` drops the served index when its alias read fails, and a read the
+   breaker refused, half-open with another request's probe out, failed the same way.
+   Readiness, `/v1/documents` and every question refresh, and a supervisor polls readiness
+   while the clients told `Retry-After: 30` all come back at once. Reproduced with the
+   suite's fixtures in a scratch copy of `HEAD`, three runs of three: a poll during a slow
+   probe got 503 ("the index could not be opened just now"), the log said "Not serving an
+   index: Qdrant is not answering … Is Qdrant running?" while Qdrant answered, and the
+   probe's question paid a reopen (7 alias reads, where the fix needs 1). It healed on the
+   next request. The fix, in `api/state.py`: a refused read changes nothing, before the
+   reopen lock and under it. Under it, the first read's failure still decides when that
+   read failed against Qdrant: its three attempts are what opened the breaker. A first fix
+   that returned on every refusal hid a real outage from the log; the second test caught it.
+   The three tests in `tests/test_api.py`:
+   - `test_a_readiness_poll_during_qdrant_s_probe_keeps_the_index_served`: readiness 200
+     during the probe, the probe's answer `done`, one alias read, no warning;
+   - `test_qdrant_down_on_a_refresh_is_named_by_its_own_failure_not_the_breaker_s`: Qdrant
+     down unserves the index, and the warning is "cannot use Qdrant", where `HEAD` logged
+     the breaker's "Qdrant is not answering";
+   - `test_a_read_again_refused_under_the_reopen_lock_changes_nothing`: a refusal under the
+     lock opens and drops nothing.
+
+   Against four versions of `state.py` in the scratch copy: `HEAD` fails all three; a return
+   on every refusal fails the second; "the first read always decides" fails the third; the
+   fix passes all three.
+2. **S3-9's plan still carried five of the eight pypdf ignores** in two places, its `eval`
+   Audit step's text and its verification command, after this story's change to its prose.
+   Both now name the eight; the IDs equal `ci.yml`'s.
+
+Considered, no change: a non-probe attempt that outlives an open period can close the
+breaker before a stale probe's failure opens it again on one failure. It needs an attempt
+longer than 30 s overlapping a probe, so Ollama with `max_concurrent` above 1 only, and it
+costs one extra open period.
+
+After the fixes: ruff, format and mypy clean; **1406 passed, 18 skipped, 5 xfailed**,
+coverage **98.45%**; `rag-eval check` exit 0. Not re-run with `--extra fallback`: the fix is
+in the API's refresh, which the fallback does not touch.
+
 ## Deviation from plan
 
 - **Model:** fable-routed, run on Opus 5.5 at max effort, since Fable is unavailable
@@ -348,6 +427,8 @@ the Groq check itself, which is the maintainer's key.
 - **The S3-3 backlog line's debug-logging suggestion was not taken:** the timeout never
   reproduced, the retries absorb one, and an exhausted one now says "did not answer in time"
   (D13).
+- **The second review changed `api/state.py`** (its finding 1, with three tests) and S3-9's
+  plan (finding 2).
 - **A CI change outside the story's scope** (maintainer, 2026-10-23): the Audit step's pypdf
   exception grew by three advisories (Discovered), in a `ci(audit)` commit of its own, as
   S3-5's `ba00edc` did for the first five.

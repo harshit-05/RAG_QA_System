@@ -5,11 +5,31 @@
 
 ## Now
 
-**Next action: commit the first review's two fixes and its record, push, check `gh pr
-checks` on the new head, and merge PR #24 with a merge commit; then S3-7.** S3-6 is done
-(2026-10-23), and the first review (2026-10-23) found no blocker. CI went red on `626358d` (run 39916798730) in Audit alone,
-on three pypdf advisories published on 2026-10-22; the maintainer extended caveat 37's
-exception to them, in a `ci(audit)` commit on the PR. Check `gh pr checks` on its head.
+**Next action: once CI is green on the second review's commits, merge PR #24 with a merge
+commit; then S3-7.** S3-6 is done (2026-10-23). The first review (2026-10-23) found no
+blocker; the second (2026-10-23) found one defect and fixed it on the PR. CI is green on
+`a0b77bd`, the first review's record (run 39932776608, both jobs). It went red earlier on
+`626358d` (run 39916798730) in Audit alone, on three pypdf advisories published on
+2026-10-22; the maintainer extended caveat 37's exception to them, in a `ci(audit)` commit
+on the PR.
+
+**Second review of S3-6 (2026-10-23, on `a0b77bd`): 1 defect, fixed on the PR with three
+tests, and S3-9's plan corrected.** The live Qdrant was only read; probes ran on a
+throwaway v1.19.2, removed afterwards. Detail in the story.
+
+- **Fixed: a readiness poll during Qdrant's half-open probe unserved a healthy index.**
+  `Serving.refresh()` dropped the served index whenever its alias read failed, and a read
+  the breaker refused failed the same way. Readiness during the probe answered 503, and the
+  log said "Not serving an index … Is Qdrant running?" while Qdrant answered. A refusal now
+  changes nothing. A read that failed against Qdrant, and so opened the breaker, still
+  unserves the index, and the log names Qdrant's own error, where it named the refusal.
+- **Fixed: S3-9's plan** still carried five of the eight pypdf ignores in two places.
+- **Held:** the gates on `a0b77bd` (1403 passed, 1411 with the extra, the 11 server tests,
+  `rag-eval check` exit 0, tier 1 IDENTICAL); the breaker under 64-thread contention, one
+  probe each time; the Ollama timeouts on both of ChatOllama's clients; every attempt ended
+  on every path; the audit exception's facts today, exactly the eight.
+- **After the fix:** 1406 passed, 18 skipped, 5 xfailed, coverage 98.45%; `rag-eval check`
+  exit 0.
 
 **S3-6 (2026-10-22/23): every network call has a timeout, a safe retry and a circuit
 breaker, and an opt-in hosted fallback answers when Ollama cannot; nothing hashed moved.**
