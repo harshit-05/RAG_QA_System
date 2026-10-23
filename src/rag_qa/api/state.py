@@ -72,7 +72,7 @@ from rag_qa.components import (
     build_store,
 )
 from rag_qa.manifest import Manifest
-from rag_qa.resilience import OPEN, CircuitBreaker
+from rag_qa.resilience import OPEN, BreakerOpenError, CircuitBreaker
 from rag_qa.schema import RagConfig
 from rag_qa.vectorstore import QdrantStore, StoreError
 
@@ -92,6 +92,13 @@ REINGEST = (
 #: Why a question is refused while a breaker it needs is open (DEC-21): fixed text that names
 #: the service, never its address (DEC-18). ``Retry-After`` says when to ask again.
 STORE_DOWN = "Qdrant is not answering; ask again after Retry-After"
+
+
+def _refused(current: str | None | StoreError) -> bool:
+    """Whether reading the alias was refused by Qdrant's breaker, open or half-open with a
+    probe out, rather than failed against Qdrant: :meth:`Serving.refresh` learns nothing
+    from such a refusal."""
+    return isinstance(current, StoreError) and isinstance(current.__cause__, BreakerOpenError)
 
 
 def wait_s(seconds: float) -> int:
@@ -353,18 +360,29 @@ class Serving:
         cannot be read makes the server not-ready until one can.
 
         While Qdrant's breaker is open, it returns at once and asks nothing: the back-off
-        after a failed reopen (DEC-21). The first refresh after the wait is the probe.
+        after a failed reopen (DEC-21). The first refresh after the wait is the probe. A read
+        the breaker refuses, half-open with another request's probe out, changes nothing
+        either: the refusal says nothing new about Qdrant, so what is served stays served
+        (S3-6's second review: a readiness poll during the probe made the server not-ready).
         """
         if self.store.breaker.state == OPEN:
             return
-        current = await self._current()
-        if not isinstance(current, StoreError) and self._unchanged(current):
+        first = await self._current()
+        if _refused(first):
+            return
+        if not isinstance(first, StoreError) and self._unchanged(first):
             return
         attempts = self._reopens
         async with self._reopen_lock:
             if self._reopens != attempts:
                 return  # another request reopened it, or tried, while this one waited
             current = await self._current()
+            if _refused(current):
+                # The first read's own failures may have opened the breaker: then that
+                # failure, Qdrant's, decides. Otherwise nothing new is known.
+                if not isinstance(first, StoreError):
+                    return
+                current = first
             if isinstance(current, StoreError):
                 if not self.served.unseen:
                     logger.warning("Not serving an index: %s", current)

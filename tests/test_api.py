@@ -56,9 +56,11 @@ from langchain_core.runnables import RunnableLambda
 from langchain_ollama import ChatOllama
 from pydantic import ValidationError
 from qdrant_client import QdrantClient
+from qdrant_client.http.exceptions import ResponseHandlingException
 from starlette.datastructures import State
 from starlette.requests import Request
 
+from rag_qa import resilience
 from rag_qa.api import jobs as api_jobs
 from rag_qa.api import routes
 from rag_qa.api import state as api_state
@@ -74,7 +76,7 @@ from rag_qa.manifest import STORE, DocumentRecord, EmbedderRecord, Manifest, Spl
 from rag_qa.resilience import PROBE_WAIT_S, BreakerOpenError, CircuitBreaker, mark_fallback
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_DATA_PATH, ServerSettings
-from rag_qa.vectorstore import StoreUnavailableError
+from rag_qa.vectorstore import StoreError, StoreUnavailableError
 
 TOKEN = "s3cret"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -1377,6 +1379,121 @@ def test_a_second_question_during_a_slow_probe_is_refused_before_the_first_byte(
     assert [name for name, _ in sse_events(probe["r"].text)][-1] == "done"
     assert breaker.state == "closed"
     assert serving.slots.in_use == 0
+
+
+def test_a_readiness_poll_during_qdrant_s_probe_keeps_the_index_served(
+    scratch_config: RagConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Half-open, a question's refresh reads the alias as Qdrant's probe. A poll meanwhile
+    # finds its own read refused by the breaker: that says nothing new about Qdrant, so the
+    # index stays served. It made the server not-ready, logged "Not serving an index", and
+    # cost the probe's question a reopen (S3-6's second review).
+    ingest(scratch_config)
+    with serve(scratch_config, tmp_path) as (client, serving):
+        generation = serving.served.generation
+        assert generation is not None
+        clock = Clock()
+        breaker = CircuitBreaker("Qdrant", clock=clock)
+        monkeypatch.setattr(serving.store, "breaker", breaker)
+        open_breaker(breaker)
+        clock.now += 30  # half-open: the next request to Qdrant is the probe
+
+        aliases = serving.store.client.get_aliases
+        probing = threading.Event()
+        reads: list[float] = []
+
+        def slow_probe(*args: Any, **kwargs: Any) -> Any:  # a Qdrant still recovering
+            reads.append(time.monotonic())
+            if len(reads) == 1:
+                probing.set()
+                time.sleep(1.0)
+            return aliases(*args, **kwargs)
+
+        monkeypatch.setattr(serving.store.client, "get_aliases", slow_probe)
+        probe: dict[str, httpx.Response] = {}
+        thread = threading.Thread(
+            target=lambda: probe.update(r=client.post("/v1/query", json={"question": "probe"}))
+        )
+        with caplog.at_level(logging.WARNING, logger="rag_qa.api.state"):
+            thread.start()
+            assert probing.wait(5)  # the question's refresh holds the probe
+            ready = client.get("/v1/health")
+            thread.join()
+    assert ready.status_code == 200, ready.json()
+    assert ready.json()["index"]["generation"] == generation
+    assert probe["r"].status_code == 200
+    assert [name for name, _ in sse_events(probe["r"].text)][-1] == "done"
+    assert serving.served.generation == generation
+    assert breaker.state == "closed"
+    assert "Not serving an index" not in caplog.text
+    assert len(reads) == 1  # the probe alone: the poll's refused read was never sent
+
+
+def test_qdrant_down_on_a_refresh_is_named_by_its_own_failure_not_the_breaker_s(
+    scratch_config: RagConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A refresh's first read fails three times against a Qdrant that is down, which opens
+    # the breaker, so the read again under the reopen lock is refused. The first read's
+    # failure, Qdrant's own, decides: the index is not served, and the log says why, not
+    # that the breaker refused (S3-6's second review).
+    ingest(scratch_config)
+    monkeypatch.setattr(resilience, "backoff_s", lambda attempt: 0.0)
+    with serve(scratch_config, tmp_path) as (client, serving):
+        assert client.get("/v1/health").status_code == 200
+
+        def down(*args: Any, **kwargs: Any) -> Any:
+            raise ResponseHandlingException(httpx.ConnectError("connection refused"))
+
+        monkeypatch.setattr(serving.store.client, "get_aliases", down)
+        with caplog.at_level(logging.WARNING, logger="rag_qa.api.state"):
+            health = client.get("/v1/health")
+    assert health.status_code == 503
+    assert health.json()["index"]["detail"] == STORE_DOWN
+    assert serving.store.breaker.state == "open"
+    assert serving.served.unseen
+    assert caplog.text.count("Not serving an index: cannot use Qdrant") == 1
+    assert "Not serving an index: Qdrant is not answering" not in caplog.text
+
+
+def test_a_read_again_refused_under_the_reopen_lock_changes_nothing(
+    scratch_config: RagConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The first read found something to open, and by the read again under the reopen lock
+    # another request's probe is out. That refusal says nothing about Qdrant: nothing is
+    # opened or dropped, and the next refresh decides (S3-6's second review).
+    ingest(scratch_config)
+    with serve(scratch_config, tmp_path) as (client, serving):
+        clock = Clock()
+        breaker = CircuitBreaker("Qdrant", clock=clock)
+        monkeypatch.setattr(serving.store, "breaker", breaker)
+        stale = replace(serving.served, unseen=True)  # as if another generation were due
+        serving.served = stale
+        reopens = serving._reopens
+        read = serving._current
+
+        async def then_a_probe_goes_out() -> str | None | StoreError:
+            found = await read()
+            if breaker.state == "closed":
+                open_breaker(breaker)
+                clock.now += 30
+                breaker.allow()  # another request's probe, still out
+            return found
+
+        monkeypatch.setattr(serving, "_current", then_a_probe_goes_out)
+        with caplog.at_level(logging.WARNING, logger="rag_qa.api.state"):
+            client.get("/v1/documents")
+        assert serving.served is stale
+        assert serving._reopens == reopens
+    assert "Not serving an index" not in caplog.text
 
 
 def test_a_dropped_fallback_stream_is_reported_as_the_fallback_s() -> None:
