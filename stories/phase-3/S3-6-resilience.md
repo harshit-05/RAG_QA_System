@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | In progress (2026-10-22): the plan below was approved in plan mode on 2026-10-22, on `feat/s3-6-resilience`. |
 | **Closes** | NFR-6; DEC-9; DEC-21; SRS §2.4 (a hosted-provider fallback); SRS §11 resilience; backlog: the hosted-LLM fallback, NFR-6, the back-off after a failed index reopen |
 | **Depends on** | S3-2 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -149,6 +149,33 @@ gh pr checks
   fallback answers; with none, the refusals stand.
 - **The secret rule:** no key name, and no value from a provider's variable, in any log
   line, error or event.
+
+## Plan (approved 2026-10-22)
+
+Approved in plan mode. This section is the record to cross-check the work against; the full
+plan, with the design by module, the tests and the verification recipe, is
+`~/.claude/plans/pasted-content-id-6f69-read-claude-md-sorted-kettle.md`. A departure from it
+goes under "Deviation from plan". The provider is Groq, `openai/gpt-oss-120b` (human
+prerequisites in STATUS.md), so the story is not split.
+
+| # | Decision |
+| --- | --- |
+| D1 | **`RAG_FALLBACK_API_KEY`, the maintainer's proposal, is accepted**, amending DEC-21's "the provider's own variable". `settings.FallbackSettings` reads it, as `StoreSettings` reads `RAG_QDRANT_API_KEY`, and our code always passes it to `ChatOpenAI` as `api_key`. Without one, `ChatOpenAI` reads `OPENAI_API_KEY`, or a LangSmith gateway key when the gateway is on (langchain-openai 1.6.2, langchain-core 1.6.3's `_gateway.py`), never `GROQ_API_KEY`. A fallback configured without the variable exits 2 at start-up, naming it and never a value. `.env` stays gitignored and is loaded by the shell (`set -a; . ./.env; set +a`); a committed `.env.example` holds names only, which a hygiene test checks, and S3-9 extends. |
+| D2 | **Breakers belong to their clients:** `QdrantStore.breaker`, and the pipeline's `llm_breaker` and `fallback_breaker`. No process-wide registry; an ingest job's own store has its own. |
+| D3 | **`Done.model`** is the config reference of the model that answered, e.g. `components.llms.groq_fallback`: unambiguous, since the fallback must differ from `llm`, and how tier 2 and the CLI already name models. |
+| D4 | **Numbers, as constants in `resilience.py`:** a breaker opens after 3 consecutive failures and probes after 30 s; Qdrant gets 3 attempts, Ollama 2 (before its first token, on connection errors only), the fallback 1 (`max_retries: 0`); the back-off is full jitter, `U(0, min(4, 0.5·2^(n−1)))` s, one function that tenacity's Qdrant loop and `stream_answer`'s hand-written loop share. |
+| D5 | **What a breaker counts:** a failure is a connection error, a timeout, a 429, a 5xx or Ollama's in-stream error; any other answer, a 4xx included, is a success; a cancel or an unrelated error is no verdict, and frees a half-open probe. For a model, the first token decides, and nothing after it is judged. `resilience.classify` matches by class name and module across the MRO (httpx, httpx2, which openai 3.3.0 is built on, openai, ollama's `status_code`, the builtins) and imports none of them. |
+| D6 | **The retrieval deadline is a store setting,** `deadline_s: 15` in `config.yaml` (the store's spec is hashed nowhere), set by the retrieval halves through a `ContextVar` inside the worker thread, the sooner of two nested ones winning. The Qdrant loop stops when the next sleep would pass it, and `search()` passes the time left as `query_points(timeout=…)`, which qdrant-client 1.19.1 also uses as the request's own timeout. |
+| D7 | **A timeout is a mapping** of `connect`, `read`, `write` and `pool` seconds, all four, checked at load. Building the model turns it into its client library's `Timeout`: `httpx.Timeout` in ChatOllama's `*client_kwargs`, `openai.Timeout` (httpx2's) in ChatOpenAI's `timeout`. |
+| D8 | **The fallback entry,** once `pipeline.query.fallback_llm` names it, must be another llms entry than `llm`, on `langchain_openai.ChatOpenAI`, with a `base_url` (where the chunks go), `max_retries: 0` and a `timeout`; checked at load. |
+| D9 | **The fallback gets an HTTP client of its own** (`openai.DefaultAsyncHttpxClient`, imported lazily). langchain-openai 1.6.2 caches its default async client per base URL and timeout (`lru_cache`), shared by every instance, so closing one would close it for all. `aclose_llm` learns `ChatOpenAI.root_async_client`. |
+| D10 | **`rag-eval generate`** runs the start-up check, so a stopped Ollama exits 2 naming it rather than with a traceback, and never builds the fallback. |
+| D11 | **Refusing `api_key` and `*_api_key` keys in `components` is a config contract change:** the feat commit carries `!` and a `BREAKING-CHANGE:` trailer, as S2-4's allowlist cut did. |
+| D12 | **Dependencies:** `tenacity>=9.1.4` (locked already); `httpx>=0.28.1` becomes a runtime dependency, since `src` imports it, and its dev-group line goes; the `fallback` extra is `langchain-openai>=1,<2`, the bound the other LangChain packages carry. Re-locked without `--upgrade`, so pypdf stays at 6.19.0 (caveat 37). |
+| D13 | **S3-3's backlog line**, a read timeout with Qdrant up, is covered by the retries. When every attempt times out, the error says that Qdrant did not answer in time, not only "Is Qdrant running?". |
+
+**Commits**, on `feat/s3-6-resilience`: this record (with S3-5's merge); the dependencies;
+the feature (`feat(resilience)!`); the docs; the close-out record.
 
 ## Discovered
 
