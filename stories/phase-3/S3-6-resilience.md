@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done (2026-10-23): PR #24 on `feat/s3-6-resilience`. `97cb2b6` S3-5's merge and this plan; `81af84d` the dependencies; `2269a2c` the feature (breaking: an `api_key` in a component); `626358d` the docs; the `ci(audit)` commit extending the pypdf exception, and this record. Verification 1–14 run and shown below, all as expected; the one real check ran against Groq on 2026-10-23. CI went red on `626358d` (run 39916798730) in Audit alone, on three pypdf advisories published on 2026-10-22: the maintainer extended caveat 37's exception (Discovered). On Opus 5.5 at max effort (Deviation). |
+| **Status** | Reviewed (2026-10-23): PR #24 on `feat/s3-6-resilience`. `97cb2b6` S3-5's merge and this plan; `81af84d` the dependencies; `2269a2c` the feature (breaking: an `api_key` in a component); `626358d` the docs; the `ci(audit)` commit extending the pypdf exception, and this record. Verification 1–14 run and shown below, all as expected; the one real check ran against Groq on 2026-10-23. CI went red on `626358d` (run 39916798730) in Audit alone, on three pypdf advisories published on 2026-10-22: the maintainer extended caveat 37's exception (Discovered). On Opus 5.5 at max effort (Deviation). The first review (2026-10-23) found no blocker and fixed two things on the PR ("First review"). |
 | **Closes** | NFR-6; DEC-9; DEC-21; SRS §2.4 (a hosted-provider fallback); SRS §11 resilience; backlog: the hosted-LLM fallback, NFR-6, the back-off after a failed index reopen |
 | **Depends on** | S3-2 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -263,6 +263,76 @@ the feature (`feat(resilience)!`); the docs; the close-out record.
 - **A dropped answer is a cut-off chunked body:** a fake Ollama speaking HTTP/1.0 ends a body
   by closing the connection, which the client reads as a clean end. The test's fake speaks
   HTTP/1.1 with chunked transfer.
+
+## First review (2026-10-23)
+
+Run by the first reviewer on the PR's head, `d6671a7`, with a throwaway Qdrant (v1.19.2 by
+the compose file's digest), a local fake OpenAI-compatible server with failure modes, and a
+dead port for a stopped Ollama. The maintainer's Ollama, their Qdrant (read-only) and the
+Groq key were not used. Reproduced:
+
+- ruff, format and mypy clean; **1394 passed, 18 skipped, 5 xfailed**, coverage **98.44%**;
+  **1402 passed** with `--extra fallback`; the 11 server tests pass; `rag-eval check` exit 0;
+  the contexts file identical to S3-2's (`5a36e2f9…`); `uv.lock` moves only the project's own
+  metadata.
+- **The CI exception, extended:** the three GHSA IDs were published 2026-10-22 16:49 UTC,
+  after `main`'s last green run (07:07 UTC); Audit without the ignores finds exactly 8 pypdf
+  advisories and with them "No known vulnerabilities found, 8 ignored"; `get_fields` is called
+  only by itself and `get_form_text_fields`; the expiry stays 2027-01-20.
+- **Through the real httpx, ollama and openai stacks** (`rag-query` and `rag-serve` on the
+  live index, read-only), Ollama on a dead port:
+  - the fallback answers and is named; the server received `RAG_FALLBACK_API_KEY`'s value,
+    never `OPENAI_API_KEY`'s (D1), and the chunks;
+  - a 401 names the variable and no value, and is not retried; four questions against a 500
+    reach the server 3 times, the 4th refused by the breaker ("29 s"); a hang times out after
+    one request; a stream cut mid-answer is not retried or routed; no fallback is configured:
+    exit 2 in 2 s;
+  - over HTTP: `done` carries `components.llms.groq_fallback`, health reports `qdrant`, `llm`
+    and `fallback`, the log names the fallback answer; a client dropped mid-fallback leaves 1
+    socket to the provider while streaming and 0 within 0.4 s, "Answer cancelled", and the
+    slot free for the next question;
+  - no key value in any CLI output, server log or response (0 hits, unfiltered); a refused
+    `api_key` does not echo its value.
+- **The tier-2 fingerprint:** the Ollama timeouts, `deadline_s`, `timeout_s`, `fallback_llm`
+  and edits to the fallback's entry move no part; `num_predict` moves `query`, so the probe
+  can fail.
+
+Findings, none a blocker:
+
+1. **A second question during a half-open probe was let in** (fixed). `Serving.unavailable()`
+   refused only an `OPEN` breaker, so with the probe out (`retry_after_s` 0.0; yours took
+   168 s, and the read timeout allows 600) a second question took a slot, ran a retrieval and
+   a rerank, streamed `sources` and ended in `error: Ollama is not answering`, with HTTP 200.
+   `CircuitBreaker.refusal_s()` now says how long an attempt would be refused: the wait while
+   open, and `PROBE_WAIT_S` (5 s) while half-open with the probe out. `unavailable()` uses it,
+   so that question gets the 503 with `Retry-After` before any retrieval. The first question
+   after the wait still goes through: it is the probe.
+2. **A dropped fallback stream was blamed on Ollama** (fixed). The fallback's stream raises
+   its HTTP client's own errors (httpx2's), which `raised_by_fallback` could not tell from
+   Ollama's: `rag-query` printed "the connection to Ollama failed… Is Ollama running?" and the
+   API "the language model is unreachable". `stream_answer` now marks an error raised by the
+   fallback's stream (`resilience.mark_fallback`), and `raised_by_fallback` reads the mark.
+   Re-run on the real stack: "the hosted fallback failed (RemoteProtocolError: …)".
+3. **The retrieval deadline is not a hard bound** (backlog). Measured against a socket that
+   accepts and never answers: a search honours `deadline_s: 15` (15.4 s), but the alias read
+   inside the same deadline takes 20.2 s, since only `search` trims its request's timeout;
+   the start-up check takes 31 s before exit 2.
+4. **The no-secrets rule is name-based** (backlog). `default_headers` with `Authorization` or
+   `x-api-key`, a hyphenated `api-key`, `token`, and a plain `http://` remote `base_url` all
+   load.
+
+**The fixes, and their tests** (9 added): `test_it_refuses_while_open_and_while_its_probe_is_out`,
+`test_an_abandoned_probe_stops_the_refusal`, and two on the mark (`test_resilience.py`); two on
+which errors are marked (`test_answering.py`); `test_a_dropped_fallback_stream_is_the_fallback_s_not_ollama_s`
+(`test_cli.py`); `test_a_second_question_during_a_slow_probe_is_refused_before_the_first_byte`
+and `test_a_dropped_fallback_stream_is_reported_as_the_fallback_s` (`test_api.py`). Each fix was
+broken in turn (the `OPEN`-only check back, the mark not made, the mark not read): the new
+tests failed each time, and the files were restored by checksum. After: ruff, format and mypy
+clean; **1403 passed, 18 skipped, 5 xfailed**, coverage **98.45%**; **1411 passed** with the
+extra.
+
+Not re-run: the 15 hermetic cancel tests of DEC-14 one by one (they pass in the suite), and
+the Groq check itself, which is the maintainer's key.
 
 ## Deviation from plan
 

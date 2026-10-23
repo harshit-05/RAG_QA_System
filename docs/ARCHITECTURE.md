@@ -2466,8 +2466,12 @@ _As built in S3-6 (2026-10-22), from its approved plan (the story's "Plan", D1â€
   loaded by the shell, may hold it, and `.env.example` names it.
 - **Breakers belong to their clients** (D2): `QdrantStore.breaker`, and the pipeline's
   `llm_breaker` and `fallback_breaker`. A breaker opens after 3 consecutive failed attempts
-  and probes after 30 s, one probe at a time. A failure is a connection error, a timeout, a
-  429 or a 5xx; any other answer counts as a success, and a cancel as no verdict.
+  and probes after 30 s, one probe at a time. While the probe is out the API refuses other
+  questions as it does while open, with `Retry-After: 5`, before any retrieval
+  (`CircuitBreaker.refusal_s`; S3-6's first review). A failure is a connection error, a
+  timeout, a 429 or a 5xx; any other answer counts as a success, and a cancel as no verdict.
+  An error raised by the fallback's stream is marked as its own, since its HTTP client's
+  errors look like Ollama's (`resilience.mark_fallback`).
   `resilience.classify` matches errors by class name and module, for httpx, httpx2 (openai
   3.3.0 is built on it), openai, ollama and the builtins, without importing them (D5).
 - **Qdrant:** each request is tried up to 3 times through tenacity, with a full-jitter

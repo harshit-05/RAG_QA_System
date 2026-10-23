@@ -5,8 +5,9 @@
 
 ## Now
 
-**Next action: once CI is green on this record, merge PR #24 with a merge commit; then
-S3-7.** S3-6 is done (2026-10-23). CI went red on `626358d` (run 39916798730) in Audit alone,
+**Next action: commit the first review's two fixes and its record, push, check `gh pr
+checks` on the new head, and merge PR #24 with a merge commit; then S3-7.** S3-6 is done
+(2026-10-23), and the first review (2026-10-23) found no blocker. CI went red on `626358d` (run 39916798730) in Audit alone,
 on three pypdf advisories published on 2026-10-22; the maintainer extended caveat 37's
 exception to them, in a `ci(audit)` commit on the PR. Check `gh pr checks` on its head.
 
@@ -32,7 +33,8 @@ breaker, and an opt-in hosted fallback answers when Ollama cannot; nothing hashe
 - **Parity:** `rag-eval check` exit 0, all six parts ok; the contexts file IDENTICAL to
   S3-2's (`5a36e2f9…`); tier 1 0.950 / 0.796 / 0.858.
 - **The suite:** 1391 passed, 18 skipped, 5 xfailed, coverage 98.30% (3 tests added after);
-  1399 passed with the extra installed; the 11 server tests passed.
+  1399 passed with the extra installed; the 11 server tests passed. After the first review:
+  1403 passed, coverage 98.45%, and 1411 with the extra.
 - **The one real check (2026-10-23), against Groq, Ollama stopped:**
   - `rag-query` warned at start-up and answered from the fallback, with the line under each
     answer; Ctrl-C mid-answer left nothing printed after it.
@@ -52,6 +54,15 @@ breaker, and an opt-in hosted fallback answers when Ollama cannot; nothing hashe
   Detail in the story.
 - **On Opus 5.5 at max effort,** where the story routes to Fable. The plan is in the story
   ("Plan"), approved in plan mode.
+- **First review (2026-10-23):** the gates and the contexts digest reproduced, and the
+  resilience paths ran through the real client stacks against a local fake provider, with
+  Ollama on a dead port: the fallback's key, 401, repeated 500s into the breaker, a hang, a
+  cut stream, and a client dropped mid-fallback (the socket gone within 0.4 s). Four
+  findings. **Fixed on the PR:** a second question during a half-open probe is refused with
+  a 503 before any retrieval (it had streamed `sources` and ended in an `error` event), and
+  a dropped fallback stream is reported as the fallback's, not Ollama's. **Backlog:** the
+  15 s retrieval deadline overshoots on the alias read (20 s, measured), and the
+  no-secrets rule is name-based. Detail in the story.
 
 **S3-5 is merged** (2026-10-22, PR #23, merge commit `1815e00`). CI was green on the PR's
 last head, `668ff3f`, the second review's record (run 39736904527), and is green on `main`
@@ -1660,6 +1671,21 @@ diffed this backlog against `main`'s: no line was dropped.
   in S3-4's first review). When every file is above the limit, the run exits 1 with "No
   documents were loaded."; the cause is only in the log lines above it. The line is shared
   with the API's job report, so the wording is a small contract. Cosmetic; no hashed input.
+
+- **S3-7 or S3-9 — the retrieval deadline is not a hard bound** (found in S3-6's first
+  review). Only `search` trims its request's timeout to what the deadline has left, so a
+  retrieval's alias read against a Qdrant that accepts and never answers takes 20.2 s
+  under `deadline_s: 15` (two attempts of `timeout_s: 10`), and `rag-query`'s start-up check
+  takes 31 s before exit 2. Bounded, and the retrieval lock is held that long. Trim every
+  request's timeout inside a deadline, or state the bound as the deadline plus `timeout_s`.
+
+- **S3-8 — the config's no-secrets rule is name-based** (found in S3-6's first review).
+  `Components.check_api_keys` refuses `api_key` and `*_api_key`, in any case and depth.
+  `default_headers: {Authorization: …}` or `{x-api-key: …}`, a hyphenated `api-key` and
+  `token` load, and so does a plain `http://` remote `base_url`, which sends the fallback's
+  key and the retrieved chunks in clear. Normalise hyphens, refuse those header names, and
+  require `https` unless the host is loopback; or say in the docs that the rule is
+  best-effort. A config the maintainer writes, so not urgent.
 
 - **S3-8 — the Qdrant URL in an ingest job's error text** (found in S3-2's second review).
   `describe_error` passes `cannot use Qdrant at http://host:6333 (…)` through to
