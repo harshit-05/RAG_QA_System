@@ -12,6 +12,7 @@ import dataclasses
 import re
 import signal
 import socket
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +24,7 @@ from conftest import (
     FakeOllama,
     MakeConfig,
     StreamingFakeChatModel,
+    openai_error,
     use_fakes,
     use_fakes_and_reranker,
 )
@@ -36,9 +38,11 @@ from pydantic import Field
 from qdrant_client import QdrantClient
 
 from rag_qa import cli, vectorstore
+from rag_qa.answering import Done, Token
 from rag_qa.chain import QueryPipeline, RetrievalQuery
 from rag_qa.cli import EXIT_CANNOT_START, EXIT_OK, HF_CACHE_HINT, describe_failure, repl
 from rag_qa.components import OLLAMA_HINT
+from rag_qa.resilience import BreakerOpenError, mark_fallback
 from rag_qa.vectorstore import QDRANT_HINT, StoreError, StoreUnavailableError
 
 CTRL_C = "ctrl-c"  # script: the user presses Ctrl-C once, mid-answer
@@ -699,3 +703,133 @@ def test_ctrl_c_during_the_start_up_ping_exits_2_without_a_traceback(
     assert "Interrupted while loading" in capsys.readouterr().err
     assert len(closed) == 1  # the checked model's clients were still closed
     assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+
+
+# --- the hosted fallback (S3-6, DEC-21) ---------------------------------------------------
+
+FALLBACK = "components.llms.groq_fallback"
+
+
+def fallback_config(make_config: MakeConfig, base_url: str) -> Path:
+    """:func:`probe_config`'s, with the real config's hosted fallback set."""
+
+    def edit(c: dict[str, Any]) -> None:
+        use_fakes(c)
+        c["components"]["llms"]["probe"] = {
+            "_target_": "langchain_ollama.ChatOllama",
+            "model": "mistral",
+            "base_url": base_url,
+            "validate_model_on_init": True,
+        }
+        c["pipeline"]["query"]["llm"] = "components.llms.probe"
+        c["pipeline"]["query"]["fallback_llm"] = FALLBACK
+
+    return make_config(edit)
+
+
+def test_with_a_fallback_ollama_down_at_start_up_is_a_warning_and_the_fallback_answers(
+    fake_rag: Path, make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    # DEC-21, design review 1: Ollama down is the fallback's case, so it cannot stop the
+    # start. Its model is built without asking Ollama, and the fallback answers.
+    spare = StreamingFakeChatModel(tokens=["Spare."])
+    monkeypatch.setattr("rag_qa.components.build_fallback_llm", lambda config: spare)
+    monkeypatch.setattr("rag_qa.chain.build_fallback_llm", lambda config: spare)
+    monkeypatch.setattr("builtins.input", scripted("a question"))
+    assert cli.main(["--config", str(fallback_config(make_config, dead_url()))]) == EXIT_OK
+    out, err = capsys.readouterr()
+    assert (
+        f"Warning: the language model components.llms.probe did not answer within 2 s. Until "
+        f"it does, the hosted fallback {FALLBACK} answers, and each question and its retrieved "
+        f"chunks are sent to https://api.groq.com/openai/v1." in err
+    )
+    assert OLLAMA_HINT in err
+    assert f"When Ollama cannot answer, the hosted fallback {FALLBACK} does" in out
+    assert "Spare." in out
+    assert f"(answered by the hosted fallback, {FALLBACK})" in out
+
+
+def test_with_a_fallback_and_no_key_the_session_does_not_start(
+    fake_rag: Path, make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    monkeypatch.setattr(cli, "build_query_pipeline", _pipeline_must_not_be_built)
+    path = fallback_config(make_config, dead_url())
+    assert cli.main(["--config", str(path)]) == EXIT_CANNOT_START
+    assert (
+        f"Error: the hosted fallback {FALLBACK} needs its API key in RAG_FALLBACK_API_KEY, "
+        f"which is not set." in capsys.readouterr().err
+    )
+
+
+def test_with_the_key_but_not_the_extra_the_session_says_how_to_install_it(
+    fake_rag: Path, make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    monkeypatch.setenv("RAG_FALLBACK_API_KEY", "gsk-sentinel-value")
+    monkeypatch.setitem(sys.modules, "openai", None)  # as without `uv sync --extra fallback`
+    monkeypatch.setattr(cli, "build_query_pipeline", _pipeline_must_not_be_built)
+    assert (
+        cli.main(["--config", str(fallback_config(make_config, dead_url()))]) == EXIT_CANNOT_START
+    )
+    err = capsys.readouterr().err
+    assert "install it with `uv sync --extra fallback`" in err
+    assert "gsk-sentinel-value" not in err
+
+
+def test_the_line_under_an_answer_names_the_fallback_only_when_it_answered(capsys: Any) -> None:
+    async def events(model: str) -> AsyncIterator[Any]:
+        yield Token("An answer.")
+        yield Done(ttft_ms=1.0, total_ms=2.0, model=model)
+
+    asyncio.run(cli.render(events(FALLBACK), fallback=FALLBACK))
+    assert f"(answered by the hosted fallback, {FALLBACK})" in capsys.readouterr().out
+    asyncio.run(cli.render(events("components.llms.mistral_ollama"), fallback=FALLBACK))
+    assert "answered by" not in capsys.readouterr().out
+
+
+def test_a_dropped_fallback_stream_is_the_fallback_s_not_ollama_s() -> None:
+    # httpx's error, as the fallback's stream raises it: marked by the answer that read it.
+    ollama = ChatOllama(model="mistral", base_url=dead_url())
+    error = httpx.RemoteProtocolError("peer closed connection")
+    unmarked = describe_failure(error, ollama)
+    assert unmarked.startswith("the connection to Ollama failed") and OLLAMA_HINT in unmarked
+    mark_fallback(error)
+    said = describe_failure(error, ollama)
+    assert said == "the hosted fallback failed (RemoteProtocolError: peer closed connection)"
+
+
+@pytest.mark.parametrize(
+    ("error", "said"),
+    [
+        (
+            BreakerOpenError("Ollama", 12.0, 3),
+            (
+                "Ollama is not answering: 3 attempts in a row failed, so it is not asked again "
+                f"for 12 s\n{OLLAMA_HINT}"
+            ),
+        ),
+        (
+            BreakerOpenError("the hosted fallback", 5.0, 3),
+            (
+                "the hosted fallback is not answering: 3 attempts in a row failed, so it is "
+                "not asked again for 5 s"
+            ),
+        ),
+        (
+            openai_error("APIConnectionError")("Connection error."),
+            "the hosted fallback failed (APIConnectionError: Connection error.)",
+        ),
+        (
+            openai_error("AuthenticationError", status_code=401)("Invalid API Key"),
+            (
+                "the hosted fallback failed (AuthenticationError: Invalid API Key)\n"
+                "Check RAG_FALLBACK_API_KEY."
+            ),
+        ),
+    ],
+    ids=["ollama's breaker", "the fallback's breaker", "fallback unreachable", "key refused"],
+)
+def test_a_breaker_s_refusal_and_the_fallback_s_errors_say_whose_they_are(
+    error: Exception, said: str
+) -> None:
+    ollama = ChatOllama(model="mistral", base_url=dead_url())
+    assert describe_failure(error, ollama) == said

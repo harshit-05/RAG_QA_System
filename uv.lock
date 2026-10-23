@@ -1939,6 +1939,7 @@ source = { editable = "." }
 dependencies = [
     { name = "docx2txt" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "langchain-core" },
     { name = "langchain-huggingface" },
     { name = "langchain-ollama" },
@@ -1950,6 +1951,7 @@ dependencies = [
     { name = "qdrant-client" },
     { name = "requests" },
     { name = "sentence-transformers" },
+    { name = "tenacity" },
     { name = "uvicorn" },
 ]
 
@@ -1958,6 +1960,9 @@ eval = [
     { name = "instructor" },
     { name = "openai" },
     { name = "ragas" },
+]
+fallback = [
+    { name = "langchain-openai" },
 ]
 
 [package.dev-dependencies]
@@ -1969,7 +1974,6 @@ cuda = [
     { name = "torch", version = "2.14.1+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" } },
 ]
 dev = [
-    { name = "httpx" },
     { name = "mypy" },
     { name = "pip-audit" },
     { name = "pytest" },
@@ -1982,10 +1986,12 @@ dev = [
 requires-dist = [
     { name = "docx2txt", specifier = ">=0.9" },
     { name = "fastapi", specifier = ">=0.135" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "instructor", marker = "extra == 'eval'", specifier = ">=1.17" },
     { name = "langchain-core", specifier = ">=1,<2" },
     { name = "langchain-huggingface", specifier = ">=1,<2" },
     { name = "langchain-ollama", specifier = ">=1,<2" },
+    { name = "langchain-openai", marker = "extra == 'fallback'", specifier = ">=1,<2" },
     { name = "langchain-text-splitters", specifier = ">=1,<2" },
     { name = "openai", marker = "extra == 'eval'", specifier = ">=1" },
     { name = "pydantic", specifier = ">=2.11" },
@@ -1996,15 +2002,15 @@ requires-dist = [
     { name = "ragas", marker = "extra == 'eval'", specifier = ">=0.4" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "sentence-transformers", specifier = ">=5" },
+    { name = "tenacity", specifier = ">=9.1.4" },
     { name = "uvicorn", specifier = ">=0.32.1" },
 ]
-provides-extras = ["eval"]
+provides-extras = ["eval", "fallback"]
 
 [package.metadata.requires-dev]
 cpu = [{ name = "torch", specifier = ">=2.6", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "rag-qa-system", group = "cpu" } }]
 cuda = [{ name = "torch", specifier = ">=2.6", index = "https://download.pytorch.org/whl/cu130", conflict = { package = "rag-qa-system", group = "cuda" } }]
 dev = [
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "mypy", specifier = ">=1.17" },
     { name = "pip-audit", specifier = ">=2.10.1" },
     { name = "pytest", specifier = ">=8" },

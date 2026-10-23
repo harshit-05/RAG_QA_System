@@ -31,9 +31,25 @@ stop generation therefore cancel the consuming task. In the API that is Starlett
 disconnect handling, which cancels the response stream that ``stream_answer`` runs inside
 (DEC-18): never a separate task, which a disconnect would not reach.
 
-Dependency direction: ``answering → chain``. Imports no front end.
+**Retries, breakers and the hosted fallback** (NFR-6, DEC-21, S3-6). Each model has a
+breaker (:class:`~rag_qa.resilience.CircuitBreaker`), and the first token judges an attempt:
+once one has arrived, the service answered, and nothing after it is retried or routed, since
+a repeat would duplicate text. Before it:
+
+- a failed connection is tried once more, after a back-off, then the next model;
+- a timeout, or an answer that the service cannot serve now (5xx), is the answer's error: it
+  counts against the breaker, and is neither repeated nor routed;
+- an open breaker sends the answer to the next model at once.
+
+The next model is the hosted fallback, when the pipeline has one. Its stream is read exactly
+as the first one's, in this same task, behind the same ``finally``: never through
+``.with_fallbacks()``, whose wrapper would put back the Runnable machinery this module
+avoids. :class:`Done` names the model that answered.
+
+Dependency direction: ``answering → {chain, resilience}``. Imports no front end.
 """
 
+import asyncio
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import suppress
@@ -42,8 +58,10 @@ from pathlib import Path
 from typing import cast
 
 from langchain_core.documents import Document
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessageChunk
 
+from rag_qa import resilience
 from rag_qa.chain import (
     NoIndexError,
     QueryPipeline,
@@ -52,6 +70,7 @@ from rag_qa.chain import (
     format_docs,
     page_label,
 )
+from rag_qa.resilience import Attempt, BreakerOpenError, CircuitBreaker
 
 
 @dataclass(frozen=True)
@@ -82,10 +101,13 @@ class Token:
 @dataclass(frozen=True)
 class Done:
     """The answer is complete. Times are from the question to the first token
-    (``None`` when no token came) and to the end, in milliseconds."""
+    (``None`` when no token came) and to the end, in milliseconds. ``model`` is the config
+    reference of the model that answered: ``pipeline.query.llm``'s, or the hosted
+    fallback's (S3-6)."""
 
     ttft_ms: float | None
     total_ms: float
+    model: str
 
 
 AnswerEvent = Sources | Token | Done
@@ -126,6 +148,43 @@ def _ms_since(start: float) -> float:
     return (time.perf_counter() - start) * 1000
 
 
+@dataclass(frozen=True)
+class _Model:
+    """A model an answer may stream from, as :func:`stream_answer` tries them."""
+
+    llm: BaseChatModel
+    ref: str  # its config reference, which Done names when it answers
+    breaker: CircuitBreaker
+    attempts: int  # tries before its first token, each after a failed connection
+    fallback: bool = False  # the hosted fallback: its errors are marked as such
+
+
+def _models(pipeline: QueryPipeline) -> list[_Model]:
+    """The pipeline's model, then its hosted fallback when it has one (DEC-21)."""
+    models = [_Model(pipeline.llm, pipeline.llm_ref, pipeline.llm_breaker, resilience.LLM_ATTEMPTS)]
+    if pipeline.fallback_llm is not None:
+        models.append(
+            _Model(
+                pipeline.fallback_llm,
+                pipeline.fallback_ref,
+                pipeline.fallback_breaker,
+                resilience.FALLBACK_ATTEMPTS,
+                fallback=True,
+            )
+        )
+    return models
+
+
+def _judge(tried: Attempt, verdict: str | None) -> None:
+    """Record what an attempt that failed before its first token says about its service."""
+    if verdict in resilience.FAILED:
+        tried.failed()
+    elif verdict == resilience.ANSWERED:  # it answered, refusing the request itself
+        tried.succeeded()
+    else:  # an error of the request's own, or ours: nothing learned about the service
+        tried.abandoned()
+
+
 async def stream_answer(
     pipeline: QueryPipeline, question: str, *, sources: Sequence[str] = ()
 ) -> AsyncIterator[AnswerEvent]:
@@ -137,6 +196,11 @@ async def stream_answer(
     cancelled stream ends with ``CancelledError``, not ``Done``; other errors propagate to
     the front end, which renders them. Empty text chunks are dropped, so ``ttft_ms`` times
     the first visible token (the figure NFR-2 sets a target for).
+
+    Before its first token, an answer is retried after a failed connection, then routed to
+    the hosted fallback, as the module docstring says. When no model can answer, the error
+    raised is the last one, or :class:`~rag_qa.resilience.BreakerOpenError` when the last
+    model's breaker refused it.
     """
     if pipeline.retrieve is None:
         raise NoIndexError("no index yet: ingest the corpus first")
@@ -153,30 +217,59 @@ async def stream_answer(
     # The prompt is rendered here and the model itself is streamed, in this task: never
     # through a Runnable sequence, whose per-chunk tasks would let a cancel miss the
     # model's read (module docstring). format_messages is what the sequence's prompt step
-    # runs, so the model gets the same messages, as test_chain checks. astream is an async
-    # generator; the cast exposes aclose(), which the AsyncIterator annotation hides.
+    # runs, so the model gets the same messages, as test_chain checks.
     messages = pipeline.prompt.format_messages(context=format_docs(docs), question=question)
-    stream = cast(AsyncGenerator[AIMessageChunk, None], pipeline.llm.astream(messages))
-    try:
-        async for chunk in stream:
-            # What StrOutputParser yields for a chunk: its text blocks, joined. str(),
-            # because .text is a str subclass kept callable for compatibility.
-            text = str(chunk.text)
-            if not text:
-                continue
-            if ttft_ms is None:
-                ttft_ms = _ms_since(start)
-            yield Token(text)
-    finally:
-        # A cancel lands inside the model's own read and unwinds every frame down to the
-        # HTTP response before it reaches us: that is the path that stops generation at
-        # once (the CLI's Ctrl-C, Starlette's disconnect). This aclose() covers the other
-        # ending, a consumer that stops at a `yield`. It closes the chat model's own
-        # generator; langchain-core 1.6.3 iterates the provider's generator with
-        # `async for` and never closes it, so the loop's finalizer closes that one a
-        # loop iteration or two later.
-        # A failure to close must not replace the error that ended the stream (the
-        # model's own, say). BaseException, so a cancel, still gets through.
-        with suppress(Exception):
-            await stream.aclose()
-    yield Done(ttft_ms=ttft_ms, total_ms=_ms_since(start))
+    failure: Exception = RuntimeError("no model was asked")
+    for model in _models(pipeline):
+        for attempt in range(1, model.attempts + 1):
+            if attempt > 1:  # after a failed connection: the same model, once more
+                await asyncio.sleep(resilience.backoff_s(attempt - 1))
+            try:
+                tried = model.breaker.allow()
+            except BreakerOpenError as e:
+                failure = e
+                break  # this model is out for now: the next one, if there is one
+            # astream is an async generator; the cast exposes aclose(), which the
+            # AsyncIterator annotation hides.
+            stream = cast(AsyncGenerator[AIMessageChunk, None], model.llm.astream(messages))
+            try:
+                async for chunk in stream:
+                    # What StrOutputParser yields for a chunk: its text blocks, joined.
+                    # str(), because .text is a str subclass kept callable for compatibility.
+                    text = str(chunk.text)
+                    if not text:
+                        continue
+                    if ttft_ms is None:
+                        ttft_ms = _ms_since(start)
+                        tried.succeeded()  # the first token: the service answered
+                    yield Token(text)
+            except Exception as e:
+                if model.fallback:  # its HTTP errors look like Ollama's: say whose they are
+                    resilience.mark_fallback(e)
+                if ttft_ms is not None:
+                    raise  # after the first token: never repeated, never routed
+                verdict = resilience.classify(e)
+                _judge(tried, verdict)
+                if verdict != resilience.CONNECTION:
+                    raise  # a timeout or an error answer: no retry, no fallback (DEC-21)
+                failure = e
+                continue  # the same model once more, or the next one
+            except BaseException:
+                tried.abandoned()  # a cancel: nothing learned about the service
+                raise
+            finally:
+                # A cancel lands inside the model's own read and unwinds every frame down
+                # to the HTTP response before it reaches us: that is the path that stops
+                # generation at once (the CLI's Ctrl-C, Starlette's disconnect). This
+                # aclose() covers the other ending, a consumer that stops at a `yield`. It
+                # closes the chat model's own generator; langchain-core 1.6.3 iterates the
+                # provider's generator with `async for` and never closes it, so the loop's
+                # finalizer closes that one a loop iteration or two later.
+                # A failure to close must not replace the error that ended the stream (the
+                # model's own, say). BaseException, so a cancel, still gets through.
+                with suppress(Exception):
+                    await stream.aclose()
+            tried.succeeded()  # an answer with no text at all; a no-op after a token
+            yield Done(ttft_ms=ttft_ms, total_ms=_ms_since(start), model=model.ref)
+            return
+    raise failure

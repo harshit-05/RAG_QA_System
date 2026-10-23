@@ -98,6 +98,13 @@ components:
     #       10              167.6 s          175.4 s
     # The answers were identical at all three. num_thread is hashed into the tier-2
     # fingerprint's query part, so a change marks the committed run stale.
+    # client_kwargs.timeout bounds each phase of a request to Ollama, in seconds (NFR-6,
+    # DEC-21): 5 to connect, so a stopped Ollama is a fast refusal; 600 to read, which must
+    # outlast a silent prompt evaluation (about 170 s here at num_thread 10, 250 s at 2,
+    # and minutes more queued behind an abandoned one, caveats 3 and 21); 30 to send the
+    # prompt, or to wait for a pooled connection, which take milliseconds on this host.
+    # Like validate_model_on_init, these choose how a model runs, not what it answers, so
+    # tier 2 does not hash them.
     mistral_ollama:
       _target_: langchain_ollama.ChatOllama
       model: "mistral"
@@ -106,6 +113,8 @@ components:
       num_predict: 512
       num_thread: 10
       validate_model_on_init: true
+      client_kwargs:
+        timeout: {connect: 5, read: 600, write: 30, pool: 30}
     # DEC-2 light fallback (2.2 GB vs mistral's ~5 GB resident). Use it when free
     # memory is tight: point pipeline.query.llm here. Same settings otherwise.
     phi3_ollama:
@@ -116,6 +125,8 @@ components:
       num_predict: 512
       num_thread: 10
       validate_model_on_init: true
+      client_kwargs:
+        timeout: {connect: 5, read: 600, write: 30, pool: 30}
     # Kept for the DEC-2 revisit once the eval harness exists (Phase 2).
     # Not pulled on this host: enabling this without `ollama pull qwen2:7b`
     # fails fast at construction thanks to validate_model_on_init.
@@ -127,6 +138,30 @@ components:
       num_predict: 512
       num_thread: 10
       validate_model_on_init: true
+      client_kwargs:
+        timeout: {connect: 5, read: 600, write: 30, pool: 30}
+    # The hosted fallback (DEC-21, S3-6): an OpenAI-compatible provider that answers only
+    # when Ollama cannot, because its breaker is open or it refused the connection before
+    # its first token. Off: pipeline.query.fallback_llm below names nothing. When it
+    # answers, the question and its retrieved chunks are sent to base_url, and the answer's
+    # done event names this entry. It needs `uv sync --extra fallback`, and its API key in
+    # RAG_FALLBACK_API_KEY: never in this file, which refuses any key named *api_key.
+    # Tier 2 never uses it, and does not hash it.
+    # Groq's gpt-oss-120b is a reasoning model: reasoning_effort low keeps its reasoning
+    # short, include_reasoning false (Groq's own parameter, hence extra_body) keeps it out
+    # of the reply, and its reasoning tokens count against max_completion_tokens.
+    # max_retries 0, and a timeout, so its breaker sees every failure: the OpenAI SDK
+    # otherwise retries twice on its own, with a 600 s timeout.
+    groq_fallback:
+      _target_: langchain_openai.ChatOpenAI
+      model: "openai/gpt-oss-120b"
+      base_url: "https://api.groq.com/openai/v1"
+      temperature: 0
+      max_completion_tokens: 1024
+      reasoning_effort: low
+      extra_body: {include_reasoning: false}
+      max_retries: 0
+      timeout: {connect: 5, read: 60, write: 30, pool: 30}
 
   sparse_encoders:
     # BM25 sparse vectors, for hybrid retrieval (DEC-20): our own encoder, no model and no
@@ -198,11 +233,16 @@ components:
     # RAG_QDRANT_URL and RAG_QDRANT_COLLECTION override these two; a scratch index is
     # another collection. The API key, once there is one (S3-9), comes from
     # RAG_QDRANT_API_KEY only, never from this file.
+    # timeout_s bounds each request. A request that gets no answer, or a 5xx, is tried up to
+    # three times; after three failures in a row, Qdrant is not asked again for 30 s, and
+    # every command and the API say so at once (NFR-6, DEC-21). deadline_s bounds all the
+    # attempts one retrieval makes, retries included: the API holds a lock throughout.
     qdrant:
       _target_: rag_qa.vectorstore.QdrantStore
       url: "http://localhost:6333"
       collection: rag_qa
       timeout_s: 10
+      deadline_s: 15
 
 # ----------------- 2. Pipeline assembly -----------------
 pipeline:
@@ -253,6 +293,9 @@ pipeline:
     #   about 2.5 s at startup. Detail in stories/phase-2/S2-4-reranker.md.
     reranker: components.rerankers.ms_marco_minilm_cpu
     reranker_candidates: 20
+    # The hosted fallback (DEC-21): unset, nothing leaves this host. Set, it answers when
+    # Ollama cannot (README, "Hosted fallback"):
+    #   fallback_llm: components.llms.groq_fallback
 
     # The query-time embedder is always pipeline.ingestion.embedder: an index and
     # the queries against it must share an embedding model or the vectors are

@@ -81,3 +81,29 @@ def test_negative_control_a_force_added_index_is_caught(tmp_path: Path) -> None:
     subprocess.run([*git, "add", "-f", "."], cwd=tmp_path, check=True, timeout=30)
 
     assert tracked_artifacts(tmp_path) == ["vectorstore/db_faiss/index.faiss"]
+
+
+# --- .env holds secrets; .env.example holds names (S3-6, DEC-21) -----------------------------
+
+
+@pytest.mark.skipif(not (REPO_ROOT / ".git").exists(), reason="not a git checkout")
+def test_dot_env_is_ignored_and_its_example_is_not() -> None:
+    # The hosted fallback's key may sit in .env (the shell loads it); the repository is
+    # public, so git must never take it in by a plain `git add`.
+    ignored = subprocess.run(
+        ["git", "check-ignore", "--quiet", ".env"], cwd=REPO_ROOT, check=False, timeout=30
+    )
+    assert ignored.returncode == 0, ".env is not gitignored"
+    example = subprocess.run(
+        ["git", "check-ignore", "--quiet", ".env.example"], cwd=REPO_ROOT, check=False, timeout=30
+    )
+    assert example.returncode == 1, ".env.example must be tracked, so it is not ignored"
+
+
+def test_the_env_example_names_variables_and_holds_no_value() -> None:
+    lines = (REPO_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    settings = [line for line in lines if line.strip() and not line.lstrip().startswith("#")]
+    assert settings, ".env.example names nothing"
+    for line in settings:
+        assert re.fullmatch(r"[A-Z][A-Z0-9_]*=", line), f"a value, or not NAME=, in: {line!r}"
+    assert "RAG_FALLBACK_API_KEY=" in settings

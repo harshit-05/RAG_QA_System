@@ -228,3 +228,39 @@ def test_the_bm25_encoder_imports_the_standard_library_only() -> None:
     outside = sorted(name for name in found if name.split(".")[0] not in sys.stdlib_module_names)
     assert found, "sparse.py imports nothing: is the scan blind?"
     assert outside == [], f"sparse.py imports {outside}: the standard library only (DEC-20)"
+
+
+def test_resilience_imports_the_standard_library_and_tenacity_only() -> None:
+    # ARCHITECTURE.md §3.2: resilience loads no LangChain, and no client of a service: it
+    # tells their errors apart by name (S3-6).
+    found = _imported_modules(SRC / "resilience.py")
+    outside = sorted(
+        name
+        for name in found
+        if name.split(".")[0] not in sys.stdlib_module_names and name.split(".")[0] != "tenacity"
+    )
+    assert "tenacity" in found, "resilience.py imports no tenacity: is the scan blind?"
+    assert outside == [], f"resilience.py imports {outside}: the standard library and tenacity"
+
+
+def _with_fallbacks_calls(path: Path) -> list[int]:
+    tree = ast.parse(path.read_text(), filename=str(path))
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr == "with_fallbacks"
+    ]
+
+
+@pytest.mark.parametrize("path", sorted(SRC.rglob("*.py")), ids=lambda p: p.name)
+def test_no_answer_goes_through_with_fallbacks(path: Path) -> None:
+    # DEC-21: the hosted fallback is streamed itself, in the consuming task. Runnable's
+    # .with_fallbacks() would put back the machinery DEC-14 took out of the stream.
+    assert _with_fallbacks_calls(path) == []
+
+
+def test_the_with_fallbacks_scan_sees_a_call(tmp_path: Path) -> None:
+    (tmp_path / "a.py").write_text("chain = llm.with_fallbacks([spare])\n")
+    (tmp_path / "b.py").write_text('"""Never .with_fallbacks(), in prose only."""\n')
+    assert _with_fallbacks_calls(tmp_path / "a.py") == [1]
+    assert _with_fallbacks_calls(tmp_path / "b.py") == []

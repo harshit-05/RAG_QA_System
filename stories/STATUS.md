@@ -5,13 +5,98 @@
 
 ## Now
 
-**Next action: once CI is green on the second review's record, merge PR #23 with a merge
-commit; then start S3-6.** S3-5 is done (2026-10-22), and neither review found a defect in
-the code. CI is green on `8ed9cf3`, the first review's record (run 39686537367, both jobs),
-as on `eada273` (run 39680224669). In that run the audit found "No known vulnerabilities
-found, 5 ignored", the suite had 1180 passed with coverage 98.55%, tier 2's six parts were
-ok, and tier 1 was 0.950 / 0.796 / 0.858, with the 11 Qdrant server tests passing. The HTTP
-filter checks passed (S3-5's verification record).
+**Next action: once CI is green on the second review's commits, merge PR #24 with a merge
+commit; then S3-7.** S3-6 is done (2026-10-23). The first review (2026-10-23) found no
+blocker; the second (2026-10-23) found one defect and fixed it on the PR. CI is green on
+`a0b77bd`, the first review's record (run 39932776608, both jobs). It went red earlier on
+`626358d` (run 39916798730) in Audit alone, on three pypdf advisories published on
+2026-10-22; the maintainer extended caveat 37's exception to them, in a `ci(audit)` commit
+on the PR.
+
+**Second review of S3-6 (2026-10-23, on `a0b77bd`): 1 defect, fixed on the PR with three
+tests, and S3-9's plan corrected.** The live Qdrant was only read; probes ran on a
+throwaway v1.19.2, removed afterwards. Detail in the story.
+
+- **Fixed: a readiness poll during Qdrant's half-open probe unserved a healthy index.**
+  `Serving.refresh()` dropped the served index whenever its alias read failed, and a read
+  the breaker refused failed the same way. Readiness during the probe answered 503, and the
+  log said "Not serving an index … Is Qdrant running?" while Qdrant answered. A refusal now
+  changes nothing. A read that failed against Qdrant, and so opened the breaker, still
+  unserves the index, and the log names Qdrant's own error, where it named the refusal.
+- **Fixed: S3-9's plan** still carried five of the eight pypdf ignores in two places.
+- **Held:** the gates on `a0b77bd` (1403 passed, 1411 with the extra, the 11 server tests,
+  `rag-eval check` exit 0, tier 1 IDENTICAL); the breaker under 64-thread contention, one
+  probe each time; the Ollama timeouts on both of ChatOllama's clients; every attempt ended
+  on every path; the audit exception's facts today, exactly the eight.
+- **After the fix:** 1406 passed, 18 skipped, 5 xfailed, coverage 98.45%; `rag-eval check`
+  exit 0.
+
+**S3-6 (2026-10-22/23): every network call has a timeout, a safe retry and a circuit
+breaker, and an opt-in hosted fallback answers when Ollama cannot; nothing hashed moved.**
+
+- **Resilience:** `rag_qa/resilience.py`, the standard library and tenacity only.
+  - **Qdrant:** a request is tried up to 3 times on a transient failure, each attempt
+    through the store's breaker, and one retrieval's attempts share `deadline_s: 15`.
+  - **Ollama:** 5 s to connect and 600 s to read; a failed connection before the first
+    token is tried once more.
+  - **The breakers:** each opens after 3 failed attempts in a row and probes after 30 s.
+    While one an answer needs is open, the API answers 503 with `Retry-After` before the
+    first byte, and `/v1/health` reports each one.
+- **The hosted fallback:** `pipeline.query.fallback_llm`, set by nothing in `config.yaml`.
+  - `components.llms.groq_fallback` is Groq's `openai/gpt-oss-120b`, with its key in
+    `RAG_FALLBACK_API_KEY` and the `fallback` extra installed.
+  - It answers while Ollama's breaker is open, or after a refused connection before the
+    first token.
+  - `done`'s `model` names it, and `rag-query` says so under each answer.
+  - Tier 2 never builds it.
+- **Breaking:** a component key named `api_key` or `*_api_key` is refused at load.
+- **Parity:** `rag-eval check` exit 0, all six parts ok; the contexts file IDENTICAL to
+  S3-2's (`5a36e2f9…`); tier 1 0.950 / 0.796 / 0.858.
+- **The suite:** 1391 passed, 18 skipped, 5 xfailed, coverage 98.30% (3 tests added after);
+  1399 passed with the extra installed; the 11 server tests passed. After the first review:
+  1403 passed, coverage 98.45%, and 1411 with the extra.
+- **The one real check (2026-10-23), against Groq, Ollama stopped:**
+  - `rag-query` warned at start-up and answered from the fallback, with the line under each
+    answer; Ctrl-C mid-answer left nothing printed after it.
+  - `rag-serve` answered four questions from it, `done` naming it, with no 503 once
+    Ollama's breaker opened.
+  - Without a fallback, Ollama stopped gave exit 2, and over HTTP a 503 with
+    `Retry-After: 30` once the breaker opened. A probe after the wait closed it.
+- **Discovered:**
+  - langchain-openai shares one cached HTTP client among its instances, so the fallback
+    gets its own (caveat 38);
+  - the switch's read-back must not wait on the breaker its own failures opened;
+  - pydantic's raw error text repeats a config's values, and users only ever see the
+    rendered messages;
+  - backlog lines for S3-7 (a traceback logged for an open breaker) and S3-9 (the image has
+    no extra).
+
+  Detail in the story.
+- **On Opus 5.5 at max effort,** where the story routes to Fable. The plan is in the story
+  ("Plan"), approved in plan mode.
+- **First review (2026-10-23):** the gates and the contexts digest reproduced, and the
+  resilience paths ran through the real client stacks against a local fake provider, with
+  Ollama on a dead port: the fallback's key, 401, repeated 500s into the breaker, a hang, a
+  cut stream, and a client dropped mid-fallback (the socket gone within 0.4 s). Four
+  findings. **Fixed on the PR:** a second question during a half-open probe is refused with
+  a 503 before any retrieval (it had streamed `sources` and ended in an `error` event), and
+  a dropped fallback stream is reported as the fallback's, not Ollama's. **Backlog:** the
+  15 s retrieval deadline overshoots on the alias read (20 s, measured), and the
+  no-secrets rule is name-based. Detail in the story.
+
+**S3-5 is merged** (2026-10-22, PR #23, merge commit `1815e00`). CI was green on the PR's
+last head, `668ff3f`, the second review's record (run 39736904527), and is green on `main`
+after the merge (run 39738339409). The live index is unchanged: the `rag_qa` alias names
+`rag_qa--gen-20261019T153834837765Z-7f20891e`, and S3-2's parity baseline is still
+`~/dev/rag-s3-2/contexts-qdrant.json` (sha256 `5a36e2f9…a074cbc`). pypdf stays at 6.19.0
+under the audit exception (caveat 37), so S3-6 re-locks without `--upgrade`.
+
+**S3-5 was done before its merge** (2026-10-22), and neither review found a defect in the
+code. CI was green on `8ed9cf3`, the first review's record (run 39686537367, both jobs), as on
+`eada273` (run 39680224669). In that run the audit found "No known vulnerabilities found, 5
+ignored", the suite had 1180 passed with coverage 98.55%, tier 2's six parts were ok, and
+tier 1 was 0.950 / 0.796 / 0.858, with the 11 Qdrant server tests passing. The HTTP filter
+checks passed (S3-5's verification record).
 
 **Second review of S3-5 (2026-10-22, on `8ed9cf3`): no defect in the code; 1 planning
 finding for S3-9 and S3-11b, and the records, fixed after it.** The live Qdrant was only
@@ -971,8 +1056,35 @@ The final story of each phase performs the tag + version bump at close-out.
       hours of reading; it decides whether the judge stays.
 - [ ] **Phase 3 (S3-11): the DEC-2 candidates.** `ollama pull qwen2:7b` (4.4 GB) if it is to
       be swept, and the name of a current model, if one should be.
-- [ ] **Phase 3 (S3-6): a hosted provider and its key,** for the fallback's one real check.
-      Any OpenAI-compatible provider; the key in an environment variable only.
+- [x] **Phase 3 (S3-6): a hosted provider and its key,** for the fallback's one real check.
+      Done 2026-10-22: **Groq**, at `https://api.groq.com/openai/v1`, model
+      `openai/gpt-oss-120b`. The key is set in the maintainer's shell only, never in a file.
+      - **Why gpt-oss-120b:** Groq shut down its Llama instruct models
+        (`llama-3.1-8b-instant`, `llama-3.3-70b-versatile`) on 2026-08-16 for free and
+        developer tiers. Its remaining production chat models are gpt-oss 20B and 120B, both
+        reasoning models; Groq calls 120B the durable replacement. On Groq, gpt-oss returns its
+        reasoning in a separate `reasoning` field, not in `content`. So the entry wants
+        `reasoning_effort: "low"`, `include_reasoning: false`, and a token limit near 1024,
+        since reasoning tokens count against it. `qwen/qwen3.8-27b` can switch reasoning off,
+        but it is a preview, which Groq may withdraw at short notice.
+      - **Settled in S3-6's plan (2026-10-22):** `reasoning_effort: low` is a `ChatOpenAI`
+        field, and `include_reasoning: false` goes in `extra_body`, since it is Groq's own.
+        `ChatOpenAI` sends its token limit as `max_completion_tokens`, which Groq takes;
+        `max_tokens` is deprecated there. Groq's API reference gives temperature a range of
+        0–2, so 0 is accepted, and gpt-oss refuses any `reasoning_effort` but low, medium
+        and high with a 400. The one real check confirms them.
+      - **`RAG_FALLBACK_API_KEY`, the maintainer's proposal: accepted in S3-6's plan
+        (2026-10-22).** One provider-neutral variable, read by `settings.py` as
+        `RAG_QDRANT_API_KEY` is, and passed to `ChatOpenAI` by our code. It sits in a
+        gitignored `.env` that the shell loads with `set -a; . ./.env; set +a` (rag_qa never
+        reads the file), and a committed `.env.example` holds names only, which S3-9
+        extends. Why: without an explicit `api_key`, `ChatOpenAI` reads `OPENAI_API_KEY`, or
+        a LangSmith gateway key when the gateway is on (checked in langchain-openai 1.6.2 and
+        langchain-core 1.6.3). It never reads `GROQ_API_KEY`, so DEC-21's "the provider's own
+        variable" needed our code to read one anyway, and the default would send an
+        unrelated OpenAI key to whatever `base_url` the config names. A fallback configured
+        without the variable stops at start-up (exit 2), and the message names the
+        variable, never a value. This amends DEC-21; its row and ARCHITECTURE.md say so.
 - [ ] **Phase 3 (S3-11): the Colab notebook** gains cells that run Qdrant's static binary,
       restore this host's index into it from a snapshot (`rag-backup restore`), and run
       `rag-eval generate` with CPU torch, beside S2-5b's scoring cells (design review 2).
@@ -1001,6 +1113,7 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
   when S3-2 lands; each says how.
 - Item 32, and the second half of 31, come from design review 1 of Phase 3 (2026-10-15).
 - Items 33–35, and the last parts of 30 and 31, come from design review 2 (2026-10-16).
+- Item 36 comes from S3-2's second review, 37 from S3-5's and S3-6's CI, and 38 from S3-6.
 
 1. **Resolved (2026-09-18), historical.** The three pending commits (baseline,
    S0-1, S0-2) landed as `ee86e1f`, `f702dc8` + `e781b17` and `0987c60`. The
@@ -1241,22 +1354,43 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
     the alias went with it until the next publish. Give another checkout
     `RAG_QDRANT_COLLECTION=<name>`, or stop this checkout's Qdrant while it runs its own.
 37. **pypdf stays at 6.19.0 until S3-11b, under an audit exception** (maintainer, 2026-10-22,
-    found by S3-5's CI). Five pypdf advisories were published on 2026-10-21. The fixed
-    releases extract the corpus differently: whitespace on 105 of 561 pages, 1,710 chunks
-    instead of 1,708, 7 of the 25 golden contexts changed, and tier 1 0.950 / 0.771 / 0.842
-    in place of 0.950 / 0.796 / 0.858. The bump therefore needs `CHUNKING_VERSION` 2 and a
-    tier-2 re-run. CI's Audit step ignores the five, with a reason each, until S3-11b's one
-    re-run carries the bump (DEC-26), and fails on its own after 2027-01-20.
+    found by S3-5's CI; extended to three more advisories on 2026-10-23, found by S3-6's CI).
+    Five pypdf advisories were published on 2026-10-21, and three more on 2026-10-22 at 16:49
+    UTC, all fixed by 6.21.1. The fixed releases extract the corpus differently: whitespace on
+    105 of 561 pages, 1,710 chunks instead of 1,708, 7 of the 25 golden contexts changed, and
+    tier 1 0.950 / 0.771 / 0.842 in place of 0.950 / 0.796 / 0.858. The bump therefore needs
+    `CHUNKING_VERSION` 2 and a tier-2 re-run. CI's Audit step ignores the eight, with a
+    reason each, until S3-11b's one re-run carries the bump (DEC-26), and fails on its own
+    after 2027-01-20.
     - **Never move pypdf on its own** (`uv lock --upgrade` included): a new version changes
       the chunks, and no fingerprint part sees it. S3-11b bumps it with `CHUNKING_VERSION` 2,
-      then removes the date check and the five ignores from `ci.yml`.
+      then removes the date check and the eight ignores from `ci.yml`.
     - **The `eval` extra holds pypdf 6.19.0 too,** so the Audit step S3-9 adds for it
-      carries the same five ignores and date check, and S3-11b removes them from both steps
+      carries the same eight ignores and date check, and S3-11b removes them from both steps
       (S3-5's second review).
-    - **Three of the five are unreachable:** image extraction, tree editing and the writer,
-      none of which the loader calls (checked in pypdf 6.19.0's source). Two are denial of
-      service through a hostile PDF in `corpus/`, which only the operator fills.
-    - **Another pypdf advisory before S3-11b** is a new decision, not a sixth ignore.
+    - **Four of the eight are unreachable:** image extraction, tree editing, the writer and
+      form fields (`get_fields`), none of which the loader calls (checked in pypdf 6.19.0's
+      source). Four are denial of service through a hostile PDF in `corpus/`, which only the
+      operator fills: a loop at the end of a standard xref table, and memory for streams of
+      many filters, for content streams of many operations (`extract_text`), and for arrays
+      or dictionaries of many items (any read).
+    - **Another pypdf advisory before S3-11b** is a new decision, not another ignore. The
+      maintainer took the second one on 2026-10-23, for GHSA-6vvc-x485-93v7,
+      GHSA-cgf9-327m-v77c and GHSA-f54x-cmq8-qg57 (CVE-2026-113789 to -113791): extend the
+      exception rather than bump pypdf inside S3-6, which would have cost a tier-2 re-run
+      outside S3-11b's.
+38. **The hosted fallback's client is not like Ollama's** (S3-6).
+    - **langchain-openai 1.6.2 shares one async HTTP client between instances,** cached per
+      base URL and timeout. Closing one `ChatOpenAI`'s would close every other's, so a model
+      built by `components` gets a client of its own, and `aclose_llm` closes only that.
+      Never build a `ChatOpenAI` around that rule.
+    - **openai 3 is built on httpx2,** not httpx, so its `Timeout` and its errors are httpx2's.
+      Match them by name (`rag_qa.resilience.classify`), never by an httpx import.
+    - **It needs the `fallback` extra, which a plain `uv sync` removes,** and
+      `RAG_FALLBACK_API_KEY` in the shell that runs the command. An empty value counts as
+      unset, and so does a `.env` that does not exist: `set -a; . ./.env; set +a` then loads
+      nothing, without an error the command would see. A start-up that says the key is not
+      set means exactly that.
 
 ## GPU offload notes (nothing *requires* GPU; Colab/Kaggle available)
 
@@ -1386,8 +1520,8 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | [S3-2](phase-3/S3-2-qdrant-store.md) | Move the index to Qdrant: generations behind an alias | DEC-3, DEC-19, NFR-4, §11 (interrupted ingestion) | S3-1 | Done 2026-10-19 (PR #20, merged 2026-10-20) |
 | [S3-3](phase-3/S3-3-leave-langchain-community.md) | Leave langchain-community and FAISS | DEC-5 step 3, ISS-16, §9 (deserialization) | S3-2 | Done 2026-10-20 (PR #21, merged 2026-10-20) |
 | [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Done 2026-10-21 (PR #22, merged 2026-10-21) |
-| [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Done 2026-10-22 (PR #23) |
-| [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Todo |
+| [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Done 2026-10-22 (PR #23, merged 2026-10-22) |
+| [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Done 2026-10-23 (PR #24) |
 | [S3-7](phase-3/S3-7-observability.md) | Structured logs, traces, metrics and alerts | NFR-10, NFR-1, NFR-3, DEC-22 | S3-6 | Todo |
 | [S3-8](phase-3/S3-8-api-hardening.md) | API keys, rate limits and a stateless query tier | NFR-5, DEC-23 | S3-7 | Todo |
 | [S3-9](phase-3/S3-9-containers.md) | Containers, compose, TLS and CI scanning | §11 (CI, containers, config), §8.3, §9 LLM05, DEC-24 | S3-8 | Todo |
@@ -1447,10 +1581,10 @@ S3-2's (design review 1).
 | DEC-18 | HTTP API shape: SSE library, auth, concurrency, ingest jobs | **Resolved 2026-10-02: FastAPI ≥ 0.135 native SSE; a token is required off localhost (maintainer); one generation at a time** | **Surface:** `rag-serve`. `QueryRequest` is `{question}` with `extra="forbid"`, so the API never supplies components, and a `trust_remote_code` load guard comes with it. **Load:** 503 with `Retry-After` when busy. A disconnect cancels generation: under uvicorn (ASGI 2.3) Starlette cancels the stream, and `stream_answer` runs inside it, with no producer task (second review). Requests with an `Origin` header are refused. **Ingest:** single-flight jobs in memory, which swap only the retrieval half. **Privacy:** no host paths over HTTP. S2-7. **As built (S2-7, 2026-10-12):** FastAPI's native SSE runs the generator in its own producer task. The cancel still reaches `stream_answer`, and the slot's teardown closes a stream that a drop between events left paused (the spike's window). Retrieval is serialized by a lock, not the slot. The API opens the index itself (`chain.open_retrieval`), and `require_index` is gone. `rag-serve` checks Ollama before uvicorn starts. ARCHITECTURE.md DEC-18 has the dated notes. |
 | DEC-19 | The Qdrant store: how an index is written, published, recovered and found | **Resolved 2026-10-14: a generation is a collection behind an atomic alias switch; the manifest lives in the collection's metadata; our own module on `qdrant-client`** | Qdrant v1.19.2, `qdrant-client` 1.19.1 (resolves with the stack; adds grpcio, protobuf, portalocker, h2; no locked version moves). ADR-024's pattern carries over: build `<collection>--gen-<stamp>-<hex>`, then one `update_collection_aliases` call, then recovery keeps the target and the newest older one. Manifest version 2: identities plus per-document records, with chunk counts in place of ID lists. Search is always exact, by cosine (MiniLM's vectors are unit length). `paths.state` (`var/`) holds the lock and S3-8's job database. **Breaking:** `paths.vector_store` and `RAG_VECTOR_STORE_PATH` are refused at load; a scratch index is `RAG_QDRANT_COLLECTION`. **Quickstart:** `docker compose up -d qdrant` first; local mode with `path=` is not offered (its folder lock admits one process). Parity with FAISS is proven by a contexts digest of all 25 golden questions, so no tier-2 re-run. **Design review 1 (2026-10-15):** readers resolve the alias again per question, since a generation is deleted two switches later; S3-2 writes manifest version 2 whole; a retry counts a create that finds our collection, or a delete that finds none, as done; S3-3 … S3-10 repeat the digest. **Design review 2 (2026-10-16):** the protocol held, killed at every step; our code makes every cut, since the server decides a tie by the collection's layout; with no alias (deleting the target deletes it), recovery deletes only incomplete generations; the manifest sits under one metadata key, written whole; and `var/` is shared under one uid. **As implemented (S3-2, 2026-10-19/20):** parity with FAISS proven, the contexts digest of all 25 golden questions identical (`5a36e2f9…`), so no tier-2 re-run. A generation is created after the embedding, so a kill while embedding leaves nothing to recover. A retriever takes `k` only: the schema refuses FAISS's other options. Readers resolve the alias per question (`build_retrieve`), the API per request, and go not-ready when the alias cannot be read; `rag-eval generate` holds a generation it moves to against its corpus scan. `check()` refuses a server older than 1.16 or an answer that is not Qdrant's (exit 2), and a switch whose answer was lost is read back. The writer lock excludes only writers that share `var/` (caveat 36). Local mode differs from the server (a failing alias batch applied halfway, vector precision), so those properties are `qdrant_server` tests, which CI runs against its service container. S3-2. ARCHITECTURE.md §3.1. |
 | DEC-20 | Hybrid retrieval: where the sparse vectors come from, how they are fused, how it is switched on | **Resolved 2026-10-14: our own BM25 encoder; Qdrant prefetch + RRF with an explicit constant; then the cross-encoder; tier 1 decides, S3-11 switches** | `rag_qa/sparse.py`, about 80 lines with no dependency; IDF applied by Qdrant. Rejected: fastembed's `Qdrant/bm25` (onnxruntime, a model download, a tokenizer that moves with releases) and Qdrant's own BM25 (needs `cloud_inference=True`, which local mode refuses; its tokenizer changes with the server). Qdrant's default RRF constant is 2, so `rrf_k` is always set (60). A `sources` filter by document path (API and CLI) is FR-3's metadata filtering. The real config sets no sparse encoder until S3-11b, so nothing hashed moves before the batched re-run. **Design review 1:** Qdrant's server breaks no RRF ties, so the fusion returns its whole union and our code cuts it, ties by point ID; S3-5 runs hybrid tier 1 twice. **Design review 2 (2026-10-16):** each prefetch still cut its own list on the server, which kept other tied points for each insertion order and after a restart. So the two branches run as separate searches, each cut by our code, and our code fuses them by RRF. S3-5's second run follows a restart. **As implemented (S3-5, 2026-10-21):** `Bm25Encoder` with NLTK's 153 English stopwords (less the apostrophe forms), soft hyphens joined, blake2b indices; `avg_len` 100.76, measured. A hybrid retriever must state `prefetch` and `rrf_k` (no code default, so the hashed dump says everything). The query half takes a `RetrievalQuery(question, sources)`. Tier 1: hybrid 1.000 / 0.833 / 0.933 against dense's 0.950 / 0.796 / 0.858, 2 wins and no loss; `rrf_k` 10 and `prefetch` 20 tie; `min_score` −4 loses no hit. Recommendation for S3-11: hybrid on, 60/40, −4. S3-5, S3-11, S3-11b. |
-| DEC-21 | NFR-6 and the hosted fallback | **Resolved 2026-10-14: timeouts, safe retries and circuit breakers on network calls; an opt-in OpenAI-compatible fallback, with one real check** (maintainer) | Ollama: connect 5 s, read 600 s; retries only before the first token. Qdrant: 10 s; every call retried (all idempotent). Our own breaker per dependency; open means 503 with `Retry-After` before the first byte. The fallback (`pipeline.query.fallback_llm`, a `fallback` extra with `langchain-openai`) answers only while Ollama's breaker is open or after a connection error before the first token; streamed itself, never `.with_fallbacks()`; its key from the environment only; never used by tier 2. It absorbs the backlog's reopen back-off. **Design review 1:** with a fallback configured, an open Ollama breaker routes to it, and the start-up checks warn instead of exiting 2; retry semantics are stated per call; the retry before the first token is a hand-written loop. **Design review 2 (2026-10-16):** Qdrant's breaker wraps each attempt, with one deadline per retrieval, since retrieval holds the retrieval lock; a 404 is never retried; the fallback sets `max_retries: 0` and a timeout, as the OpenAI SDK retries twice on its own. S3-6. |
+| DEC-21 | NFR-6 and the hosted fallback | **Resolved 2026-10-14: timeouts, safe retries and circuit breakers on network calls; an opt-in OpenAI-compatible fallback, with one real check** (maintainer) | Ollama: connect 5 s, read 600 s; retries only before the first token. Qdrant: 10 s; every call retried (all idempotent). Our own breaker per dependency; open means 503 with `Retry-After` before the first byte. The fallback (`pipeline.query.fallback_llm`, a `fallback` extra with `langchain-openai`) answers only while Ollama's breaker is open or after a connection error before the first token; streamed itself, never `.with_fallbacks()`; its key from the environment only; never used by tier 2. It absorbs the backlog's reopen back-off. **Design review 1:** with a fallback configured, an open Ollama breaker routes to it, and the start-up checks warn instead of exiting 2; retry semantics are stated per call; the retry before the first token is a hand-written loop. **Design review 2 (2026-10-16):** Qdrant's breaker wraps each attempt, with one deadline per retrieval, since retrieval holds the retrieval lock; a 404 is never retried; the fallback sets `max_retries: 0` and a timeout, as the OpenAI SDK retries twice on its own. **Amended in S3-6's plan (2026-10-22, maintainer's proposal):** the key comes from one provider-neutral variable, `RAG_FALLBACK_API_KEY`, which our code passes to `ChatOpenAI`, not from the provider's own; `ChatOpenAI` would otherwise read `OPENAI_API_KEY` (human prerequisites, the S3-6 line). **As implemented (S3-6, 2026-10-23):** `rag_qa/resilience.py`: a breaker per client (the store's, the model's, the fallback's), open after 3 failed attempts in a row, one probe after 30 s; a failure is a connection error, a timeout, a 429 or a 5xx. Qdrant: 3 attempts through tenacity, full-jitter back-off, one `deadline_s: 15` per retrieval, a search's own timeout cut to what is left; a create that finds its collection, a delete answering `False` and a repeated switch count as done (checked on 1.19.2), and the switch's read-back never waits on the breaker. Ollama: `client_kwargs.timeout {connect: 5, read: 600, write: 30, pool: 30}`, made into httpx's `Timeout` at build and checked at load. The fallback, `components.llms.groq_fallback` (Groq's `openai/gpt-oss-120b`), must be another `ChatOpenAI` entry with a `base_url`, `max_retries: 0` and a timeout; it gets an HTTP client of its own (caveat 38). `Done.model` is the answering entry's reference. `rag-eval generate` runs the start-up check and builds no fallback. A component key named `api_key` or `*_api_key` is refused at load (breaking). The one real check passed on 2026-10-23. ARCHITECTURE.md DEC-21 has the as-built note. S3-6. |
 | DEC-22 | NFR-10: logs, traces, metrics, alerts | **Resolved 2026-10-14: structlog; OpenTelemetry spans we create ourselves; prometheus-client; burn-rate alerts; Jaeger** | No LangChain callback handlers: one that suspends reopens DEC-14's cancel window. Spans are never current across a `yield`, and end in a `finally`. Metrics on their own port. Alert rules tested by `promtool` in CI. NFR-1 by a 100k synthetic benchmark; NFR-3 reported by `rag-ingest`. **Design review 2 (2026-10-16):** it held. With the instrumentation off, excluded or full, a client dropped during 30 s of silence cancelled the stream within milliseconds, and every span ended. promtool runs from the Prometheus image, by digest. S3-7. |
 | DEC-23 | The API beyond localhost (DEC-18's Phase 3 half) and NFR-5 | **Resolved 2026-10-14: named, scoped API keys (maintainer); token-bucket rate limits; a 64 KiB body limit; job records in SQLite; a stateless query tier; TLS at the proxy** | A keys file of sha256 hashes with scopes `query` and `ingest`, managed by `rag-keys`; `RAG_API_TOKEN` still works as one all-scope key. A job holds a lock of its own, so an unfinished row whose job lock is free reads as abandoned. Limits per replica, documented. **Design review 1:** the job's own lock replaces probing the writer lock, which could call a live job abandoned and make a starting writer exit 2; the health routes are exempt from rate limits; failed authentication is limited to 10 a minute per address. **Design review 2 (2026-10-16):** `X-Forwarded-For` is trusted from Caddy's own address only, since uvicorn trusts loopback by default; the rate tables are bounded; the keys file lives in `var/`, mounted as a folder, and fails closed; "no credential" means no key and no token; a streamed body over the limit raises `HTTPException(413)`; and the abandoned-job rule reads the row again after the probe. S3-8. |
-| DEC-24 | Containers, compose, overlays and CI scanning | **Resolved 2026-10-14: one image (uv, CPU torch, models baked in, offline), one compose file with Caddy for TLS and balancing, `RAG_CONFIG_OVERLAY`, Trivy run as a binary pinned by sha256** | Not `aquasecurity/trivy-action` (tags hijacked, CVE-2026-33634). SIGTERM ends `rag-serve` with 143 under an init, and that stays. The audit policy: ignores only for advisories with no fix, each with a reason and a date; a weekly run; the `eval` extra audited. A ruleset makes every stage block a merge. **Design review 1:** the `eval` extra has four advisories, not one. The `langchain` bump moves into S3-9 (maintainer) and clears two; diskcache's and ragas's have no fix, and are the policy's first ignores. The repository is public, so rulesets are available. **Design review 2 (2026-10-16):** a signature would not have caught Trivy's pipeline-built v0.69.4, so every pin is verified once, by provenance pinned to its workflow and tag, its source commit on `main`, and an age rule. promtool runs from the image, by digest, and the weekly run scans the third-party images. Compose runs one uid, Qdrant's unprivileged image, and Caddy as the only trusted proxy; the disconnect through Caddy held. **One exception to the audit policy (maintainer, 2026-10-22):** five pypdf 6.19.0 advisories with fixed releases are ignored in `ci.yml`, each with its reason, until S3-11b bumps pypdf with `CHUNKING_VERSION` 2 inside its one re-run, and at the latest until 2027-01-20, when the Audit step fails on its own. The fixed releases change 7 of the 25 golden contexts (caveat 37). S3-9. |
+| DEC-24 | Containers, compose, overlays and CI scanning | **Resolved 2026-10-14: one image (uv, CPU torch, models baked in, offline), one compose file with Caddy for TLS and balancing, `RAG_CONFIG_OVERLAY`, Trivy run as a binary pinned by sha256** | Not `aquasecurity/trivy-action` (tags hijacked, CVE-2026-33634). SIGTERM ends `rag-serve` with 143 under an init, and that stays. The audit policy: ignores only for advisories with no fix, each with a reason and a date; a weekly run; the `eval` extra audited. A ruleset makes every stage block a merge. **Design review 1:** the `eval` extra has four advisories, not one. The `langchain` bump moves into S3-9 (maintainer) and clears two; diskcache's and ragas's have no fix, and are the policy's first ignores. The repository is public, so rulesets are available. **Design review 2 (2026-10-16):** a signature would not have caught Trivy's pipeline-built v0.69.4, so every pin is verified once, by provenance pinned to its workflow and tag, its source commit on `main`, and an age rule. promtool runs from the image, by digest, and the weekly run scans the third-party images. Compose runs one uid, Qdrant's unprivileged image, and Caddy as the only trusted proxy; the disconnect through Caddy held. **One exception to the audit policy (maintainer, 2026-10-22):** five pypdf 6.19.0 advisories with fixed releases are ignored in `ci.yml`, each with its reason, until S3-11b bumps pypdf with `CHUNKING_VERSION` 2 inside its one re-run, and at the latest until 2027-01-20, when the Audit step fails on its own. The fixed releases change 7 of the 25 golden contexts (caveat 37). **Extended on 2026-10-23 (maintainer, S3-6's CI):** three more pypdf advisories, published on 2026-10-22, under the same reasons and the same end; eight ignores in all. S3-9. |
 | DEC-25 | Backup and restore | **Resolved 2026-10-14: snapshots of immutable generations to a directory; a restore is a new generation and an alias switch** | Checksums verified both ways; a snapshot from another embedder is refused; RPO and RTO stated; tested against a real server in CI and by drills (maintainer's addition). **Design review 1:** a restore holds the writer lock from the upload to the end, or an ingest could delete its generation mid-restore; the sidecar keeps the whole manifest. **Design review 2 (2026-10-16):** the manifest survived a real round trip. Restore refuses a taken name, since an upload overwrites in place, and runs `check_index`'s whole rule. Snapshot files outlive their collections, so restore, `create` and `recover` delete them. The backup service mounts `./var`. S3-10. |
 | DEC-26 | Tier-2 re-runs in Phase 3 | **Resolved 2026-10-14: one, batching every lever; S3-11 measures them and S3-11b commits** | The judge (from the hand labels), the prompt fixes and LLM01's delimiting, the hybrid switch, `min_score`, the model (DEC-2), `check` recomputing aggregates, and a per-question context digest. Staged so the grid stays small: about 4–6 h of T4 time plus about 70 min here. **Design review 1:** split into S3-11 (the sweep) and S3-11b (the commit), as S2-5 and S2-5b were (maintainer); the `langchain` bump moved to S3-9; the answers file records Qdrant's version. **Design review 2 (2026-10-16):** a stage 0 measures the T4 against this CPU; stage 1's re-score is certain; every rule is a margin committed before the first run; Colab restores this host's index and runs Ollama only; about 5–9 h of T4 time, where this row first said 4–6; and about 5 labels outside the 20 after S3-11b. S3-11, S3-11b. |
 | DEC-27 | NFR-2: revise the SLO, serve from a GPU, or a hosted model | **Resolved 2026-10-14: revised** (maintainer) | (a) the `sources` event in under 2 s at p95 with the model idle; (b) the time to first token reported per class of hardware, this CPU's from the committed run and a T4's from S3-11. A GPU host later is a `base_url` edit. Resolves ADR-016 at the amend session, which S3-12 runs. **Design review 1:** (a) is measured as a p95 over the golden questions (S3-7, and S3-11b if hybrid retrieval is on). |
@@ -1497,8 +1631,9 @@ diffed this backlog against `main`'s: no line was dropped.
 ### Opened in Phase 3 stories
 
 - **S3-11b — bump pypdf to 6.21.1 or later, with `CHUNKING_VERSION` 2, and end the audit
-  exception** (found in S3-5's CI, caveat 37). The re-run rebuilds every index anyway; then
-  remove the Audit step's date check and its five `--ignore-vuln`, and record tier 1 before
+  exception** (found in S3-5's CI, extended in S3-6's, caveat 37). The re-run rebuilds every
+  index anyway; then remove the Audit step's date check and its eight `--ignore-vuln`, and
+  record tier 1 before
   and after. S3-5 measured 6.21.2: 0.950 / 0.771 / 0.842, against 0.950 / 0.796 / 0.858 now.
   Decide the soft hyphens below in the same change, since both alter the chunks.
 
@@ -1520,14 +1655,27 @@ diffed this backlog against `main`'s: no line was dropped.
   would still rewrite its Python examples. CI's bare `ruff format --check` is unaffected,
   and CLAUDE.md has sessions run it bare for this reason (S3-1's second review, round 2).
 
-- **S3-6 — a Qdrant read timeout ended a tier-1 run with Qdrant up** (found in S3-3).
+- **Closed by S3-6 (2026-10-23): retries absorb one, and an exhausted one says so — a Qdrant
+  read timeout ended a tier-1 run with Qdrant up** (found in S3-3).
   `rag-eval retrieval` retrieved 9 of 20 questions, then a query hit the client's 10 s
   timeout: exit 2, and "Is Qdrant running?". Not reproduced, and the host showed no
   pressure. Qdrant's access log and telemetry record only completed requests, so they show
-  that the query never completed, not whether it arrived (S3-3's second review). DEC-21's
-  retries cover it. S3-6 can use it as a real case, turn on `httpx`/`httpcore` debug
-  logging to tell a lost request from a stalled one, and decide whether a timeout with the
-  server up should say so rather than ask if it runs.
+  that the query never completed, not whether it arrived (S3-3's second review). A timed-out
+  request is now tried again, up to 3 times within the retrieval's deadline. When every
+  attempt times out, the message says Qdrant "did not answer in time", rather than ask
+  whether it runs. The debug logging was not needed: the timeout never reproduced.
+
+- **S3-7 — an open breaker mid-stream logs a full traceback** (found in S3-6's real check).
+  When a model's breaker opens during an answer, the API logs "An answer failed after its
+  stream began" with the whole `BreakerOpenError` traceback, an expected refusal. With
+  S3-7's structured logs, log it as one warning line with the service and the wait. No
+  hashed input.
+
+- **S3-9 — the image installs no extra, so the stack has no hosted fallback** (found in
+  S3-6). A deployment that wants one needs the `fallback` extra in the image, and
+  `RAG_FALLBACK_API_KEY` in `.env`, which compose's `env_file` passes to the app.
+  `.env.example` names the variable already; S3-9 decides whether the image carries the
+  extra, or says how to build one that does.
 
 - **S3-9 — Pillow 12.3.0 in the `eval` extra** (found in S3-5's second review). 24
   advisories were published on 2026-10-21 at 21:11 UTC, all fixed in 13.0.0. Pillow comes
@@ -1544,6 +1692,21 @@ diffed this backlog against `main`'s: no line was dropped.
   documents were loaded."; the cause is only in the log lines above it. The line is shared
   with the API's job report, so the wording is a small contract. Cosmetic; no hashed input.
 
+- **S3-7 or S3-9 — the retrieval deadline is not a hard bound** (found in S3-6's first
+  review). Only `search` trims its request's timeout to what the deadline has left, so a
+  retrieval's alias read against a Qdrant that accepts and never answers takes 20.2 s
+  under `deadline_s: 15` (two attempts of `timeout_s: 10`), and `rag-query`'s start-up check
+  takes 31 s before exit 2. Bounded, and the retrieval lock is held that long. Trim every
+  request's timeout inside a deadline, or state the bound as the deadline plus `timeout_s`.
+
+- **S3-8 — the config's no-secrets rule is name-based** (found in S3-6's first review).
+  `Components.check_api_keys` refuses `api_key` and `*_api_key`, in any case and depth.
+  `default_headers: {Authorization: …}` or `{x-api-key: …}`, a hyphenated `api-key` and
+  `token` load, and so does a plain `http://` remote `base_url`, which sends the fallback's
+  key and the retrieved chunks in clear. Normalise hyphens, refuse those header names, and
+  require `https` unless the host is loopback; or say in the docs that the rule is
+  best-effort. A config the maintainer writes, so not urgent.
+
 - **S3-8 — the Qdrant URL in an ingest job's error text** (found in S3-2's second review).
   `describe_error` passes `cannot use Qdrant at http://host:6333 (…)` through to
   `GET /v1/ingest/<job>` clients. Not a path, so DEC-18 holds; once S3-9 puts Qdrant on an
@@ -1559,6 +1722,9 @@ diffed this backlog against `main`'s: no line was dropped.
 - **S3-4 (2026-10-21):** per-loader splitter strategies (SRS §7.2), as
   `pipeline.ingestion.splitters`; and SRS §7.1's declared limit, `max_file_mb: 50`. It
   opens one line: the publish line's "1 documents".
+- **S3-6 (2026-10-23):** NFR-6, the hosted-LLM fallback, the back-off after a failed index
+  reopen, and S3-3's read timeout with Qdrant up. It opens two lines: the traceback an open
+  breaker logs (S3-7), and the image's missing extra (S3-9).
 
 ### Closed in Phase 2
 
@@ -1875,13 +2041,13 @@ diffed this backlog against `main`'s: no line was dropped.
   `pydantic-settings` interpolates `device: ${RAG_EMBED_DEVICE:-cpu}` inside
   YAML values; it does not (no `${VAR:-default}` expansion for arbitrary
   values). The CUDA torch variant (DEC-12) makes the switch one line anyway. See **DEC-10**.
-- **S3-6, decided in DEC-21 (an opt-in seam plus one real check, maintainer) — hosted-LLM fallback** (`groq_llama3` entry behind an optional
+- **Closed by S3-6 (2026-10-23), as `pipeline.query.fallback_llm` and `components.llms.groq_fallback`, streamed itself, never `.with_fallbacks()` — hosted-LLM fallback** (`groq_llama3` entry behind an optional
   extra + `.with_fallbacks()` in `chain.py`). Moved out of Phase 1: it widens
   the DEC-1 import surface and needs an API key, for something Phase 1 could
   only exercise against a fake failing LLM. It belongs with the Phase 3 serving
   decision (NFR-2), which is the problem it actually solves.
-- **S3-6, decided in DEC-21 — NFR-6** timeout / retry-with-backoff / circuit-breaking, per
-  **DEC-9**.
+- **Closed by S3-6 (2026-10-23), as `rag_qa/resilience.py` (DEC-21) — NFR-6** timeout /
+  retry-with-backoff / circuit-breaking, per **DEC-9**.
 - **Closed by S3-1 (2026-10-16), as DEC-28 decided (format the code once, Markdown excluded, and gate it) — `ruff format`.** Not gated in Phase 1: the tree is
   unformatted and a whole-tree reformat is the kind of diff that gets rubber-stamped
   (DEC-11). **Re-deferred at the Phase 2 exit:** a phase boundary is the one time no
@@ -1927,7 +2093,7 @@ diffed this backlog against `main`'s: no line was dropped.
 - **Closed by S2-7 (2026-10-12) —** `ChatOllama` leaves its HTTP client open
   (`ResourceWarning: unclosed socket` at exit). S2-1 closed the CLI half: `aclose_llm`,
   called at exit. The API's lifespan owns the client and closes it at shutdown.
-- **S3-6, absorbed by DEC-21 (an open Qdrant breaker short-circuits the reopen) — a back-off after a failed
+- **Closed by S3-6 (2026-10-23): while Qdrant's breaker is open, `Serving.refresh()` asks nothing — a back-off after a failed
   index reopen** (S2-7's second review). **Re-deferred at the Phase 2 exit:** it is the
   same concern as the health check's load, the next line: what an unauthenticated probe
   may cost.

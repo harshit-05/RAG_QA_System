@@ -86,6 +86,12 @@ prototype to production via a spec-driven story loop.
   last request, so after a dropped prefill the model can unload while you wait, and
   the next question pays a reload and a full prefill (S2-9).
 
+- **The hosted fallback (S3-6)** is off unless `pipeline.query.fallback_llm` names an entry.
+  It needs `uv sync --extra fallback`, which a plain `uv sync` removes again, and its key in
+  `RAG_FALLBACK_API_KEY`, read from the environment only (a shell may load a gitignored
+  `.env` with `set -a; . ./.env; set +a`). Never write the key to a file, never print it.
+  Without the extra, as in CI, `tests/test_fallback_openai.py` is skipped.
+
 - Commands: `rag-ingest`, `rag-query`, `rag-serve` (the HTTP API) and `rag-eval`
   (`retrieval` for tier 1; `generate`, `score` and `check` for tier 2). Servers and
   model runs go in the maintainer's foreground terminal, logged with `tee -i`: a

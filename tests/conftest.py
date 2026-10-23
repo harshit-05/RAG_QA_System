@@ -184,6 +184,13 @@ def sample_corpus(tmp_path: Path) -> Path:
 
 
 @pytest.fixture(autouse=True)
+def instant_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test waits between retries (S3-6): the back-off is random seconds, which would make
+    a failing call slow and a timing flaky. ``tests/test_resilience.py`` checks the real one."""
+    monkeypatch.setattr("rag_qa.resilience.backoff_s", lambda attempt: 0.0)
+
+
+@pytest.fixture(autouse=True)
 def isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A developer's exported RAG_* variables must not leak into any test: the paths, since
     S2-7 the server's RAG_API_* settings, a token included, and since S3-2 the store's
@@ -280,6 +287,21 @@ class StreamingFakeChatModel(BaseChatModel):
                 await asyncio.sleep(self.gap_s)
         finally:
             self.log.append("closed")
+
+
+def openai_error(name: str, *parents: str, status_code: int | None = None) -> type[Exception]:
+    """A stand-in for one of openai's errors: ``name``, under ``parents`` (nearest first),
+    each defined "in" the ``openai`` package, as the real ones say they are. That is all
+    :func:`rag_qa.resilience.classify` reads, so the hosted fallback's errors can be tested
+    without the ``fallback`` extra, which CI does not install. With ``status_code``, its
+    instances carry one, as openai's ``APIStatusError`` does (S3-6)."""
+    base: type[Exception] = Exception
+    for parent in reversed(parents):
+        base = type(parent, (base,), {"__module__": "openai"})
+    attrs: dict[str, Any] = {"__module__": "openai"}
+    if status_code is not None:
+        attrs["status_code"] = status_code
+    return type(name, (base,), attrs)
 
 
 class StubCrossEncoder:

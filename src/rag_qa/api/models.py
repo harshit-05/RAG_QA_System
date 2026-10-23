@@ -64,12 +64,23 @@ class LlmHealth(BaseModel):
     detail: str
 
 
+class BreakerHealth(BaseModel):
+    """One dependency's circuit breaker (DEC-21, S3-6). ``retry_after_s`` is how long an
+    open one waits before it lets a probe through, and ``null`` unless it is open."""
+
+    state: Literal["closed", "open", "half-open"]
+    retry_after_s: int | None
+
+
 class Health(BaseModel):
-    """``GET /v1/health``: 200 when ready, 503 when not."""
+    """``GET /v1/health``: 200 when ready, 503 when not. ``breakers`` holds ``qdrant``,
+    ``llm`` and, with a hosted fallback configured, ``fallback``: named by role, never by
+    address (DEC-18)."""
 
     status: Literal["ready", "not ready"]
     index: IndexHealth
     llm: LlmHealth
+    breakers: dict[str, BreakerHealth]
 
 
 class DocumentInfo(BaseModel):

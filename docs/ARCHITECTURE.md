@@ -2456,6 +2456,50 @@ Ollama gets an opt-in hosted fallback.** This resolves DEC-9, and NFR-6.
 Rejected: `.with_fallbacks()`; retrying after the first token; pybreaker; retries around
 models that run in process.
 
+_As built in S3-6 (2026-10-22), from its approved plan (the story's "Plan", D1–D13):_
+
+- **The key is `RAG_FALLBACK_API_KEY`** (D1, the maintainer's proposal), which amends "the
+  provider's own variable" above. `settings.FallbackSettings` reads it, and our code passes
+  it to `ChatOpenAI`. Without an explicit `api_key`, langchain-openai 1.6.2 reads
+  `OPENAI_API_KEY`, or a LangSmith gateway key, never `GROQ_API_KEY`, and would send it to
+  the entry's `base_url`. A fallback set without the variable exits 2. A gitignored `.env`,
+  loaded by the shell, may hold it, and `.env.example` names it.
+- **Breakers belong to their clients** (D2): `QdrantStore.breaker`, and the pipeline's
+  `llm_breaker` and `fallback_breaker`. A breaker opens after 3 consecutive failed attempts
+  and probes after 30 s, one probe at a time. While the probe is out the API refuses other
+  questions as it does while open, with `Retry-After: 5`, before any retrieval
+  (`CircuitBreaker.refusal_s`; S3-6's first review). A failure is a connection error, a
+  timeout, a 429 or a 5xx; any other answer counts as a success, and a cancel as no verdict.
+  An error raised by the fallback's stream is marked as its own, since its HTTP client's
+  errors look like Ollama's (`resilience.mark_fallback`).
+  `resilience.classify` matches errors by class name and module, for httpx, httpx2 (openai
+  3.3.0 is built on it), openai, ollama and the builtins, without importing them (D5).
+- **Qdrant:** each request is tried up to 3 times through tenacity, with a full-jitter
+  back-off of `U(0, min(4, 0.5·2^(n−1)))` s. What a repeat counts as done was checked on
+  1.19.2: a create that finds our collection listed; a delete answering `False`; a repeat of
+  the alias switch, which is a no-op. The read-back after a failed switch is retried but
+  never refused by the breaker, since the switch's own failures may just have opened it
+  (found in S3-6). The retrieval deadline is the store's `deadline_s: 15` (D6), and a search
+  inside it asks for what is left as its own timeout, which qdrant-client 1.19.1 also
+  bounds the HTTP request by.
+- **Ollama's timeouts** are `client_kwargs.timeout: {connect: 5, read: 600, write: 30,
+  pool: 30}`. A mapping of the four phases becomes httpx's `Timeout`, or openai's for a
+  `langchain_openai` model, and the schema checks it at load (D7).
+- **The fallback entry** is `components.llms.groq_fallback`, Groq's `openai/gpt-oss-120b`,
+  with `reasoning_effort: low`, `extra_body: {include_reasoning: false}`,
+  `max_completion_tokens: 1024`, `max_retries: 0` and `timeout: {connect: 5, read: 60,
+  write: 30, pool: 30}`. Once `fallback_llm` names an entry, the load requires another
+  entry than `llm`, on `ChatOpenAI`, with a `base_url`, `max_retries: 0` and a `timeout`
+  (D8).
+- **It gets an HTTP client of its own** (D9): langchain-openai caches one default async
+  client per base URL and timeout, shared by every instance, so closing one would close all.
+- **`Done.model` is the config reference of the model that answered** (D3).
+  `rag-eval generate` runs the start-up check, so a stopped Ollama exits 2 rather than
+  with a traceback, and it builds no fallback (D10).
+- **A component key named `api_key` or `*_api_key` is refused at load** (D11), which is a
+  contract change. The S3-3 read timeout with Qdrant up is absorbed by the retries, and an
+  exhausted one now says "did not answer in time" (D13).
+
 **DEC-22 — Observability: structured logs through structlog, OpenTelemetry spans we create
 ourselves, Prometheus metrics, and burn-rate alerts** (NFR-10).
 
@@ -2750,7 +2794,9 @@ a separate ingest worker (on one host there is no CPU to isolate it on).
       five pypdf 6.19.0 advisories with fixed releases are ignored, because those releases
       extract the corpus differently and change 7 of the 25 golden contexts. The bump rides
       S3-11b's one re-run with `CHUNKING_VERSION` 2. The step fails on its own after
-      2027-01-20, 90 days out, as Trivy's ignores expire;
+      2027-01-20, 90 days out, as Trivy's ignores expire. _Extended by the maintainer on
+      2026-10-23 (S3-6's CI) to three more pypdf advisories published on 2026-10-22, for
+      the same reasons and to the same end: eight in all;_
     - Trivy's ignores in `.trivyignore.yaml`, each with a statement and an `expired_at` at
       most 90 days out;
     - a weekly scheduled run of the whole workflow on `main`, so an advisory surfaces
@@ -3110,7 +3156,8 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
   plan settles the exact type. _As built in S3-5:_ a frozen dataclass in `chain.py`, and the
   retrieval half is `Runnable[RetrievalQuery, list[Document]]`, with no `str` form; tier 1
   passes `RetrievalQuery(item.question)`.
-- `Done(ttft_ms, total_ms, model, input_tokens, output_tokens)`.
+- `Done(ttft_ms, total_ms, model, input_tokens, output_tokens)`. _As built in S3-6:_ `model`
+  is the config reference of the model that answered; S3-7 adds the token counts.
 
 **HTTP changes** (to §2.4's table):
 
@@ -3139,6 +3186,7 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
 | Variable | Story | Meaning |
 | --- | --- | --- |
 | `RAG_QDRANT_URL`, `RAG_QDRANT_COLLECTION`, `RAG_QDRANT_API_KEY` | S3-2 | the store's address, the alias (a scratch index is another name), its key |
+| `RAG_FALLBACK_API_KEY` | S3-6 | the hosted fallback's key, whatever its provider (DEC-21's as-built note) |
 | `RAG_STATE_PATH` | S3-2 | replaces `RAG_VECTOR_STORE_PATH`, which is refused while set |
 | `RAG_LOG_FORMAT`; `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | S3-7 | logs; traces (the standard variables) |
 | `RAG_API_METRICS_PORT` | S3-7 | the metrics listener, off unless set |

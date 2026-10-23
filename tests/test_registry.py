@@ -1,5 +1,6 @@
 """The ``_target_`` machinery and its import allowlist (ISS-04, DEC-7)."""
 
+import importlib.util
 from typing import Any
 
 import pytest
@@ -20,6 +21,11 @@ DROPPED = [
     "langchain_community.cross_encoders.HuggingFaceCrossEncoder",
     "langchain_community.vectorstores.FAISS",
 ]
+
+#: The packages only an optional extra installs, and the entries of the real config built on
+#: them: imported only where the extra is installed. CI installs none of the extras, and
+#: ``fallback`` holds the hosted fallback's ``langchain_openai`` (S3-6).
+EXTRA_ONLY = {"langchain_openai": ["components.llms.groq_fallback"]}
 
 # --- import_from_string ----------------------------------------------------------------
 
@@ -301,13 +307,23 @@ def test_every_target_in_the_real_config_imports_used_or_not() -> None:
     # The allowlist shrank (S2-4), so every entry must still build, unreferenced ones too:
     # the _cuda devices and the spare LLMs. Before S2-4 the reranker entry was left out,
     # so that langchain_classic was never imported (ADR-007); nothing needs that now.
+    # An entry whose extra is not installed is left out, and only those (S3-6): the test
+    # checks that nothing else hides behind the exception.
     config = load_config(REAL_CONFIG)
     every_entry = [
         f"components.{kind}.{name}"
         for kind in Components.model_fields
         for name in getattr(config.components, kind)
     ]
-    check_imports(config, every_entry)  # retrievers have no _target_, so add nothing
+    absent = [package for package in EXTRA_ONLY if importlib.util.find_spec(package) is None]
+    left_out = [
+        ref
+        for ref in every_entry
+        if any(target.startswith(f"{p}.") for _, target in config.targets(ref) for p in absent)
+    ]
+    assert left_out == [ref for package in absent for ref in EXTRA_ONLY[package]]
+    # Retrievers have no _target_, so add nothing.
+    check_imports(config, [ref for ref in every_entry if ref not in left_out])
 
 
 def test_check_imports_reports_a_nested_missing_class_with_its_location(
@@ -353,3 +369,27 @@ def test_check_imports_catches_what_the_load_check_cannot(
 def test_retriever_settings_have_nothing_to_import() -> None:
     config = load_config(REAL_CONFIG)
     assert config.targets(config.pipeline.query.retriever) == []
+
+
+# --- langchain_openai., for the hosted fallback (S3-6, ADR-020) -----------------------------
+
+
+def test_the_fallback_s_package_is_allowed_by_its_prefix() -> None:
+    # Used, so allowed (ADR-020): components.llms.groq_fallback is built on ChatOpenAI.
+    assert registry.is_allowed("langchain_openai.ChatOpenAI")
+    assert not registry.is_allowed("langchain_openaix.ChatOpenAI")  # a prefix ends in "."
+    assert "'langchain_openai.'" in allowlist_hint()
+
+
+def test_the_fallback_s_class_imports_where_its_extra_is_installed() -> None:
+    pytest.importorskip("langchain_openai", reason="the fallback extra is not installed")
+    from langchain_openai import ChatOpenAI
+
+    assert import_from_string("langchain_openai.ChatOpenAI") is ChatOpenAI
+
+
+def test_a_name_langchain_openai_merely_reexports_is_refused() -> None:
+    pytest.importorskip("langchain_openai", reason="the fallback extra is not installed")
+    # pydantic's SecretStr, found under langchain_openai's package, defined elsewhere.
+    with pytest.raises(ImportError, match="re-exports does not count"):
+        import_from_string("langchain_openai.chat_models.base.SecretStr")

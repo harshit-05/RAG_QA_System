@@ -7,6 +7,7 @@ fake embedder, and the llm is a fake chat model, so nothing needs Ollama or a do
 import asyncio
 import dataclasses
 import json
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from conftest import (
 )
 
 from rag_qa.chain import build_query_pipeline
+from rag_qa.components import OLLAMA_HINT
 from rag_qa.config import load_config
 from rag_qa.evaluation import fingerprint as fp
 from rag_qa.evaluation.cli import EXIT_CANNOT_RUN, EXIT_OK, main
@@ -391,3 +393,56 @@ def test_an_unreachable_ollama_records_no_digest() -> None:
     data = yaml.safe_load(REAL_CONFIG.read_text())
     data["components"]["llms"]["mistral_ollama"]["base_url"] = "http://127.0.0.1:9"
     assert generator_record(load_config_from(data)).digest is None
+
+
+# --- tier 2 and the hosted fallback (S3-6, DEC-21) ------------------------------------------
+
+
+def refuse_the_fallback(config: Any) -> None:
+    raise AssertionError("tier 2 built the hosted fallback")
+
+
+def test_generate_never_builds_the_fallback_even_with_one_configured(
+    evals: Path, make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Tier 2 measures the model it names: no answer of a run may come from elsewhere, and its
+    # key (unset here) is not needed.
+    def edit(c: dict[str, Any]) -> None:
+        use_fakes(c)
+        c["pipeline"]["query"]["fallback_llm"] = "components.llms.groq_fallback"
+
+    make_config(edit)  # over the same file as evals
+    monkeypatch.setattr("rag_qa.components.build_fallback_llm", refuse_the_fallback)
+    monkeypatch.setattr("rag_qa.chain.build_fallback_llm", refuse_the_fallback)
+    assert generate(evals) == EXIT_OK
+    run = load_answers(evals.parent / "eval" / "runs" / "answers-latest.json")
+    assert {item.answer for item in run.items} == {FAKE_ANSWER}
+
+
+def test_generate_with_ollama_down_cannot_run_and_names_it(
+    evals: Path, make_config: MakeConfig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Its start-up check, as rag-query's (S3-6): one reason and exit 2, not a traceback.
+    def edit(c: dict[str, Any]) -> None:
+        use_fakes(c)
+        c["components"]["llms"]["probe"] = {
+            "_target_": "langchain_ollama.ChatOllama",
+            "model": "mistral",
+            "base_url": dead_url(),
+            "validate_model_on_init": True,
+        }
+        c["pipeline"]["query"]["llm"] = "components.llms.probe"
+
+    make_config(edit)
+    assert generate(evals) == EXIT_CANNOT_RUN
+    err = capsys.readouterr().err
+    assert "Error: cannot build the language model components.llms.probe" in err
+    assert OLLAMA_HINT in err
+    assert "Traceback" not in err
+
+
+def dead_url() -> str:
+    """A local port nothing listens on, so a connection there is refused at once."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return f"http://127.0.0.1:{sock.getsockname()[1]}"
