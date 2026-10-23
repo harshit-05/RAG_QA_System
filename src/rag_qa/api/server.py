@@ -8,7 +8,8 @@ when it listens beyond this machine.
 Before uvicorn starts, it checks Qdrant (DEC-19), then that the language model's server
 answers (:func:`rag_qa.components.preflight`, which ``rag-query`` runs too). A failure
 inside uvicorn's start-up would end in a traceback, not a reason (Starlette hands uvicorn
-the formatted traceback of a failed lifespan).
+the formatted traceback of a failed lifespan). With a hosted fallback configured, Ollama
+down is a warning in the log, and the fallback answers until it is back (DEC-21, S3-6).
 
 uvicorn reports ASGI spec 2.3, under which a client disconnect cancels its answer at once,
 during the model's prompt evaluation too. That is why this command runs uvicorn and
@@ -16,7 +17,8 @@ nothing else (DEC-18).
 
 ``rag-serve`` exit codes: **0** the server ran and was stopped with Ctrl-C; **2** it could
 not start (invalid settings, a non-loopback host without a token, a configuration error,
-Qdrant unusable, the model's server not answering, the address in use, or a usage error).
+Qdrant unusable, the model's server not answering with no hosted fallback configured, the
+address in use, or a usage error).
 A SIGTERM shuts
 it down the same way, and uvicorn then ends the process by that signal, as service
 managers expect (status 143 in a shell).
@@ -65,8 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
         "Server-Sent Events. Set RAG_API_TOKEN to require a bearer token.",
         epilog="Exit status: 0 the server ran and was stopped with Ctrl-C; 2 could not "
         "start (invalid settings, a non-loopback host without RAG_API_TOKEN, a "
-        "configuration error, the language model's server not answering, the address in "
-        "use, or a usage error).",
+        "configuration error, the language model's server not answering with no hosted "
+        "fallback configured, the address in use, or a usage error).",
     )
     parser.add_argument(
         "--config",
@@ -132,10 +134,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             "adds TLS. Use this only on a network you trust.",
             host,
         )
-    problem = preflight(config)
-    if problem is not None:
-        print(f"Error: {problem}", file=sys.stderr)
+    check = preflight(config)
+    if check.problem is not None:
+        print(f"Error: {check.problem}", file=sys.stderr)
         return EXIT_CANNOT_START
+    if check.warning is not None:  # Ollama down, and the hosted fallback answers (DEC-21)
+        logger.warning("%s", check.warning)
+    fallback = config.pipeline.query.fallback_llm
+    if fallback is not None and check.warning is None:
+        logger.info(
+            "When the language model cannot answer, the hosted fallback %s does: the question "
+            "and its retrieved chunks are then sent to %s.",
+            fallback,
+            config.component(fallback).spec()["base_url"],
+        )
 
     server = uvicorn.Server(
         uvicorn.Config(

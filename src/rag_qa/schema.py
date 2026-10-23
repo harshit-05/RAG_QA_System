@@ -21,12 +21,13 @@ copies. A caller mutating what it got back cannot reach the config.
 """
 
 import difflib
+import math
 import re
 import string
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Final
 
 from pydantic import (
     BaseModel,
@@ -101,15 +102,30 @@ def iter_key(node: Any, key: str, path: str = "") -> Iterator[tuple[str, Any]]:
     Locations read as :func:`iter_targets`' do: ``model_kwargs.trust_remote_code``, or
     ``items[0].trust_remote_code`` inside a list.
     """
+    return iter_keys(node, lambda name: name == key, path)
+
+
+def iter_keys(
+    node: Any, matches: Callable[[Any], bool], path: str = ""
+) -> Iterator[tuple[str, Any]]:
+    """Every value stored under a key that ``matches``, at any depth of a spec, with its
+    location, as :func:`iter_key` reads one key."""
     if isinstance(node, dict):
         for name, value in node.items():
             here = f"{path}.{name}" if path else str(name)
-            if name == key:
+            if matches(name):
                 yield here, value
-            yield from iter_key(value, key, here)
+            yield from iter_keys(value, matches, here)
     elif isinstance(node, list):
         for index, item in enumerate(node):
-            yield from iter_key(item, key, f"{path}[{index}]")
+            yield from iter_keys(item, matches, f"{path}[{index}]")
+
+
+def is_api_key(name: Any) -> bool:
+    """Whether a config key names an API key: ``api_key``, or ``…_api_key``, in any case."""
+    return isinstance(name, str) and (
+        name.lower() == "api_key" or name.lower().endswith("_api_key")
+    )
 
 
 class _Strict(BaseModel):
@@ -294,6 +310,64 @@ def _whole(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
+#: A timeout's phases, in seconds, when it is spelled as a mapping (S3-6, DEC-21): how long
+#: to connect, to wait between the bytes of an answer, to send a request, and to wait for a
+#: free pooled connection. All four, as httpx's ``Timeout`` takes them without a default.
+TIMEOUT_PHASES: Final = ("connect", "read", "write", "pool")
+#: ChatOllama's settings for its HTTP clients: both of them, the async one, the sync one.
+CLIENT_KWARGS: Final = ("client_kwargs", "async_client_kwargs", "sync_client_kwargs")
+#: How config.yaml spells an Ollama model's timeout, for the messages that ask for one.
+TIMEOUT_EXAMPLE: Final = "{connect: 5, read: 600, write: 30, pool: 30}"
+
+
+def llm_timeouts(spec: Mapping[str, Any]) -> Iterator[tuple[str, Any]]:
+    """A language model's timeouts, with their locations: its own ``timeout`` (ChatOpenAI
+    has one) and the one in each of :data:`CLIENT_KWARGS` (ChatOllama's)."""
+    if "timeout" in spec:
+        yield "timeout", spec["timeout"]
+    for key in CLIENT_KWARGS:
+        holder = spec.get(key)
+        if isinstance(holder, Mapping) and "timeout" in holder:
+            yield f"{key}.timeout", holder["timeout"]
+
+
+def _seconds(value: Any) -> bool:
+    """Whether ``value`` is a positive, finite number of seconds (``True`` is not one)."""
+    return (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
+def timeout_problem(value: Any) -> str | None:
+    """Why ``value`` cannot be a timeout, or ``None`` when it can: a positive number of
+    seconds, which every phase then gets, or a mapping of exactly :data:`TIMEOUT_PHASES`,
+    each a positive number of seconds."""
+    if _seconds(value):
+        return None
+    if isinstance(value, Mapping):
+        missing = [phase for phase in TIMEOUT_PHASES if phase not in value]
+        unknown = sorted(str(key) for key in value if key not in TIMEOUT_PHASES)
+        wrong = [p for p in TIMEOUT_PHASES if p in value and not _seconds(value[p])]
+        if not (missing or unknown or wrong):
+            return None
+        details = [
+            *([f"it has no {', '.join(missing)}"] if missing else []),
+            *([f"{', '.join(map(repr, unknown))} is not a phase"] if unknown else []),
+            *([f"{', '.join(wrong)} must be a positive number of seconds"] if wrong else []),
+        ]
+        return (
+            f"{'; '.join(details)}. A timeout's phases are all four of "
+            f"{', '.join(TIMEOUT_PHASES)}, in seconds, e.g. {TIMEOUT_EXAMPLE}"
+        )
+    return (
+        f"a timeout is a positive number of seconds, or the four phases "
+        f"{', '.join(TIMEOUT_PHASES)} in seconds, e.g. {TIMEOUT_EXAMPLE}; not {value!r}"
+    )
+
+
 class Components(_Strict):
     """The component library. The kinds are fixed; the entries inside each are not."""
 
@@ -357,22 +431,60 @@ class Components(_Strict):
         any depth. A truthy value is refused, so the string ``"false"`` is too: it is
         truthy where it is used.
         """
-        found = []
-        for kind in type(self).model_fields:
-            entries: Mapping[str, ComponentSpec | RetrieverSpec] = getattr(self, kind)
-            for name, entry in entries.items():
-                spec = entry.spec() if isinstance(entry, ComponentSpec) else entry.kwargs()
-                found += [
-                    f"{kind}.{name}.{where}"
-                    for where, value in iter_key(spec, "trust_remote_code")
-                    if value
-                ]
+        found = [
+            f"{kind}.{name}.{where}"
+            for kind, name, spec in self._specs()
+            for where, value in iter_key(spec, "trust_remote_code")
+            if value
+        ]
         if found:
             raise ValueError(
                 f"{', '.join(found)}: trust_remote_code is set. It runs Python from the "
                 f"model's repository on this host, so no config may enable it. Remove it, "
                 f"or set it to false"
             )
+        return self
+
+    def _specs(self) -> Iterator[tuple[str, str, dict[str, Any]]]:
+        """Every entry of every kind, as ``(kind, name, spec)``; a retriever's settings stand
+        in for its spec."""
+        for kind in type(self).model_fields:
+            entries: Mapping[str, ComponentSpec | RetrieverSpec] = getattr(self, kind)
+            for name, entry in entries.items():
+                spec = entry.spec() if isinstance(entry, ComponentSpec) else entry.kwargs()
+                yield kind, name, spec
+
+    @model_validator(mode="after")
+    def check_api_keys(self) -> "Components":
+        """No component may hold an API key (§9; DEC-21, S3-6): a key named ``api_key``, or
+        ending in ``_api_key``, in any case and at any depth, of any kind. A config file is
+        committed; a key comes from the environment only. Its value is never repeated."""
+        found = [
+            f"{kind}.{name}.{where}"
+            for kind, name, spec in self._specs()
+            for where, _ in iter_keys(spec, is_api_key)
+        ]
+        if found:
+            raise ValueError(
+                f"{', '.join(found)}: an API key in a config file would be committed with it. "
+                f"Keys come from the environment only: the hosted fallback's from "
+                f"RAG_FALLBACK_API_KEY, Qdrant's from RAG_QDRANT_API_KEY. Remove it here"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def check_llm_timeouts(self) -> "Components":
+        """A language model's ``timeout``, and the one in its HTTP client's settings, is a
+        number of seconds or :data:`TIMEOUT_PHASES` (S3-6, DEC-21). Building the model turns
+        the phases into its client library's ``Timeout``, which YAML cannot spell."""
+        problems = [
+            f"llms.{name}.{where}: {problem}"
+            for name, spec in self.llms.items()
+            for where, value in llm_timeouts(spec.spec())
+            if (problem := timeout_problem(value)) is not None
+        ]
+        if problems:
+            raise ValueError("; ".join(problems))
         return self
 
 
@@ -510,6 +622,9 @@ class Query(_Strict):
     #: How many chunks the retriever fetches for the reranker, in place of its own ``k``.
     #: Only with a reranker, which cuts them down to its ``top_n`` (DEC-16).
     reranker_candidates: int | None = Field(default=None, ge=1)
+    #: The hosted fallback (DEC-21, S3-6): an llms entry on :data:`FALLBACK_TARGET` that
+    #: answers only when ``llm`` cannot. Unset, nothing leaves the host; tier 2 never uses it.
+    fallback_llm: str | None = None
 
     @model_validator(mode="after")
     def check_reranker_candidates(self) -> "Query":
@@ -699,7 +814,11 @@ _SLOT_KINDS = {
     ("query", "llm"): "llms",
     ("query", "retriever"): "retrievers",
     ("query", "reranker"): "rerankers",
+    ("query", "fallback_llm"): "llms",
 }
+
+#: What a hosted fallback is built on (DEC-21): any OpenAI-compatible provider, through it.
+FALLBACK_TARGET: Final = "langchain_openai.ChatOpenAI"
 
 
 class RagConfig(_Strict):
@@ -819,6 +938,54 @@ class RagConfig(_Strict):
             )
         if problems:
             raise ValueError("\n".join(problems))
+        return self
+
+    # After check_references too, so the fallback's reference resolves.
+    @model_validator(mode="after")
+    def check_fallback(self) -> "RagConfig":
+        """The hosted fallback is another model, on :data:`FALLBACK_TARGET`, that says where
+        it sends the question and its chunks, and hides no failure from its breaker (D8 of
+        S3-6's plan, DEC-21).
+
+        ``max_retries: 0`` and a ``timeout`` are required: the OpenAI SDK otherwise retries
+        twice on its own, with a 600 s timeout (``openai/_constants.py``), which would keep
+        the breaker from seeing a dead provider for minutes.
+        """
+        query = self.pipeline.query
+        ref = query.fallback_llm
+        if ref is None:
+            return self
+        spec = self.component(ref).spec()
+        problems = []
+        if ref == query.llm:
+            problems.append(
+                "it names pipeline.query.llm itself: the fallback answers when that model "
+                "cannot, so it must be another"
+            )
+        if spec["_target_"] != FALLBACK_TARGET:
+            problems.append(
+                f"its _target_ is {spec['_target_']!r}: a hosted fallback is a "
+                f"{FALLBACK_TARGET} entry, for any OpenAI-compatible provider"
+            )
+        base_url = spec.get("base_url")
+        if not isinstance(base_url, str) or not base_url.strip():
+            problems.append(
+                "it states no base_url: the provider's address, where the question and its "
+                "retrieved chunks are sent when it answers"
+            )
+        retries = spec.get("max_retries")
+        if not isinstance(retries, int) or isinstance(retries, bool) or retries != 0:
+            problems.append(
+                "it must set max_retries: 0. The OpenAI SDK otherwise retries twice on its "
+                "own, hiding a dead provider from the fallback's breaker"
+            )
+        if "timeout" not in spec:
+            problems.append(
+                f"it must set a timeout, in seconds or as the four phases, e.g. "
+                f"{TIMEOUT_EXAMPLE}: the OpenAI SDK's own is 600 s"
+            )
+        if problems:
+            raise ValueError(f"pipeline.query.fallback_llm {ref!r}: " + "; ".join(problems))
         return self
 
     def _reference_problem(self, ref: str, expected_kind: str) -> str | None:

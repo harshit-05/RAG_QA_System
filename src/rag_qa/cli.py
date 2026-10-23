@@ -33,6 +33,11 @@ not a traceback. Once the session runs, the alias is resolved again before every
 (DEC-19), so an ingest made meanwhile is answered from, and a session never outlives the
 generation it started on.
 
+**The hosted fallback (S3-6, DEC-21).** With ``pipeline.query.fallback_llm`` set, Ollama
+down at the start is a warning, not exit 2, and the fallback answers until Ollama is back:
+"(answered by the hosted fallback, …)" follows each such answer, whose question and sources
+left this machine. Without one, a stopped Ollama stops the start, as before.
+
 ``rag-query`` exit codes: **0** the session ended normally; **2** it could not start
 (configuration problem, Qdrant unusable, no index yet, an index this config cannot use,
 the language model's server not answering, a model that would not load, Ctrl-C while
@@ -51,7 +56,8 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
-from rag_qa.answering import AnswerEvent, SourceRef, Sources, Token, stream_answer
+from rag_qa import resilience
+from rag_qa.answering import AnswerEvent, Done, SourceRef, Sources, Token, stream_answer
 from rag_qa.chain import (
     IncompatibleIndexError,
     NoIndexError,
@@ -59,11 +65,12 @@ from rag_qa.chain import (
     build_query_pipeline,
     check_index,
 )
-from rag_qa.components import OLLAMA_HINT, build_store, preflight
+from rag_qa.components import OLLAMA_HINT, build_store, preflight, raised_by_fallback
 from rag_qa.config import ConfigError, load_config, resolve_config_path
 from rag_qa.manifest import Manifest
+from rag_qa.resilience import BreakerOpenError
 from rag_qa.schema import RagConfig
-from rag_qa.settings import ENV_CONFIG
+from rag_qa.settings import ENV_CONFIG, ENV_FALLBACK_API_KEY
 from rag_qa.vectorstore import StoreError, StoreUnavailableError
 
 GREEN, YELLOW, BLUE, RED, DIM, RESET = (
@@ -128,15 +135,18 @@ def print_sources(sources: list[SourceRef]) -> None:
     print(RESET, end="")
 
 
-async def render(events: AsyncIterator[AnswerEvent]) -> None:
+async def render(events: AsyncIterator[AnswerEvent], *, fallback: str | None = None) -> None:
     """Print one answer to the terminal as it streams, then its sources.
 
     The ``Answer:`` header waits for the first token, so an answer that fails or is
     interrupted before any text arrives prints no empty header above its error. An answer
-    that completes with no text at all still gets one.
+    that completes with no text at all still gets one. When the hosted fallback ``fallback``
+    answered, a line under the answer says so (S3-6): its question and sources left this
+    machine.
     """
     sources: list[SourceRef] = []
     answering = False
+    done: Done | None = None
     async for event in events:
         if isinstance(event, Sources):
             sources = event.sources
@@ -146,33 +156,38 @@ async def render(events: AsyncIterator[AnswerEvent]) -> None:
             answering = True
         if isinstance(event, Token):
             print(event.text, end="", flush=True)
+        elif isinstance(event, Done):
+            done = event
     print()
+    if fallback is not None and done is not None and done.model == fallback:
+        print(f"{DIM}(answered by the hosted fallback, {fallback}){RESET}")
     print_sources(sources)
 
 
-#: httpx's errors for a server that cannot be reached or that dropped the connection.
-#: Not its read, write and pool timeouts: those mean a slow server or a busy client, and
-#: "Is Ollama running?" would point the wrong way (S2-8's review).
-_UNREACHABLE = {"ConnectError", "ConnectTimeout", "ReadError", "WriteError", "RemoteProtocolError"}
-
-
 def _connection_failed(error: Exception) -> bool:
-    """Whether ``error`` is a refused or dropped connection: the builtin
-    ``ConnectionError``, or one of httpx's :data:`_UNREACHABLE`, which ChatOllama's stream
-    raises unwrapped (``ConnectError: All connection attempts failed``). httpx is matched
-    by name rather than imported: it comes with ollama, and is not a dependency of ours."""
-    return isinstance(error, ConnectionError) or any(
-        kind.__module__ == "httpx" and kind.__name__ in _UNREACHABLE for kind in type(error).__mro__
-    )
+    """Whether ``error`` is a refused or dropped connection
+    (:data:`~rag_qa.resilience.CONNECTION`): the builtin ``ConnectionError``, or httpx's
+    errors for a server it could not reach or that dropped the connection, which ChatOllama's
+    stream raises unwrapped (``ConnectError: All connection attempts failed``). Not the read,
+    write and pool timeouts: those mean a slow server or a busy client, and "Is Ollama
+    running?" would point the wrong way (S2-8's review)."""
+    return resilience.classify(error) == resilience.CONNECTION
 
 
 def describe_failure(error: Exception, llm: BaseChatModel) -> str:
     """A failed answer's error line. A connection error from an Ollama model names Ollama
     and adds :data:`~rag_qa.components.OLLAMA_HINT`: httpx's own text does not say what it
-    could not reach."""
+    could not reach. An open breaker says which service, and when it is tried again; the
+    hosted fallback's errors say they are its (S3-6)."""
     if isinstance(error, StoreError):  # Qdrant's: worded for the user, the hint included
         return str(error)
+    if isinstance(error, BreakerOpenError):
+        return f"{error}\n{OLLAMA_HINT}" if error.service == "Ollama" else str(error)
     text = f"{type(error).__name__}: {error}"
+    if raised_by_fallback(error):
+        refused = getattr(error, "status_code", None) in (401, 403)
+        check = f"\nCheck {ENV_FALLBACK_API_KEY}." if refused else ""
+        return f"the hosted fallback failed ({text}){check}"
     if _connection_failed(error) and type(llm).__module__.startswith("langchain_ollama"):
         return f"the connection to Ollama failed ({text})\n{OLLAMA_HINT}"
     return text
@@ -193,7 +208,11 @@ class _Answer:
 
     async def run(self) -> None:
         self.task = asyncio.current_task()
-        await render(stream_answer(self.pipeline, self.question, sources=self.sources))
+        pipeline = self.pipeline
+        fallback = pipeline.fallback_ref if pipeline.fallback_llm is not None else None
+        await render(
+            stream_answer(pipeline, self.question, sources=self.sources), fallback=fallback
+        )
 
     def unwinding(self) -> bool:
         """Whether a second Ctrl-C interrupted the cancelled answer before it finished.
@@ -289,6 +308,12 @@ def repl(
     print(f"\n{GREEN}System is ready. Ask questions.{RESET}")
     if sources:
         print(f"{YELLOW}Answering from {', '.join(sources)} only.{RESET}")
+    if pipeline.fallback_llm is not None:
+        print(
+            f"{YELLOW}When {pipeline.llm_breaker.name} cannot answer, the hosted fallback "
+            f"{pipeline.fallback_ref} does, and the question and its sources leave this "
+            f"machine.{RESET}"
+        )
     print(f"{YELLOW}Type 'exit' or 'quit' to end.{RESET}")
 
     runner = asyncio.Runner()
@@ -375,8 +400,10 @@ def start(
        file, in ``config_dir``. Then ``sources``, ``--source``'s documents, against its
        manifest (:func:`unknown_sources`);
     3. the language model's server (:func:`~rag_qa.components.preflight`): Ollama down, or
-       a model it lacks, before the embedder and the reranker take seconds to load;
-    4. the models, in :func:`build_query_pipeline`.
+       a model it lacks, before the embedder and the reranker take seconds to load. With a
+       hosted fallback configured, Ollama down is a warning, printed here, and the session
+       starts (DEC-21); the fallback must be buildable, its key set;
+    4. the models, in :func:`build_query_pipeline`, the fallback included.
 
     Only the start is guarded here; once the session runs, :func:`ask` handles each
     failed answer (ISS-06). A Ctrl-C propagates, for :func:`main` to report.
@@ -402,10 +429,12 @@ def start(
     if unknown is not None:
         return unknown
     try:
-        problem = preflight(config)
-        if problem is not None:
-            return problem
-        return build_query_pipeline(config, store=store)
+        check = preflight(config)
+        if check.problem is not None:
+            return check.problem
+        if check.warning is not None:
+            print(f"Warning: {check.warning}", file=sys.stderr)
+        return build_query_pipeline(config, store=store, fallback=True)
     # From the check that needs the embedder, the dimension; and Qdrant gone since.
     except (NoIndexError, StoreError) as e:
         return str(e)

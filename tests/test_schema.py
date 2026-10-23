@@ -521,3 +521,169 @@ def test_every_offending_entry_is_named_at_once() -> None:
         RagConfig.model_validate(data)
     assert "embedders.a.trust_remote_code" in str(exc.value)
     assert "llms.b.trust_remote_code" in str(exc.value)
+
+
+# --- API keys, timeouts and the hosted fallback (S3-6, DEC-21) -------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kind", "entry", "where"),
+    [
+        pytest.param(
+            "llms",
+            {"_target_": "langchain_openai.ChatOpenAI", "api_key": "sk-sentinel"},
+            "llms.evil.api_key",
+            id="top level",
+        ),
+        pytest.param(
+            "llms",
+            {"_target_": "rag_qa.stub.LLM", "openai_api_key": "sk-sentinel"},
+            "llms.evil.openai_api_key",
+            id="a provider's own name for it",
+        ),
+        pytest.param(
+            "llms",
+            {"_target_": "rag_qa.stub.LLM", "default_headers": {"GROQ_API_KEY": "sk-sentinel"}},
+            "llms.evil.default_headers.GROQ_API_KEY",
+            id="nested, in another case",
+        ),
+        pytest.param(
+            "vector_stores",
+            {"_target_": "rag_qa.stub.Store", "api_key": "sk-sentinel"},
+            "vector_stores.evil.api_key",
+            id="a store",
+        ),
+        pytest.param(
+            "embedders",
+            {"_target_": "rag_qa.stub.E", "items": [{"api_key": "sk-sentinel"}]},
+            "embedders.evil.items[0].api_key",
+            id="inside a list",
+        ),
+    ],
+)
+def test_an_api_key_anywhere_in_the_components_is_refused_without_its_value(
+    kind: str, entry: dict[str, Any], where: str
+) -> None:
+    # A config file is committed, and the repository is public: a key comes from the
+    # environment only (§9, DEC-21). Refused whatever its value, which the message never
+    # repeats. The messages are what load_config renders (from None): pydantic's own dump of
+    # the error repeats its input, value included, and is never shown.
+    with pytest.raises(ValidationError) as exc:
+        RagConfig.model_validate(with_entry(kind, "evil", entry))
+    message = " ".join(detail["msg"] for detail in exc.value.errors())
+    assert f"{where}: an API key in a config file would be committed" in message
+    assert "RAG_FALLBACK_API_KEY" in message and "RAG_QDRANT_API_KEY" in message
+    assert "sk-sentinel" not in message
+
+
+@pytest.mark.parametrize("name", ["api_keys", "key", "token_api", "apikey"])
+def test_other_names_are_not_api_keys(name: str) -> None:
+    RagConfig.model_validate(with_entry("llms", "fine", {"_target_": "rag_qa.stub.L", name: 1}))
+
+
+TIMEOUT = {"connect": 5, "read": 600, "write": 30, "pool": 30}
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"client_kwargs": {"timeout": TIMEOUT}},
+        {"async_client_kwargs": {"timeout": 9.5}},
+        {"sync_client_kwargs": {"timeout": TIMEOUT}},
+        {"timeout": TIMEOUT},
+        {"timeout": 60},
+    ],
+)
+def test_a_timeout_is_seconds_or_all_four_phases(entry: dict[str, Any]) -> None:
+    RagConfig.model_validate(with_entry("llms", "fine", {"_target_": "rag_qa.stub.L", **entry}))
+
+
+@pytest.mark.parametrize(
+    ("timeout", "said"),
+    [
+        ({"connect": 5, "read": 600}, "it has no write, pool"),
+        ({**TIMEOUT, "total": 9}, "'total' is not a phase"),
+        ({**TIMEOUT, "read": 0}, "read must be a positive number of seconds"),
+        ({**TIMEOUT, "read": True}, "read must be a positive number of seconds"),
+        ({**TIMEOUT, "pool": float("inf")}, "pool must be a positive number of seconds"),
+        (-1, "a timeout is a positive number of seconds"),
+        ("600", "a timeout is a positive number of seconds"),
+        (None, "a timeout is a positive number of seconds"),
+    ],
+)
+def test_a_timeout_of_another_shape_is_refused_at_load(timeout: Any, said: str) -> None:
+    entry = {"_target_": "rag_qa.stub.L", "client_kwargs": {"timeout": timeout}}
+    with pytest.raises(ValidationError, match="llms.slow.client_kwargs.timeout: ") as exc:
+        RagConfig.model_validate(with_entry("llms", "slow", entry))
+    assert said in str(exc.value)
+
+
+SPARE = {
+    "_target_": "langchain_openai.ChatOpenAI",
+    "model": "openai/gpt-oss-120b",
+    "base_url": "https://api.example.test/v1",
+    "max_retries": 0,
+    "timeout": TIMEOUT,
+}
+
+
+def with_fallback(entry: dict[str, Any] | None = None, ref: str = "components.llms.spare") -> Any:
+    data = with_entry("llms", "spare", SPARE if entry is None else entry)
+    data["pipeline"]["query"]["fallback_llm"] = ref
+    return data
+
+
+def test_a_fallback_on_chat_openai_with_its_address_and_no_retries_loads() -> None:
+    config = RagConfig.model_validate(with_fallback())
+    assert config.pipeline.query.fallback_llm == "components.llms.spare"
+    assert config.references()["pipeline.query.fallback_llm"] == "components.llms.spare"
+
+
+def test_no_fallback_is_the_default(config: RagConfig) -> None:
+    assert config.pipeline.query.fallback_llm is None
+    assert "pipeline.query.fallback_llm" not in config.references()
+
+
+@pytest.mark.parametrize(
+    ("change", "said"),
+    [
+        (lambda e: e.update(_target_="rag_qa.stub.LLM"), "a hosted fallback is a langchain_openai"),
+        (lambda e: e.pop("base_url"), "it states no base_url"),
+        (lambda e: e.update(base_url="  "), "it states no base_url"),
+        (lambda e: e.pop("max_retries"), "it must set max_retries: 0"),
+        (lambda e: e.update(max_retries=2), "it must set max_retries: 0"),
+        (lambda e: e.update(max_retries=False), "it must set max_retries: 0"),
+        (lambda e: e.pop("timeout"), "it must set a timeout"),
+    ],
+    ids=[
+        "another class",
+        "no address",
+        "a blank address",
+        "retries unset",
+        "two retries",
+        "retries false",
+        "no timeout",
+    ],
+)
+def test_a_fallback_that_could_hide_a_failure_or_its_destination_is_refused(
+    change: Any, said: str
+) -> None:
+    entry = copy.deepcopy(SPARE)
+    change(entry)
+    with pytest.raises(
+        ValidationError, match="pipeline.query.fallback_llm 'components.llms.spare'"
+    ) as exc:
+        RagConfig.model_validate(with_fallback(entry))
+    assert said in str(exc.value)
+
+
+def test_the_fallback_must_be_another_model_than_the_one_it_backs() -> None:
+    data = with_fallback()
+    data["pipeline"]["query"]["llm"] = "components.llms.spare"
+    with pytest.raises(ValidationError, match="it names pipeline.query.llm itself"):
+        RagConfig.model_validate(data)
+
+
+def test_the_fallback_must_name_an_llms_entry() -> None:
+    with pytest.raises(ValidationError, match="this slot needs an entry of components.llms"):
+        RagConfig.model_validate(with_fallback(ref="components.rerankers.spare"))

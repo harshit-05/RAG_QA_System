@@ -8,9 +8,11 @@ late. Each check is therefore a dependency, and they run in this order:
 2. With no token set, a ``Host`` that is not loopback: 403 (:func:`check_host`).
 3. With a token set, a missing or wrong bearer token: 401 (:func:`require_token`).
    Every route needs it except the two health probes.
-4. ``POST /v1/query`` only: no free slot, 503 with ``Retry-After`` (:func:`take_slot`).
-5. ``POST /v1/query`` only: no index the config can use, 503 (:func:`served_pipeline`).
-6. ``POST /v1/query`` only: a body that breaks the request model, then a source the served
+4. ``POST /v1/query`` only: a dependency the answer needs is down, its breaker open, 503
+   with ``Retry-After`` (:func:`refuse_while_down`, DEC-21). It takes no slot.
+5. ``POST /v1/query`` only: no free slot, 503 with ``Retry-After`` (:func:`take_slot`).
+6. ``POST /v1/query`` only: no index the config can use, 503 (:func:`served_pipeline`).
+7. ``POST /v1/query`` only: a body that breaks the request model, then a source the served
    index does not hold, 422 (:func:`known_sources`).
 
 **The body comes in two steps** (S2-7's first review). FastAPI parses it before it runs any
@@ -42,9 +44,11 @@ from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
-from rag_qa.answering import AnswerEvent, Sources, Token, stream_answer
+from rag_qa import resilience
+from rag_qa.answering import AnswerEvent, Done, Sources, Token, stream_answer
 from rag_qa.api.jobs import IngestJob, JobRunningError
 from rag_qa.api.models import (
+    BreakerHealth,
     DocumentInfo,
     Documents,
     Health,
@@ -56,10 +60,12 @@ from rag_qa.api.models import (
     LlmHealth,
     QueryRequest,
 )
-from rag_qa.api.state import NO_INDEX_YET, REINGEST, Serving, Slot
+from rag_qa.api.state import NO_INDEX_YET, REINGEST, STORE_DOWN, Serving, Slot, wait_s
 from rag_qa.chain import IncompatibleIndexError, NoIndexError, QueryPipeline
-from rag_qa.components import llm_reachable
+from rag_qa.components import FALLBACK_SERVICE, llm_reachable, raised_by_fallback
+from rag_qa.resilience import OPEN, BreakerOpenError, CircuitBreaker
 from rag_qa.settings import ServerSettings, is_loopback
+from rag_qa.vectorstore import StoreError
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +173,20 @@ def require_token(
         )
 
 
+def refuse_while_down(serving: Annotated[Serving, Depends(get_serving)]) -> None:
+    """503 with ``Retry-After`` while a dependency the answer needs is known to be down: its
+    breaker is open (DEC-21, :meth:`rag_qa.api.state.Serving.unavailable`). Before the slot,
+    so a refusal holds none, and before the first byte, as every refusal (DEC-18)."""
+    down = serving.unavailable()
+    if down is not None:
+        detail, retry_after = down
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail,
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
 async def take_slot(serving: Annotated[Serving, Depends(get_serving)]) -> AsyncIterator[Slot]:
     """A slot for one answer, or 503 with ``Retry-After`` rather than a wait in a queue.
 
@@ -235,26 +255,34 @@ def error_message(error: Exception) -> str:
     """A fixed message for an answer that failed after its stream began.
 
     Fixed, because the exceptions' own text carries paths and URLs: the full exception
-    goes to the server log only (DEC-18). The model's errors are told apart by class name,
-    so this module imports neither httpx nor ollama; the text is for people, never logic.
+    goes to the server log only (DEC-18). The models' errors are told apart by
+    :func:`rag_qa.resilience.classify`, which reads class names, so this module imports
+    neither httpx, ollama nor openai; the text is for people, never logic. A service is
+    named, never its address: the store, the model, or the hosted fallback (S3-6).
     """
     if isinstance(error, IncompatibleIndexError):
         return REINGEST
     if isinstance(error, NoIndexError):
         return NO_INDEX_YET
-    names = {cls.__name__ for cls in type(error).__mro__}
-    if names & {"ConnectError", "ConnectTimeout", "ConnectionError"}:
-        return "the language model is unreachable"
-    if names & {"TimeoutException", "TimeoutError"}:
-        return "the language model timed out"
-    if "ResponseError" in names:
-        return "the language model returned an error"
+    if isinstance(error, BreakerOpenError):
+        return f"{error.service} is not answering; ask again in a while"
+    if isinstance(error, StoreError):
+        return "the vector store could not be used; the server log has the detail"
+    who = FALLBACK_SERVICE if raised_by_fallback(error) else "the language model"
+    verdict = resilience.classify(error)
+    if verdict == resilience.CONNECTION:
+        return f"{who} is unreachable"
+    if verdict == resilience.TIMEOUT:
+        return f"{who} timed out"
+    if verdict in (resilience.UNAVAILABLE, resilience.ANSWERED):
+        return f"{who} returned an error"
     return "the answer failed; the server log has the detail"
 
 
 def answer_event(event: AnswerEvent) -> ServerSentEvent:
     """One answer event as SSE. The data is a plain dict: FastAPI writes it as JSON with
-    every non-ASCII character escaped, so no character inside it can split a line."""
+    every non-ASCII character escaped, so no character inside it can split a line. ``done``
+    names the model that answered (S3-6): its config reference."""
     if isinstance(event, Sources):
         return ServerSentEvent(
             event="sources", data={"sources": [asdict(ref) for ref in event.sources]}
@@ -262,7 +290,8 @@ def answer_event(event: AnswerEvent) -> ServerSentEvent:
     if isinstance(event, Token):
         return ServerSentEvent(event="token", data={"text": event.text})
     return ServerSentEvent(
-        event="done", data={"ttft_ms": event.ttft_ms, "total_ms": event.total_ms}
+        event="done",
+        data={"ttft_ms": event.ttft_ms, "total_ms": event.total_ms, "model": event.model},
     )
 
 
@@ -272,16 +301,21 @@ def answer_event(event: AnswerEvent) -> ServerSentEvent:
     responses={
         401: {"description": "a token is set, and the request did not carry it"},
         422: {"description": "a malformed body, or a source the served index does not hold"},
-        503: {"description": "busy (with Retry-After), or no index the config can use"},
+        503: {
+            "description": "a dependency down or busy (both with Retry-After), or no index "
+            "the config can use"
+        },
     },
 )
 async def query(
+    _: Annotated[None, Depends(refuse_while_down)],
     slot: Annotated[Slot, Depends(take_slot, scope="request")],
     pipeline: Annotated[QueryPipeline, Depends(served_pipeline)],
     body: Annotated[QueryRequest, Depends(known_sources)],
 ) -> AsyncIterator[ServerSentEvent]:
     """Answer a question as a stream: ``sources``, ``token``…, then ``done`` or ``error``.
-    With ``sources``, only those corpus documents are searched."""
+    With ``sources``, only those corpus documents are searched. ``done`` names the model
+    that answered, which is the hosted fallback's when the language model could not."""
     answer = cast(
         AsyncGenerator[AnswerEvent, None],
         stream_answer(pipeline, body.question, sources=tuple(dict.fromkeys(body.sources))),
@@ -289,6 +323,12 @@ async def query(
     slot.hold(answer)
     try:
         async for event in answer:
+            if isinstance(event, Done) and event.model != pipeline.llm_ref:
+                logger.warning(
+                    "Answered by the hosted fallback %s: the question and its retrieved "
+                    "chunks left this host",
+                    event.model,
+                )
             yield answer_event(event)
     except asyncio.CancelledError:
         logger.info("Answer cancelled: its client disconnected")
@@ -369,15 +409,27 @@ async def documents(serving: Annotated[Serving, Depends(get_serving)]) -> Docume
     )
 
 
+def breaker_health(breaker: CircuitBreaker) -> BreakerHealth:
+    """One breaker as ``GET /v1/health`` reports it."""
+    state = breaker.state
+    wait = wait_s(breaker.retry_after_s()) if state == OPEN else None
+    return BreakerHealth(state=state, retry_after_s=wait)
+
+
 @health.get("", responses={503: {"model": Health}})
 async def readiness(
     response: Response, serving: Annotated[Serving, Depends(get_serving)]
 ) -> Health:
-    """Ready: an index the config can use is served, and the model's server answers
-    within 2 s. 503 otherwise, with what is missing."""
+    """Ready: an index the config can use is served and Qdrant's breaker is not open, and
+    the model's server answers within 2 s, or the hosted fallback can answer in its place
+    (its breaker not open). 503 otherwise, with what is missing. ``breakers`` reports each
+    dependency's breaker, by role (DEC-21)."""
     await serving.refresh()
     served = serving.served
-    if served.ready and served.generation is not None and served.manifest is not None:
+    pipeline = serving.pipeline
+    if serving.store.breaker.state == OPEN:
+        index = IndexHealth(ready=False, generation=None, documents=None, detail=STORE_DOWN)
+    elif served.ready and served.generation is not None and served.manifest is not None:
         index = IndexHealth(
             ready=True,
             generation=served.generation,
@@ -391,18 +443,29 @@ async def readiness(
             documents=None,
             detail=served.problem or "serving",
         )
-    reachable = await llm_reachable(serving.pipeline.llm, LLM_CHECK_TIMEOUT_S)
+    reachable = await llm_reachable(pipeline.llm, LLM_CHECK_TIMEOUT_S)
+    covered = (
+        reachable is False
+        and pipeline.fallback_llm is not None
+        and pipeline.fallback_breaker.state != OPEN
+    )
+    silent = f"the model's server did not answer within {LLM_CHECK_TIMEOUT_S:g} s"
     llm = LlmHealth(
-        ready=reachable is not False,
-        detail={
-            True: "the model's server answered",
-            False: f"the model's server did not answer within {LLM_CHECK_TIMEOUT_S:g} s",
-            None: "no server to ask: the model is not served by Ollama",
-        }[reachable],
+        ready=reachable is not False or covered,
+        detail=(
+            f"{silent}; {FALLBACK_SERVICE} answers in its place"
+            if covered
+            else {
+                True: "the model's server answered",
+                False: silent,
+                None: "no server to ask: the model is not served by Ollama",
+            }[reachable]
+        ),
     )
     ready = index.ready and llm.ready
     response.status_code = status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE
-    return Health(status="ready" if ready else "not ready", index=index, llm=llm)
+    breakers = {role: breaker_health(b) for role, b in serving.breakers().items()}
+    return Health(status="ready" if ready else "not ready", index=index, llm=llm, breakers=breakers)
 
 
 @health.get("/live")

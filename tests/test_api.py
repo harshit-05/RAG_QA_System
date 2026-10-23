@@ -16,6 +16,7 @@ in ``test_api_uvicorn.py``.
 """
 
 import asyncio
+import logging
 import os
 import re
 import secrets
@@ -24,11 +25,13 @@ import threading
 import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import ollama
 import pytest
 from conftest import (
     FAKE_ANSWER,
@@ -37,6 +40,7 @@ from conftest import (
     StreamingFakeChatModel,
     edit_manifest,
     fake_serving,
+    openai_error,
     sse_events,
     use_fakes,
 )
@@ -61,12 +65,13 @@ from rag_qa.api import state as api_state
 from rag_qa.api.app import create_app
 from rag_qa.api.jobs import KEEP
 from rag_qa.api.models import IngestReportOut, QueryRequest
-from rag_qa.api.state import NO_INDEX_YET, REINGEST, Served, Serving, serialized
+from rag_qa.api.state import NO_INDEX_YET, REINGEST, STORE_DOWN, Served, Serving, serialized
 from rag_qa.chain import IncompatibleIndexError, NoIndexError, RetrievalQuery
 from rag_qa.components import build_store
 from rag_qa.config import load_config
 from rag_qa.ingest import CorpusUnreadableError, IngestionRunningError, IngestReport, ingest
 from rag_qa.manifest import STORE, DocumentRecord, EmbedderRecord, Manifest, SplitterRecord
+from rag_qa.resilience import BreakerOpenError, CircuitBreaker
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_DATA_PATH, ServerSettings
 from rag_qa.vectorstore import StoreUnavailableError
@@ -182,10 +187,6 @@ def test_the_question_is_what_the_model_is_asked(fake_config: RagConfig, tmp_pat
     assert model.prompts[0].endswith("How many staff?")  # stripped, as the CLI strips it
 
 
-class ConnectError(Exception):
-    """Named as httpx's: the error event recognises a model's errors by class name."""
-
-
 class BreaksMidStream(StreamingFakeChatModel):
     """Yields one token, then fails as an unreachable Ollama would. The error's own text
     names ``secret``, which must reach the server log only."""
@@ -198,7 +199,7 @@ class BreaksMidStream(StreamingFakeChatModel):
         self.log.append("start")
         try:
             yield ChatGenerationChunk(message=AIMessageChunk(content="Station "))
-            raise ConnectError(f"[Errno 111] Connect call failed, see {self.secret}")
+            raise httpx.ConnectError(f"[Errno 111] Connect call failed, see {self.secret}")
         finally:
             self.log.append("closed")
 
@@ -223,11 +224,28 @@ def test_a_failure_after_the_stream_began_is_an_error_event_with_a_fixed_message
     [
         (NoIndexError("no index at '/somewhere'"), NO_INDEX_YET),
         (IncompatibleIndexError("built with another embedder at '/somewhere'"), REINGEST),
-        (ConnectError("refused"), "the language model is unreachable"),
+        (httpx.ConnectError("refused"), "the language model is unreachable"),
+        (httpx.ReadTimeout("slow"), "the language model timed out"),
         (TimeoutError("slow"), "the language model timed out"),
+        (ollama.ResponseError("model not found", 404), "the language model returned an error"),
+        (ollama.ResponseError("runner crashed"), "the language model returned an error"),
+        # The hosted fallback's (S3-6): openai's, told apart by module, not imported.
+        (openai_error("APIConnectionError")("x"), "the hosted fallback is unreachable"),
         (
-            type("ResponseError", (Exception,), {})("model not found"),
-            "the language model returned an error",
+            openai_error("APITimeoutError", "APIConnectionError")("x"),
+            "the hosted fallback timed out",
+        ),
+        (
+            openai_error("RateLimitError", status_code=429)("x"),
+            "the hosted fallback returned an error",
+        ),
+        (
+            BreakerOpenError("Ollama", 12.0, 3),
+            "Ollama is not answering; ask again in a while",
+        ),
+        (
+            StoreUnavailableError("cannot use Qdrant at http://10.0.0.5:6333"),
+            "the vector store could not be used; the server log has the detail",
         ),
         (ValueError("/home/someone/x"), "the answer failed; the server log has the detail"),
     ],
@@ -1283,3 +1301,188 @@ def test_stopping_the_server_abandons_a_running_job_and_says_so(
     finally:
         release.set()
     assert f"Ingest job {job_id} is still running and is abandoned" in caplog.text
+
+
+# --- breakers and the hosted fallback (S3-6, DEC-21) ----------------------------------------
+
+
+class Clock:
+    """A breaker's clock that moves only when a test says so."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def open_breaker(breaker: CircuitBreaker) -> None:
+    for _ in range(breaker.failures):
+        breaker.allow().failed()
+
+
+def with_models(
+    serving: Serving, *, fallback: BaseChatModel | None = None, **breakers: CircuitBreaker
+) -> Serving:
+    """``serving`` answering with the config's references, a fallback when given, and
+    ``breakers`` in place of the pipeline's own."""
+    serving.pipeline = replace(
+        serving.pipeline,
+        llm_ref="components.llms.fake",
+        fallback_llm=fallback,
+        fallback_ref="components.llms.spare",
+        **breakers,
+    )
+    return serving
+
+
+def test_an_open_breaker_refuses_a_question_before_the_first_byte_and_takes_no_slot(
+    fake_config: RagConfig, tmp_path: Path
+) -> None:
+    clock = Clock()
+    model = StreamingFakeChatModel()
+    breaker = CircuitBreaker("Ollama", clock=clock)
+    serving = with_models(fake_serving(fake_config, model), llm_breaker=breaker)
+    open_breaker(breaker)
+    with serve(fake_config, tmp_path, serving) as (client, serving):
+        refused = client.post("/v1/query", json={"question": "q"})
+        assert refused.status_code == 503
+        assert refused.json()["detail"] == "Ollama is not answering; ask again after Retry-After"
+        assert refused.headers["Retry-After"] == "30"
+        assert serving.slots.in_use == 0
+        assert model.prompts == []  # nothing reached the model
+        clock.now += 30  # the wait is over: the next question is the probe
+        probe = client.post("/v1/query", json={"question": "q"})
+    assert probe.status_code == 200
+    assert [name for name, _ in sse_events(probe.text)][-1] == "done"
+    assert breaker.state == "closed"
+
+
+def test_qdrant_s_open_breaker_refuses_a_question_and_its_refresh_asks_nothing(
+    fake_config: RagConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serving = fake_serving(fake_config, StreamingFakeChatModel())
+    asked: list[int] = []
+    monkeypatch.setattr(serving.store, "alias_target", lambda: asked.append(1))
+    open_breaker(serving.store.breaker)
+    with serve(fake_config, tmp_path, serving) as (client, _):
+        refused = client.post("/v1/query", json={"question": "q"})
+        health = client.get("/v1/health")
+    assert refused.status_code == 503
+    assert refused.json()["detail"] == STORE_DOWN
+    assert int(refused.headers["Retry-After"]) >= 1
+    assert health.status_code == 503
+    assert health.json()["index"] == {
+        "ready": False,
+        "generation": None,
+        "documents": None,
+        "detail": STORE_DOWN,
+    }
+    assert health.json()["breakers"]["qdrant"]["state"] == "open"
+    assert asked == []  # the back-off after a failed reopen: Qdrant is not asked at all
+
+
+def test_with_a_fallback_an_open_breaker_on_the_model_refuses_nothing(
+    fake_config: RagConfig, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    primary = StreamingFakeChatModel()
+    spare = StreamingFakeChatModel(tokens=["Spare."])
+    breaker = CircuitBreaker("Ollama")
+    serving = with_models(fake_serving(fake_config, primary), fallback=spare, llm_breaker=breaker)
+    open_breaker(breaker)
+    with (
+        caplog.at_level(logging.WARNING, "rag_qa"),
+        serve(fake_config, tmp_path, serving) as (client, _),
+    ):
+        response = client.post("/v1/query", json={"question": "q"})
+    assert response.status_code == 200
+    events = sse_events(response.text)
+    assert [data["text"] for name, data in events if name == "token"] == ["Spare."]
+    assert events[-1][0] == "done"
+    assert events[-1][1]["model"] == "components.llms.spare"
+    assert primary.prompts == []
+    assert "Answered by the hosted fallback components.llms.spare" in caplog.text
+
+
+def test_with_both_breakers_open_a_question_waits_for_the_sooner_probe(
+    fake_config: RagConfig, tmp_path: Path
+) -> None:
+    clock = Clock()
+    llm = CircuitBreaker("Ollama", clock=clock)
+    spare = CircuitBreaker("the hosted fallback", clock=clock)
+    serving = with_models(
+        fake_serving(fake_config, StreamingFakeChatModel()),
+        fallback=StreamingFakeChatModel(),
+        llm_breaker=llm,
+        fallback_breaker=spare,
+    )
+    open_breaker(llm)
+    clock.now += 20
+    open_breaker(spare)  # the fallback's probe is 30 s away, the model's 10 s
+    with serve(fake_config, tmp_path, serving) as (client, _):
+        refused = client.post("/v1/query", json={"question": "q"})
+    assert refused.status_code == 503
+    assert refused.json()["detail"] == (
+        "neither Ollama nor the hosted fallback is answering; ask again after Retry-After"
+    )
+    assert refused.headers["Retry-After"] == "10"
+
+
+def test_the_done_event_names_the_model_that_answered(
+    fake_config: RagConfig, tmp_path: Path
+) -> None:
+    serving = with_models(fake_serving(fake_config, StreamingFakeChatModel()))
+    with serve(fake_config, tmp_path, serving) as (client, _):
+        response = client.post("/v1/query", json={"question": "q"})
+    done = sse_events(response.text)[-1]
+    assert done[0] == "done"
+    assert done[1]["model"] == "components.llms.fake"
+    assert set(done[1]) == {"ttft_ms", "total_ms", "model"}
+
+
+def test_health_reports_each_breaker_by_role(fake_config: RagConfig, tmp_path: Path) -> None:
+    clock = Clock()
+    breaker = CircuitBreaker("Ollama", clock=clock)
+    serving = with_models(
+        fake_serving(fake_config, StreamingFakeChatModel()),
+        fallback=StreamingFakeChatModel(),
+        llm_breaker=breaker,
+    )
+    open_breaker(breaker)
+    clock.now += 12
+    with serve(fake_config, tmp_path, serving) as (client, _):
+        breakers = client.get("/v1/health").json()["breakers"]
+    assert breakers == {
+        "qdrant": {"state": "closed", "retry_after_s": None},
+        "llm": {"state": "open", "retry_after_s": 18},
+        "fallback": {"state": "closed", "retry_after_s": None},
+    }
+
+
+def test_without_a_fallback_health_reports_no_fallback_breaker(
+    fake_config: RagConfig, tmp_path: Path
+) -> None:
+    with serve(fake_config, tmp_path, fake_serving(fake_config, StreamingFakeChatModel())) as (
+        client,
+        _,
+    ):
+        assert set(client.get("/v1/health").json()["breakers"]) == {"qdrant", "llm"}
+
+
+def test_with_a_fallback_an_unreachable_model_server_leaves_the_server_ready(
+    scratch_config: RagConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ingest(scratch_config)
+    down = ChatOllama(model="mistral", base_url=f"http://127.0.0.1:{free_port()}")
+    monkeypatch.setattr("rag_qa.api.state.build_llm", lambda config, **kwargs: down)
+    monkeypatch.setattr(
+        "rag_qa.api.state.build_fallback_llm", lambda config: StreamingFakeChatModel()
+    )
+    with serve(scratch_config, tmp_path) as (client, _):
+        health = client.get("/v1/health")
+    assert health.status_code == 200
+    assert health.json()["llm"] == {
+        "ready": True,
+        "detail": "the model's server did not answer within 2 s; the hosted fallback answers "
+        "in its place",
+    }

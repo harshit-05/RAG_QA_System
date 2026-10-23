@@ -235,9 +235,11 @@ async def generate(
                 continue
             if pipeline is None:
                 # A generation switched in mid-run must match the scan the run records.
+                # No hosted fallback, ever (DEC-21): tier 2 measures the model it names.
                 pipeline = build_query_pipeline(
                     config,
                     on_new_generation=lambda manifest: check_index_current(config, scan, manifest),
+                    fallback=False,
                 )
             answered = await answer(pipeline, item)
             if store is not None:

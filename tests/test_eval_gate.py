@@ -168,6 +168,24 @@ def without_s3_5_s_keys(c: dict[str, Any]) -> None:
     del c["components"]["sparse_encoders"], c["components"]["retrievers"]["hybrid"]
 
 
+def without_s3_6_s_keys(c: dict[str, Any]) -> None:
+    """The real config as it was before S3-6: no Ollama timeouts, no hosted fallback entry,
+    no retrieval deadline."""
+    for entry in c["components"]["llms"].values():
+        entry.pop("client_kwargs", None)
+    del c["components"]["llms"]["groq_fallback"]
+    del c["components"]["vector_stores"]["qdrant"]["deadline_s"]
+
+
+def fallback(c: dict[str, Any]) -> dict[str, Any]:
+    return c["components"]["llms"]["groq_fallback"]
+
+
+def with_the_fallback(c: dict[str, Any]) -> None:
+    """The real check's scratch config: the real one with the hosted fallback set (S3-6)."""
+    query(c)["fallback_llm"] = "components.llms.groq_fallback"
+
+
 def with_bm25(c: dict[str, Any]) -> None:
     ingestion(c)["sparse_encoder"] = "components.sparse_encoders.bm25"
 
@@ -383,6 +401,18 @@ STAYS: list[Any] = [
     pytest.param(setter(llm, "validate_model_on_init", False), id="the start-up model check"),
     pytest.param(setter(llm, "keep_alive", "10m"), id="keep_alive"),
     pytest.param(setter(llm, "client_kwargs", {"timeout": 600}), id="the client's timeout"),
+    # S3-6: the real config's six parts without its Ollama timeouts, its unused fallback and
+    # its deadline; and with the fallback set and edited, since tier 2 never answers with it.
+    pytest.param(config_edit(without_s3_6_s_keys), id="the real config without S3-6's keys"),
+    pytest.param(
+        setter(llm, "client_kwargs", {"timeout": {"connect": 1, "read": 9, "write": 1, "pool": 1}}),
+        id="the client's timeout phases",
+    ),
+    pytest.param(config_edit(with_the_fallback), id="the hosted fallback set"),
+    pytest.param(
+        config_edit(lambda c: (with_the_fallback(c), fallback(c).__setitem__("model", "x"))),
+        id="the hosted fallback's spec",
+    ),
     pytest.param(
         lambda w, _: setattr(w, "modelfile", "# a note\n\n" + w.modelfile + "# end\n"),
         id="a comment in the Modelfile",

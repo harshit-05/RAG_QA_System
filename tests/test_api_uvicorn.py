@@ -27,6 +27,7 @@ import socket
 import threading
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from typing import Any
 
 import anyio
@@ -145,6 +146,47 @@ def test_a_drop_mid_stream_closes_the_models_stream(
     sock.close()
     assert within(CLOSE_WITHIN_S, lambda: model.closed), "generation ran on after the drop"
     assert len(model.log) < 100  # "start", the tokens sent so far, "closed": not 400
+    assert within(CLOSE_WITHIN_S, lambda: serving.slots.in_use == 0)
+
+
+class Refused(StreamingFakeChatModel):
+    """A stopped Ollama: its stream fails at once, before any token."""
+
+    async def _astream(self, *args: Any, **kwargs: Any) -> Any:
+        self.log.append("start")
+        raise httpx.ConnectError("All connection attempts failed")
+        yield  # an async generator, like every model's stream
+
+
+def through_the_fallback(config: RagConfig, spare: StreamingFakeChatModel) -> Serving:
+    serving = fake_serving(config, Refused())
+    serving.pipeline = replace(serving.pipeline, fallback_llm=spare)
+    return serving
+
+
+@pytest.mark.parametrize(
+    ("spare", "sent"),
+    [
+        (StreamingFakeChatModel(prefill_s=10.0), b"event: sources"),
+        (
+            StreamingFakeChatModel(tokens=[f"t{i} " for i in range(400)], gap_s=0.01),
+            b"event: token",
+        ),
+    ],
+    ids=["during-its-prefill", "mid-stream"],
+)
+def test_a_drop_while_the_fallback_answers_closes_its_stream(
+    start_server: Start, fake_config: RagConfig, spare: StreamingFakeChatModel, sent: bytes
+) -> None:
+    # S3-6: the fallback's stream is read as the model's is, in the same task, so a client
+    # that leaves stops it as fast (DEC-14, DEC-21).
+    serving = through_the_fallback(fake_config, spare)
+    sock = ask(serve(start_server, fake_config, serving))
+    read_until(sock, sent)
+    assert within(CLOSE_WITHIN_S, lambda: "start" in spare.log)
+    sock.close()
+    assert within(CLOSE_WITHIN_S, lambda: spare.closed), "the fallback ran on after the drop"
+    assert len(spare.log) < 100
     assert within(CLOSE_WITHIN_S, lambda: serving.slots.in_use == 0)
 
 

@@ -3,10 +3,16 @@
 Generations, the alias switch, recovery and the cut rule, each against the module's own
 functions. What only the server can show (its atomic alias batch, its 404, ties decided by
 a collection's layout) is in ``test_qdrant_server.py``, under the ``qdrant_server`` marker.
+
+The retries, the breaker and the deadline (S3-6) run the real client over a fake transport,
+:class:`FakeQdrant`, and a hung server is a real socket that never answers.
 """
 
+import asyncio
 import json
+import socket
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -14,14 +20,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 from conftest import COLLECTION, generations, live_generation, metadata
 from langchain_core.embeddings import Embeddings
+from langchain_core.runnables import RunnableLambda
 from pydantic import SecretStr
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
-from rag_qa import vectorstore
+from rag_qa import resilience, vectorstore
+from rag_qa.api.state import serialized
 from rag_qa.manifest import (
     STORE,
     DocumentRecord,
@@ -31,6 +40,7 @@ from rag_qa.manifest import (
     SplitterRecord,
     chunk_id,
 )
+from rag_qa.resilience import QDRANT_ATTEMPTS, CircuitBreaker
 from rag_qa.sparse import SPARSE_VERSION, Bm25Encoder, SparseVector
 from rag_qa.vectorstore import (
     NO_INDEX,
@@ -328,9 +338,11 @@ def test_a_switch_that_failed_and_was_not_applied_still_fails(
         raise LOST
 
     monkeypatch.setattr(qdrant, "update_collection_aliases", lost)
-    with pytest.raises(StoreUnavailableError, match="TimeoutError: timed out"):
+    with pytest.raises(StoreUnavailableError, match=r"did not answer in time \(TimeoutError\)"):
         publish(store, **{"a.txt": 2})
-    assert switches == [1]  # it failed at the switch, not before
+    # It failed at the switch, not before, and the switch was retried as every request is
+    # (S3-6): a repeat of an applied switch is a no-op.
+    assert switches == [1] * QDRANT_ATTEMPTS
     monkeypatch.setattr(qdrant, "get_aliases", real_get_aliases)
     assert live_generation(qdrant) == live
 
@@ -1033,3 +1045,267 @@ def test_check_refuses_whatever_answers_in_place_of_qdrant(
     assert said in str(exc.value)
     assert vectorstore.URL_HINT in str(exc.value)
     assert QDRANT_HINT not in str(exc.value)  # something answered: Qdrant may well run
+
+
+# ---- retries, the breaker and the deadline (S3-6, NFR-6, DEC-21) ---------------------------
+
+
+class FakeQdrant:
+    """Qdrant's REST API, as far as these tests ask it, behind ``httpx.MockTransport``:
+    qdrant-client builds its REST client on httpx and hands it extra arguments, so the real
+    client, its parsing and its errors run. ``script`` holds what the next requests to a
+    ``"METHOD /path"`` get instead of an answer: an exception to raise, or a status code.
+    A ``(status, applied)`` step answers ``status`` after doing the work, a lost answer."""
+
+    def __init__(self) -> None:
+        self.requests: list[httpx.Request] = []
+        self.collections: set[str] = set()
+        self.aliases: dict[str, str] = {}
+        self.script: dict[str, list[Any]] = {}
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        key = f"{request.method} {request.url.path}"
+        steps = self.script.get(key)
+        if steps:
+            step = steps.pop(0)
+            if isinstance(step, tuple):  # applied, then the answer is lost
+                self.answer(request)
+                step = step[0]
+            if isinstance(step, BaseException):
+                raise step
+            return httpx.Response(step, json={"status": {"error": "scripted"}, "time": 0})
+        return self.answer(request)
+
+    def answer(self, request: httpx.Request) -> httpx.Response:
+        method, path = request.method, request.url.path
+        name = path.removeprefix("/collections/").split("/")[0]
+
+        def ok(result: Any) -> httpx.Response:
+            return httpx.Response(200, json={"result": result, "status": "ok", "time": 0})
+
+        if (method, path) == ("GET", "/"):
+            return httpx.Response(200, json={"title": "qdrant", "version": "1.19.2"})
+        if (method, path) == ("GET", "/aliases"):
+            aliases = [{"alias_name": a, "collection_name": c} for a, c in self.aliases.items()]
+            return ok({"aliases": aliases})
+        if (method, path) == ("GET", "/collections"):
+            return ok({"collections": [{"name": c} for c in sorted(self.collections)]})
+        if method == "PUT" and path == f"/collections/{name}":
+            if name in self.collections:
+                return httpx.Response(409, json={"status": {"error": "exists"}, "time": 0})
+            self.collections.add(name)
+            return ok(True)
+        if method == "DELETE" and path == f"/collections/{name}":
+            found = name in self.collections
+            self.collections.discard(name)
+            return ok(found)
+        if method == "POST" and path.endswith("/points/query"):
+            if name not in self.collections:
+                return httpx.Response(404, json={"status": {"error": "Not found"}, "time": 0})
+            return ok({"points": []})
+        return httpx.Response(500, json={"status": {"error": f"no fake for {method} {path}"}})
+
+    def sent(self, key: str) -> int:
+        return sum(f"{r.method} {r.url.path}" == key for r in self.requests)
+
+
+def fake_store(fake: FakeQdrant, **settings: Any) -> QdrantStore:
+    client = QdrantClient(
+        url="http://qdrant.test:6333",
+        timeout=10,
+        check_compatibility=False,
+        transport=httpx.MockTransport(fake),
+    )
+    return QdrantStore(
+        url="http://qdrant.test:6333", collection=COLLECTION, client=client, **settings
+    )
+
+
+REFUSED = httpx.ConnectError("All connection attempts failed")
+SLOW = httpx.ReadTimeout("timed out")
+
+
+def test_a_refused_connection_is_tried_again_and_then_answers() -> None:
+    fake = FakeQdrant()
+    fake.script["GET /aliases"] = [REFUSED, REFUSED]
+    store = fake_store(fake)
+    assert store.alias_target() is None
+    assert fake.sent("GET /aliases") == QDRANT_ATTEMPTS
+    assert store.breaker.state == "closed"
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 429])
+def test_an_answer_that_it_cannot_serve_now_is_tried_again(status: int) -> None:
+    fake = FakeQdrant()
+    fake.script["GET /aliases"] = [status]
+    assert fake_store(fake).alias_target() is None
+    assert fake.sent("GET /aliases") == 2
+
+
+def test_a_refusal_is_not_tried_again_and_says_it_answered() -> None:
+    fake = FakeQdrant()
+    fake.script["GET /aliases"] = [401, 401, 401]
+    store = fake_store(fake)
+    with pytest.raises(StoreUnavailableError, match=r"refused the request \(401\)"):
+        store.alias_target()
+    assert fake.sent("GET /aliases") == 1
+    assert store.breaker._failed == 0  # a refusal is an answer: nothing counted against it
+
+
+def test_a_search_of_a_generation_that_is_gone_is_never_repeated() -> None:
+    fake = FakeQdrant()
+    store = fake_store(fake)
+    gone = "rag_qa--gen-20261022T000000000000Z-00000000"
+    with pytest.raises(GenerationGoneError):
+        search(store, gone, [0.1, 0.2, 0.3], 5)
+    assert fake.sent(f"POST /collections/{gone}/points/query") == 1
+
+
+def test_every_attempt_spent_says_qdrant_did_not_answer_in_time() -> None:
+    # S3-3's backlog line: a read timeout with Qdrant up. The retries absorb one; when every
+    # attempt times out, "Is Qdrant running?" would point the wrong way.
+    fake = FakeQdrant()
+    fake.script["GET /aliases"] = [SLOW] * QDRANT_ATTEMPTS
+    with pytest.raises(
+        StoreUnavailableError, match=r"did not answer in time \(ReadTimeout\)"
+    ) as exc:
+        fake_store(fake).alias_target()
+    assert QDRANT_HINT not in str(exc.value)
+
+
+def test_three_failed_attempts_open_the_breaker_and_then_no_request_is_sent() -> None:
+    fake = FakeQdrant()
+    fake.script["GET /aliases"] = [REFUSED] * QDRANT_ATTEMPTS
+    store = fake_store(fake)
+    with pytest.raises(StoreUnavailableError, match="cannot use Qdrant"):
+        store.alias_target()
+    assert store.breaker.state == "open"
+    with pytest.raises(StoreUnavailableError) as exc:
+        store.alias_target()
+    assert fake.sent("GET /aliases") == QDRANT_ATTEMPTS  # refused before any request
+    assert str(exc.value).startswith("Qdrant is not answering: 3 attempts in a row failed")
+    assert QDRANT_HINT in str(exc.value)
+
+
+def test_after_the_wait_one_probe_goes_through_and_its_answer_closes_the_breaker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [1000.0]
+    fake = FakeQdrant()
+    fake.script["GET /aliases"] = [REFUSED] * QDRANT_ATTEMPTS
+    store = fake_store(fake)
+    store.breaker = CircuitBreaker("Qdrant", clock=lambda: now[0])
+    with pytest.raises(StoreUnavailableError):
+        store.alias_target()
+    now[0] += 30
+    assert store.alias_target() is None  # the probe
+    assert store.breaker.state == "closed"
+    assert fake.sent("GET /aliases") == QDRANT_ATTEMPTS + 1
+
+
+def test_a_create_whose_answer_was_lost_is_not_sent_again() -> None:
+    # The server created it, and the answer timed out: repeated, it would answer 409
+    # (checked on 1.19.2). A retry that finds our uniquely named collection counts as done.
+    fake = FakeQdrant()
+    name = "rag_qa--gen-20261022T000000000000Z-00000000"
+    fake.script[f"PUT /collections/{name}"] = [(SLOW,)]
+    vectorstore._create(
+        fake_store(fake), name, manifest(**{"a.txt": doc("a.txt", 1)}), hybrid=False
+    )
+    assert fake.sent(f"PUT /collections/{name}") == 1
+    assert name in fake.collections
+
+
+def test_a_delete_whose_answer_was_lost_is_done_when_repeated() -> None:
+    fake = FakeQdrant()
+    live, older, oldest = (f"rag_qa--gen-2026102{i}T000000000000Z-0000000{i}" for i in (3, 2, 1))
+    fake.collections = {live, older, oldest}
+    fake.aliases = {COLLECTION: live}
+    fake.script[f"DELETE /collections/{oldest}"] = [(SLOW,)]
+    assert recover(fake_store(fake)) == [oldest]
+    assert fake.sent(f"DELETE /collections/{oldest}") == 2  # the repeat found nothing: done
+    assert fake.collections == {live, older}
+
+
+def test_inside_a_deadline_a_search_asks_for_what_is_left_of_it() -> None:
+    # qdrant-client sends a request's timeout to the server and bounds the HTTP request by
+    # it too (api_client.py): so the deadline cuts a hung search short.
+    fake = FakeQdrant()
+    generation = "rag_qa--gen-20261022T000000000000Z-00000000"
+    fake.collections = {generation}
+    store = fake_store(fake)
+    search(store, generation, [0.1, 0.2, 0.3], 5)
+    assert "timeout" not in fake.requests[-1].url.params  # no deadline: the client's own
+    with resilience.deadline(3.4):
+        search(store, generation, [0.1, 0.2, 0.3], 5)
+    request = fake.requests[-1]
+    assert request.url.params["timeout"] == "4"
+    assert request.extensions["timeout"]["read"] == 4
+
+
+def test_no_request_starts_once_the_deadline_has_passed() -> None:
+    fake = FakeQdrant()
+    store = fake_store(fake)
+    with resilience.deadline(-1), pytest.raises(StoreUnavailableError, match="within 15 s"):
+        store.alias_target()
+    assert fake.requests == []
+
+
+@contextmanager
+def silent_server() -> Iterator[str]:
+    """A hung Qdrant: a loopback server that takes every connection and never answers."""
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    listener.settimeout(0.1)
+    taken: list[socket.socket] = []
+    stop = threading.Event()
+
+    def take() -> None:
+        while not stop.is_set():
+            try:
+                taken.append(listener.accept()[0])
+            except TimeoutError:
+                continue
+
+    thread = threading.Thread(target=take, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{listener.getsockname()[1]}"
+    finally:
+        stop.set()
+        thread.join()
+        for connection in taken:
+            connection.close()
+        listener.close()
+
+
+def test_a_hung_qdrant_opens_the_breaker_within_one_retrievals_deadline_and_frees_the_lock() -> (
+    None
+):
+    # Design review 2: retrieval holds the API's retrieval lock throughout, so a hung Qdrant
+    # must cost one bounded budget, not a timeout per attempt per request. Real sockets and
+    # the real client's timeout, at 1 s per attempt.
+    with silent_server() as url:
+        client = QdrantClient(url=url, timeout=1, check_compatibility=False)
+        store = QdrantStore(
+            url=url, collection=COLLECTION, timeout_s=1, deadline_s=5, client=client
+        )
+        lock = threading.Lock()
+
+        def retrieval(asked: Any) -> list[Any]:
+            with resilience.deadline(store.deadline_s):
+                return search(store, "rag_qa--gen-20261022T000000000000Z-00000000", [0.1] * 3, 5)
+
+        retrieve = serialized(RunnableLambda(retrieval), lock)
+        started = time.monotonic()
+        try:
+            with pytest.raises(StoreUnavailableError, match="did not answer in time"):
+                asyncio.run(retrieve.ainvoke("q"))
+        finally:
+            client.close()
+        elapsed = time.monotonic() - started
+    assert store.breaker.state == "open"
+    assert elapsed < store.deadline_s
+    assert lock.acquire(blocking=False)  # the next retrieval is not left waiting

@@ -27,7 +27,7 @@ maintenance-mode "classic" package, which application code never imports.
 """
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from operator import itemgetter
 from pathlib import Path
 from typing import Any
@@ -39,16 +39,21 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrough
 
+from rag_qa import resilience
 from rag_qa.components import (
+    FALLBACK_SERVICE,
     aclose_llm,
     build_embedder,
+    build_fallback_llm,
     build_llm,
     build_reranker,
     build_sparse_encoder,
     build_store,
     configured_sparse,
+    service_of,
 )
 from rag_qa.manifest import Manifest, embedder_identity, same_sparse
+from rag_qa.resilience import CircuitBreaker
 from rag_qa.schema import RagConfig
 from rag_qa.sparse import Bm25Encoder
 from rag_qa.vectorstore import (
@@ -195,17 +200,34 @@ class QueryPipeline:
     ``retrieve`` is ``None`` only in the API while it has no usable index (S2-7);
     :func:`rag_qa.answering.stream_answer` then raises :class:`NoIndexError`. The API
     swaps the retrieval half with ``dataclasses.replace``, so an answer in flight keeps the
-    one it started with.
+    one it started with; the breakers are carried over with the rest.
+
+    **The models** (DEC-21, S3-6): ``llm`` answers, and ``fallback_llm``, the hosted
+    fallback, only when ``llm`` cannot. Each has a breaker shared by every answer, and a
+    reference, which :class:`~rag_qa.answering.Done` names for the one that answered.
     """
 
     retrieve: Runnable[RetrievalQuery, list[Document]] | None
     prompt: ChatPromptTemplate  # rendered by stream_answer, which then streams llm itself
     llm: BaseChatModel  # streamed directly; also kept so aclose() can close its clients
     corpus_root: Path  # sources are reported relative to it
+    llm_ref: str = "llm"  # its config reference, as Done.model names it
+    fallback_llm: BaseChatModel | None = None
+    fallback_ref: str = "fallback"
+    llm_breaker: CircuitBreaker = field(
+        default_factory=lambda: CircuitBreaker("the language model")
+    )
+    fallback_breaker: CircuitBreaker = field(
+        default_factory=lambda: CircuitBreaker(FALLBACK_SERVICE)
+    )
 
     async def aclose(self) -> None:
-        """Close the model's HTTP clients. Call it on the loop that used them."""
-        await aclose_llm(self.llm)
+        """Close both models' HTTP clients. Call it on the loop that used them."""
+        try:
+            await aclose_llm(self.llm)
+        finally:
+            if self.fallback_llm is not None:
+                await aclose_llm(self.fallback_llm)
 
 
 def citation(doc: Document) -> str:
@@ -334,11 +356,14 @@ def open_retrieval(
     bound = _bound(config, store, generation, embeddings, reranker, sparse)
 
     def retrieve(asked: RetrievalQuery) -> list[Document]:
-        try:
-            return bound.invoke(asked)
-        except GenerationGoneError:
-            again, _ = _checked(config, store, embeddings)
-            return _bound(config, store, again, embeddings, reranker, sparse).invoke(asked)
+        # One budget for every attempt this retrieval makes, retries included: the API
+        # holds its retrieval lock throughout (DEC-21, design review 2).
+        with resilience.deadline(store.deadline_s):
+            try:
+                return bound.invoke(asked)
+            except GenerationGoneError:
+                again, _ = _checked(config, store, embeddings)
+                return _bound(config, store, again, embeddings, reranker, sparse).invoke(asked)
 
     return Retrieval(
         retrieve=RunnableLambda(retrieve),
@@ -372,12 +397,13 @@ def build_retrieve(
 
     def retrieve(asked: RetrievalQuery) -> list[Document]:
         nonlocal opened
-        if store.alias_target() != opened.generation:
-            moved = open_retrieval(config, embeddings, reranker=reranker, store=store)
-            if on_new_generation is not None:
-                on_new_generation(moved.manifest)
-            opened = moved
-        return opened.retrieve.invoke(asked)
+        with resilience.deadline(store.deadline_s):  # the alias read counts against it too
+            if store.alias_target() != opened.generation:
+                moved = open_retrieval(config, embeddings, reranker=reranker, store=store)
+                if on_new_generation is not None:
+                    on_new_generation(moved.manifest)
+                opened = moved
+            return opened.retrieve.invoke(asked)
 
     return RunnableLambda(retrieve)
 
@@ -401,6 +427,7 @@ def build_query_pipeline(
     *,
     store: QdrantStore | None = None,
     on_new_generation: Callable[[Manifest], None] | None = None,
+    fallback: bool = False,
 ) -> QueryPipeline:
     """Build both halves of an answer from a loaded config (the CLI and evaluation).
 
@@ -410,8 +437,12 @@ def build_query_pipeline(
     the LLM: retrieval is built first, so a refusal never waits on Ollama. The retrieval
     half resolves the alias before every question (:func:`build_retrieve`, which
     ``on_new_generation`` is passed to). The API, which must start without an index,
-    composes its pipeline from :func:`open_retrieval`, :func:`build_prompt` and the LLM
-    itself (S2-7).
+    composes its pipeline from :func:`open_retrieval` and :func:`assemble` (S2-7).
+
+    With ``fallback``, the hosted fallback is built too when ``pipeline.query.fallback_llm``
+    names one (DEC-21), and the model without asking Ollama anything, since Ollama down is
+    the fallback's case. ``rag-query`` asks for it; tier 2 never does, so it measures the
+    model it names, and nothing it sends leaves the host.
 
     Cannot mutate ``config``: it is frozen, and every component dict used here is a
     fresh copy from ``spec()`` / ``kwargs()``. Deliberately silent (no progress
@@ -424,11 +455,30 @@ def build_query_pipeline(
     retrieve = build_retrieve(
         config, build_embedder(config), store=store, on_new_generation=on_new_generation
     )
+    spare = build_fallback_llm(config) if fallback else None
+    llm = build_llm(config) if spare is None else build_llm(config, validate=False)
+    return assemble(config, retrieve, llm, spare)
+
+
+def assemble(
+    config: RagConfig,
+    retrieve: Runnable[RetrievalQuery, list[Document]] | None,
+    llm: BaseChatModel,
+    fallback_llm: BaseChatModel | None,
+) -> QueryPipeline:
+    """A pipeline over ``retrieve`` and the models built for ``config``: its prompt and its
+    corpus, each model's reference, and a breaker for each, named after its service
+    (DEC-21). The one composition :func:`build_query_pipeline` and the API share."""
+    query = config.pipeline.query
     return QueryPipeline(
         retrieve=retrieve,
         prompt=build_prompt(config),
-        llm=build_llm(config),
+        llm=llm,
         corpus_root=config.paths.data,
+        llm_ref=query.llm,
+        fallback_llm=fallback_llm,
+        fallback_ref=query.fallback_llm or "fallback",
+        llm_breaker=CircuitBreaker(service_of(config)),
     )
 
 

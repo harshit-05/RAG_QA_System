@@ -51,16 +51,35 @@ on ``metadata.source``, which each generation indexes.
 no stale field can survive a merge (Qdrant merges top-level metadata keys, and replaces a
 nested object whole). It is read once per generation, never on a hot path:
 ``GET /collections/{name}`` returns all of it, and a request is limited to 32 MiB.
+
+**Every request is retried while it fails transiently, behind the store's breaker** (NFR-6,
+DEC-21, S3-6). :func:`_call` makes each one: up to three attempts when Qdrant gave no answer
+(refused, reset, timed out) or answered that it cannot serve just now (5xx, 429), each
+attempt through :attr:`QdrantStore.breaker`, which refuses every attempt for a while once
+three in a row have failed. A retrieval's attempts share one deadline,
+:attr:`QdrantStore.deadline_s`, since the API holds its retrieval lock throughout
+(:mod:`rag_qa.resilience`). What a repeat counts as done, checked on Qdrant 1.19.2:
+
+- reads, upserts (uuid5 IDs, so a repeat writes the same points), the ``complete`` flag (a
+  merge) and the alias switch (a delete and a create in one request) are repeated as they
+  are;
+- a create whose answer was lost may have created the collection, and a repeat would answer
+  409: on a retry, finding our uniquely named collection listed counts as done;
+- a delete that finds nothing returns ``False``, and counts as done;
+- a 404 for a generation is never repeated: it is :class:`GenerationGoneError`;
+- a snapshot is never retried (S3-10): a repeat would leave a second one on the server.
 """
 
+import itertools
 import json
 import math
 import re
 import secrets
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, Final
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
@@ -69,9 +88,12 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.retrievers import BaseRetriever
 from pydantic import ConfigDict, SecretStr
 from qdrant_client import QdrantClient, models
+from qdrant_client.common.client_exceptions import ResourceExhaustedResponse
 from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
+from rag_qa import resilience
 from rag_qa.manifest import Manifest, ManifestError, manifest_payload, parse_manifest
+from rag_qa.resilience import BreakerOpenError, CircuitBreaker, DeadlineError
 from rag_qa.schema import SEARCH_TYPES, collection_problem
 from rag_qa.settings import StoreSettings
 from rag_qa.sparse import Bm25Encoder, SparseVector
@@ -150,6 +172,10 @@ class QdrantStore:
     ``RAG_QDRANT_URL`` and ``RAG_QDRANT_COLLECTION`` override ``url`` and ``collection``,
     and the API key comes from ``RAG_QDRANT_API_KEY`` only, never from a config file (§9).
     Building one sends no request; :meth:`check` does. ``client`` is for tests.
+
+    ``timeout_s`` bounds each request; ``deadline_s`` bounds all the attempts one retrieval
+    makes, retries included (DEC-21). :attr:`breaker` guards every request this store sends,
+    so the API's one store has one breaker, which ``GET /v1/health`` reports.
     """
 
     def __init__(
@@ -157,6 +183,7 @@ class QdrantStore:
         url: str,
         collection: str,
         timeout_s: float = 10.0,
+        deadline_s: float = 15.0,
         *,
         client: QdrantClient | None = None,
     ) -> None:
@@ -168,7 +195,11 @@ class QdrantStore:
             raise ValueError(problem)
         if not timeout_s > 0:
             raise ValueError(f"timeout_s must be a positive number of seconds, not {timeout_s}")
+        if not deadline_s > 0:
+            raise ValueError(f"deadline_s must be a positive number of seconds, not {deadline_s}")
         self.timeout_s = timeout_s
+        self.deadline_s = deadline_s
+        self.breaker = CircuitBreaker("Qdrant")
         self.client = (
             client if client is not None else connect(self.url, settings.api_key, timeout_s)
         )
@@ -189,7 +220,7 @@ class QdrantStore:
         older than :data:`MIN_SERVER`, which has no collection metadata.
         """
         with _as_qdrant(self):
-            version = self.client.info().version
+            version = _call(self, self.client.info).version
         parts = tuple(int(part) for part in re.findall(r"\d+", version)[:2])
         if parts < MIN_SERVER:
             raise StoreUnavailableError(
@@ -198,7 +229,7 @@ class QdrantStore:
             )
         # The other half of "can we use it": a key Qdrant refuses shows here, not mid-run.
         with _as_qdrant(self):
-            self.client.get_aliases()
+            _call(self, self.client.get_aliases)
 
     def alias_target(self) -> str | None:
         """The collection the alias names now, or ``None`` when there is no alias.
@@ -206,8 +237,7 @@ class QdrantStore:
         One small request (``GET /aliases``), cheap enough for the API to make on every
         request and ``rag-query`` before every question (DEC-19).
         """
-        with _translated(self):
-            aliases = self.client.get_aliases().aliases
+        aliases = _call(self, self.client.get_aliases).aliases
         return next((a.collection_name for a in aliases if a.alias_name == self.collection), None)
 
     def close(self) -> None:
@@ -220,10 +250,32 @@ def _translated(store: QdrantStore, generation: str | None = None) -> Iterator[N
     """Turn the client's errors into this module's, worded for the person running the command.
 
     A 404 becomes :class:`GenerationGoneError` when ``generation`` names what was asked for.
+    The store's breaker refusing a request, and a retrieval's deadline passing, are
+    :class:`StoreUnavailableError` too, so every caller stops on them as on Qdrant down.
     """
     try:
         yield
+    except BreakerOpenError as e:
+        raise StoreUnavailableError(f"{e}. {QDRANT_HINT}") from e
+    except DeadlineError as e:
+        raise StoreUnavailableError(
+            f"Qdrant at {store.url} did not answer within {store.deadline_s:g} s, the time one "
+            f"retrieval may take, retries included"
+        ) from e
+    except ResourceExhaustedResponse as e:  # a 429 with Retry-After: Qdrant's rate limits
+        raise StoreUnavailableError(
+            f"Qdrant at {store.url} is refusing requests for now ({e}); ask again in "
+            f"{e.retry_after_s} s"
+        ) from e
     except ResponseHandlingException as e:  # refused, reset, timed out: no answer at all
+        if resilience.classify(e.source) == resilience.TIMEOUT:
+            # Up but slow, or a request lost on the way: "Is Qdrant running?" would point
+            # the wrong way (S3-3's backlog line).
+            raise StoreUnavailableError(
+                f"Qdrant at {store.url} did not answer in time ({type(e.source).__name__}), "
+                f"after its retries. It may be busy or still starting: docker compose ps "
+                f"qdrant shows whether it runs"
+            ) from e
         raise StoreUnavailableError(
             f"cannot use Qdrant at {store.url} ({type(e.source).__name__}: {e.source}). "
             f"{QDRANT_HINT}"
@@ -239,6 +291,64 @@ def _translated(store: QdrantStore, generation: str | None = None) -> Iterator[N
         raise StoreError(
             f"Qdrant at {store.url} answered {e.status_code}: {_server_error(e)}"
         ) from e
+
+
+def _transient(error: BaseException) -> bool:
+    """Whether a failed request is worth repeating as it is: Qdrant gave no answer (refused,
+    reset, timed out), or answered that it cannot serve it just now (5xx, 429)."""
+    if isinstance(error, ResponseHandlingException):
+        return resilience.classify(error.source) in (resilience.CONNECTION, resilience.TIMEOUT)
+    if isinstance(error, UnexpectedResponse):
+        status = error.status_code
+        return status is not None and (status == 429 or status >= 500)
+    return isinstance(error, ResourceExhaustedResponse)
+
+
+def _call[T](store: QdrantStore, request: Callable[[], T], *, generation: str | None = None) -> T:
+    """``request``, one request to Qdrant, retried while it fails transiently (DEC-21).
+
+    Up to :data:`~rag_qa.resilience.QDRANT_ATTEMPTS` attempts, each through the store's
+    breaker: an open one refuses the attempt, which ends the loop. None starts once the
+    :func:`~rag_qa.resilience.deadline` in force has passed, and none waits past it. Every
+    request here may be repeated as it is, except a create, which its caller checks (the
+    module docstring). The last error is translated by :func:`_translated`.
+    """
+
+    def attempt() -> T:
+        left = resilience.remaining()
+        if left is not None and left <= 0:
+            raise DeadlineError("the deadline passed before this request was sent")
+        tried = store.breaker.allow()
+        try:
+            result = request()
+        except Exception as e:
+            if _transient(e):
+                tried.failed()
+            else:  # it answered: a refusal, a 404, an answer that is not Qdrant's
+                tried.succeeded()
+            raise
+        except BaseException:  # a Ctrl-C: nothing learned about Qdrant
+            tried.abandoned()
+            raise
+        tried.succeeded()
+        return result
+
+    with _translated(store, generation):
+        return resilience.retrying(resilience.QDRANT_ATTEMPTS, _transient)(attempt)
+
+
+def _request_timeout(store: QdrantStore) -> int | None:
+    """A search's timeout inside a retrieval: the store's own, or what is left of the
+    retrieval's deadline when that is less, in whole seconds (at least 1). ``None`` outside
+    one, for the client's own.
+
+    qdrant-client 1.19.1 sends a request's ``timeout`` to the server, and bounds the HTTP
+    request itself by it too (``http/api_client.py``), so a hung search ends at the deadline.
+    """
+    left = resilience.remaining()
+    if left is None:
+        return None
+    return max(1, math.ceil(min(store.timeout_s, left)))
 
 
 @contextmanager
@@ -302,8 +412,7 @@ def _next_stamp(store: QdrantStore, live: str | None) -> str:
 def _collections(store: QdrantStore) -> set[str]:
     """Every real collection on the server. Aliases are not listed: ``get_collections``
     omits them, where ``collection_exists`` resolves an alias to its target."""
-    with _translated(store):
-        return {c.name for c in store.client.get_collections().collections}
+    return {c.name for c in _call(store, store.client.get_collections).collections}
 
 
 def _generations(store: QdrantStore) -> list[str]:
@@ -342,8 +451,7 @@ _GONE: Final = _Gone()
 def _metadata(store: QdrantStore, generation: str) -> dict[str, Any] | _Gone:
     """A generation's metadata: one ``GET /collections/{name}``, which returns all of it."""
     try:
-        with _translated(store, generation):
-            info = store.client.get_collection(generation)
+        info = _call(store, lambda: store.client.get_collection(generation), generation=generation)
     except GenerationGoneError:
         return _GONE
     except ValueError:  # local mode's "Collection … not found"
@@ -421,14 +529,18 @@ def _scroll(store: QdrantStore, generation: str, *, everything: bool) -> Iterato
     """A generation's points, a page at a time, in point ID order."""
     offset = None
     while True:
-        with _translated(store, generation):
-            page, offset = store.client.scroll(
+        page, offset = _call(
+            store,
+            partial(
+                store.client.scroll,
                 generation,
                 limit=BATCH,
                 offset=offset,
                 with_payload=everything,
                 with_vectors=everything,
-            )
+            ),
+            generation=generation,
+        )
         yield page
         if offset is None:
             return
@@ -503,24 +615,17 @@ def write_generation(
     written = manifest.model_copy(update={"generation": name})
     expected = sum(record.chunks for record in written.documents.values())
     client = store.client
-    with _translated(store):
-        client.create_collection(
+    _create(store, name, written, hybrid=hybrid)
+    _call(
+        store,
+        partial(
+            client.create_payload_index,
             name,
-            vectors_config={
-                VECTOR: models.VectorParams(
-                    size=written.embedder.dimension, distance=models.Distance.COSINE
-                )
-            },
-            sparse_vectors_config=(
-                {SPARSE: models.SparseVectorParams(modifier=models.Modifier.IDF)}
-                if hybrid
-                else None
-            ),
-            metadata={MANIFEST_KEY: manifest_payload(written), COMPLETE_KEY: False},
-        )
-        client.create_payload_index(
-            name, "metadata.source", models.PayloadSchemaType.KEYWORD, wait=True
-        )
+            SOURCE_KEY,
+            models.PayloadSchemaType.KEYWORD,
+            wait=True,
+        ),
+    )
     if base is not None:
         dropped = set(delete)
         for page in _scroll(store, base.name, everything=True):
@@ -530,8 +635,7 @@ def write_generation(
                 if str(point.id) not in dropped
             ]
             if kept:
-                with _translated(store):
-                    client.upsert(name, points=kept, wait=True)
+                _call(store, partial(client.upsert, name, points=kept, wait=True))
     sparse = add.sparse if add.sparse is not None else [None] * len(add.ids)
     for start in range(0, len(add.ids), BATCH):
         batch = slice(start, start + BATCH)
@@ -550,24 +654,51 @@ def write_generation(
                 strict=True,
             )
         ]
-        with _translated(store):
-            client.upsert(name, points=points, wait=True)
-    with _translated(store):
-        count = client.count(name, exact=True).count
+        _call(store, partial(client.upsert, name, points=points, wait=True))
+    count = _call(store, partial(client.count, name, exact=True)).count
     if count != expected:
         raise StoreError(
             f"the new generation {name} holds {count} chunks, but its manifest lists "
             f"{expected}; nothing was published"
         )
-    with _translated(store):
-        client.update_collection(name, metadata={COMPLETE_KEY: True})
+    _call(store, partial(client.update_collection, name, metadata={COMPLETE_KEY: True}))
     try:
-        with _translated(store):
-            _switch(store, name)
+        _switch(store, name)
     except StoreError:
         if not _switched_to(store, name):
             raise
     return Published(generation=name)
+
+
+def _create(store: QdrantStore, name: str, manifest: Manifest, *, hybrid: bool) -> None:
+    """Create the generation ``name``: its dense vector by cosine, its sparse one with
+    Qdrant's IDF when ``hybrid``, and its manifest in its metadata, beside ``complete: false``.
+
+    A retry after a lost answer finds the collection listed, and counts as done: the name is
+    ours alone (a fresh stamp and 8 random hex digits), so what is listed is what the lost
+    request created. Repeated blindly, it would answer 409 (checked on Qdrant 1.19.2).
+    """
+    tries = itertools.count(1)
+
+    def create() -> None:
+        if next(tries) > 1 and name in {c.name for c in store.client.get_collections().collections}:
+            return
+        store.client.create_collection(
+            name,
+            vectors_config={
+                VECTOR: models.VectorParams(
+                    size=manifest.embedder.dimension, distance=models.Distance.COSINE
+                )
+            },
+            sparse_vectors_config=(
+                {SPARSE: models.SparseVectorParams(modifier=models.Modifier.IDF)}
+                if hybrid
+                else None
+            ),
+            metadata={MANIFEST_KEY: manifest_payload(manifest), COMPLETE_KEY: False},
+        )
+
+    _call(store, create)
 
 
 def _sparse(vector: SparseVector) -> models.SparseVector:
@@ -589,28 +720,34 @@ def _switched_to(store: QdrantStore, generation: str) -> bool:
     reset connection). Then the run published, and must say so rather than "published
     nothing" with exit 2 (S3-2's second review). A read that fails too leaves the
     failure as it was: the next run's :func:`recover` keeps whichever generation is live.
+
+    Retried, but never refused by the breaker: the switch's own failed attempts may just have
+    opened it, and this one read decides what the run reports (S3-6).
     """
     try:
-        return store.alias_target() == generation
+        with _translated(store):
+            found = resilience.retrying(resilience.QDRANT_ATTEMPTS, _transient)(
+                store.client.get_aliases
+            )
     except StoreError:
         return False
+    return any(
+        a.alias_name == store.collection and a.collection_name == generation for a in found.aliases
+    )
 
 
 def _switch(store: QdrantStore, generation: str) -> None:
     """Point the alias at ``generation``: delete and create in one request, which Qdrant
     applies atomically. The delete is sent on the first publish too, with no alias to
-    delete; the server accepts that (checked on 1.19.2)."""
-    store.client.update_collection_aliases(
-        change_aliases_operations=[
-            models.DeleteAliasOperation(
-                delete_alias=models.DeleteAlias(alias_name=store.collection)
-            ),
-            models.CreateAliasOperation(
-                create_alias=models.CreateAlias(
-                    collection_name=generation, alias_name=store.collection
-                )
-            ),
-        ]
+    delete; the server accepts that, and a repeat of the whole request (checked on 1.19.2)."""
+    operations: list[models.DeleteAliasOperation | models.CreateAliasOperation] = [
+        models.DeleteAliasOperation(delete_alias=models.DeleteAlias(alias_name=store.collection)),
+        models.CreateAliasOperation(
+            create_alias=models.CreateAlias(collection_name=generation, alias_name=store.collection)
+        ),
+    ]
+    _call(
+        store, partial(store.client.update_collection_aliases, change_aliases_operations=operations)
     )
 
 
@@ -644,8 +781,8 @@ def recover(store: QdrantStore) -> list[str]:
     deleted = []
     for name in generations:
         if name not in keep:
-            with _translated(store):
-                store.client.delete_collection(name)  # one already gone counts as deleted
+            # One already gone answers False, and counts as deleted: so does a repeat.
+            _call(store, partial(store.client.delete_collection, name))
             deleted.append(name)
     return deleted
 
@@ -688,16 +825,7 @@ def search(
     limit = k + CUT_MARGIN
     while True:
         try:
-            with _translated(store, generation):
-                points = store.client.query_points(
-                    generation,
-                    query=sent,
-                    using=using,
-                    query_filter=source_filter(sources),
-                    limit=limit,
-                    with_payload=True,
-                    search_params=models.SearchParams(exact=True),
-                ).points
+            points = _query(store, generation, sent, using, sources, limit)
         except ValueError as e:  # local mode's "Collection … not found"
             if generation not in _collections(store):
                 raise GenerationGoneError(f"the index generation {generation} is gone") from e
@@ -706,6 +834,33 @@ def search(
             break
         limit *= 2
     return sorted(points, key=lambda point: (-point.score, str(point.id)))[:k]
+
+
+def _query(
+    store: QdrantStore,
+    generation: str,
+    sent: list[float] | models.SparseVector,
+    using: str,
+    sources: Sequence[str],
+    limit: int,
+) -> list[Any]:
+    """One exact search request, retried as every request is (:func:`_call`). Its timeout is
+    worked out at each attempt, so a retry inside a retrieval gets only what is left of the
+    deadline (:func:`_request_timeout`)."""
+    return _call(
+        store,
+        lambda: store.client.query_points(
+            generation,
+            query=sent,
+            using=using,
+            query_filter=source_filter(sources),
+            limit=limit,
+            with_payload=True,
+            search_params=models.SearchParams(exact=True),
+            timeout=_request_timeout(store),
+        ),
+        generation=generation,
+    ).points
 
 
 def fuse(

@@ -2,17 +2,21 @@
 
 import asyncio
 import socket
+import sys
 import time
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from conftest import (
+    REAL_CONFIG,
     RERANK_TOP_N,
     FakeOllama,
     MakeConfig,
     StubCrossEncoder,
+    openai_error,
     use_fakes,
     use_fakes_and_reranker,
 )
@@ -21,8 +25,12 @@ from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_ollama import ChatOllama
 
 from rag_qa.components import (
+    OLLAMA_HINT,
+    Preflight,
     aclose_llm,
     build_embedder,
+    build_fallback_llm,
+    build_llm,
     build_loader,
     build_reranker,
     build_sparse_encoder,
@@ -30,6 +38,9 @@ from rag_qa.components import (
     build_store,
     configured_sparse,
     llm_reachable,
+    preflight,
+    raised_by_fallback,
+    service_of,
 )
 from rag_qa.config import ConfigError, load_config
 from rag_qa.loaders import DocxLoader, PdfLoader, TextLoader
@@ -212,11 +223,17 @@ def test_the_store_is_built_from_pipeline_vector_store(make_config: MakeConfig) 
     assert (store.url, store.collection, store.timeout_s) == ("http://localhost:6333", "rag_qa", 10)
 
 
-def test_an_api_key_in_the_config_is_refused_as_a_build_error(make_config: MakeConfig) -> None:
-    # The key comes from RAG_QDRANT_API_KEY only (§9): the store takes no such kwarg.
-    path = make_config(lambda c: c["components"]["vector_stores"]["qdrant"].update(api_key="k"))
-    with pytest.raises(ConfigError, match="Cannot build the vector store .*'api_key'"):
-        build_store(load_config(path))
+def test_an_api_key_in_the_store_entry_is_refused_at_load(make_config: MakeConfig) -> None:
+    # The key comes from RAG_QDRANT_API_KEY only (§9). Until S3-6 the store's missing kwarg
+    # refused it at build; now any component key named like an API key is refused at load,
+    # naming where and the variables, never the value.
+    path = make_config(
+        lambda c: c["components"]["vector_stores"]["qdrant"].update(api_key="sk-sentinel")
+    )
+    with pytest.raises(ConfigError, match="vector_stores.qdrant.api_key: an API key") as exc:
+        load_config(path)
+    assert "RAG_QDRANT_API_KEY" in str(exc.value)
+    assert "sk-sentinel" not in str(exc.value)
 
 
 def test_a_bad_collection_set_after_load_is_still_refused(
@@ -288,3 +305,191 @@ def test_a_target_that_is_not_a_store_is_refused(
     monkeypatch.setattr("rag_qa.components.build_object", lambda spec: object())
     with pytest.raises(ConfigError, match="builds a object, not a store"):
         build_store(load_config(make_config()))
+
+
+# --- timeouts and the hosted fallback (S3-6, DEC-21) ----------------------------------------
+
+
+def closed_port() -> str:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return f"http://127.0.0.1:{sock.getsockname()[1]}"
+
+
+def test_an_ollama_model_s_timeout_phases_reach_both_of_its_http_clients() -> None:
+    # YAML cannot spell an httpx.Timeout; build_llm makes one from the phases (D7). Built
+    # without validation, so no Ollama is asked.
+    llm = build_llm(load_config(REAL_CONFIG), validate=False)
+    assert isinstance(llm, ChatOllama)
+    expected = httpx.Timeout(connect=5, read=600, write=30, pool=30)
+    assert llm._async_client._client.timeout == expected
+    assert llm._client._client.timeout == expected
+    asyncio.run(aclose_llm(llm))
+
+
+def test_built_without_validation_a_model_asks_its_server_nothing(make_config: MakeConfig) -> None:
+    # A pipeline with a fallback builds the model so: Ollama down is the fallback's case.
+    def edit(c: dict[str, Any]) -> None:
+        c["components"]["llms"]["mistral_ollama"]["base_url"] = closed_port()
+
+    config = load_config(make_config(edit))
+    # validate_model_on_init asks it. ollama's client wraps httpx's ConnectError in the
+    # builtin ConnectionError, which langchain-ollama 1.1.0 then lets through.
+    with pytest.raises(ConnectionError, match="Failed to connect to Ollama"):
+        build_llm(config)
+    asyncio.run(aclose_llm(build_llm(config, validate=False)))  # and this does not
+
+
+def test_a_number_as_a_timeout_is_every_phase(make_config: MakeConfig) -> None:
+    def edit(c: dict[str, Any]) -> None:
+        c["components"]["llms"]["mistral_ollama"]["client_kwargs"] = {"timeout": 42}
+
+    llm = build_llm(load_config(make_config(edit)), validate=False)
+    assert llm._async_client._client.timeout == httpx.Timeout(42)  # type: ignore[attr-defined]
+    asyncio.run(aclose_llm(llm))
+
+
+def test_the_service_behind_the_model_is_named_for_its_breaker(make_config: MakeConfig) -> None:
+    assert service_of(load_config(REAL_CONFIG)) == "Ollama"
+    assert service_of(load_config(make_config(use_fakes))) == "the language model"
+
+
+def with_fallback(c: dict[str, Any]) -> None:
+    c["pipeline"]["query"]["fallback_llm"] = "components.llms.groq_fallback"
+
+
+def test_no_fallback_configured_builds_none() -> None:
+    assert build_fallback_llm(load_config(REAL_CONFIG)) is None
+
+
+def test_a_fallback_without_its_key_is_refused_naming_the_variable(make_config: MakeConfig) -> None:
+    with pytest.raises(ConfigError) as exc:
+        build_fallback_llm(load_config(make_config(with_fallback)))
+    assert str(exc.value).startswith(
+        "the hosted fallback components.llms.groq_fallback needs its API key in "
+        "RAG_FALLBACK_API_KEY, which is not set."
+    )
+
+
+def test_a_fallback_without_its_extra_says_how_to_install_it(
+    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RAG_FALLBACK_API_KEY", "gsk-sentinel")
+    monkeypatch.setitem(sys.modules, "openai", None)  # as without `uv sync --extra fallback`
+    with pytest.raises(ConfigError, match="install it with `uv sync --extra fallback`") as exc:
+        build_fallback_llm(load_config(make_config(with_fallback)))
+    assert "gsk-sentinel" not in str(exc.value)
+
+
+def ollama_with_fallback(base_url: str) -> Any:
+    def edit(c: dict[str, Any]) -> None:
+        c["components"]["llms"]["mistral_ollama"]["base_url"] = base_url
+        with_fallback(c)
+
+    return edit
+
+
+def test_preflight_with_a_fallback_warns_about_ollama_down_and_lets_the_start_go_on(
+    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spare = FakeListChatModel(responses=["x"])
+    monkeypatch.setattr("rag_qa.components.build_fallback_llm", lambda config: spare)
+    check = preflight(load_config(make_config(ollama_with_fallback(closed_port()))))
+    assert check.problem is None
+    assert check.warning is not None
+    assert check.warning.startswith(
+        "the language model components.llms.mistral_ollama did not answer within 2 s. Until "
+        "it does, the hosted fallback components.llms.groq_fallback answers, and each "
+        "question and its retrieved chunks are sent to https://api.groq.com/openai/v1."
+    )
+    assert OLLAMA_HINT in check.warning
+
+
+def test_preflight_without_the_fallback_s_key_refuses_the_start(make_config: MakeConfig) -> None:
+    check = preflight(load_config(make_config(ollama_with_fallback(closed_port()))))
+    assert check.problem is not None and "RAG_FALLBACK_API_KEY" in check.problem
+    assert check.warning is None
+
+
+def test_preflight_for_tier_2_ignores_the_fallback_and_refuses_ollama_down(
+    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("rag_qa.components.build_fallback_llm", lambda config: 1 / 0)
+    check = preflight(load_config(make_config(ollama_with_fallback(closed_port()))), fallback=False)
+    assert check.problem is not None
+    assert check.problem.startswith(
+        "cannot build the language model components.llms.mistral_ollama"
+    )
+    assert check.warning is None
+
+
+def test_preflight_with_ollama_up_finds_nothing(
+    make_config: MakeConfig, fake_ollama: FakeOllama, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("rag_qa.components.build_fallback_llm", lambda config: None)
+    assert preflight(load_config(make_config(ollama_with_fallback(fake_ollama.url)))) == Preflight()
+
+
+@pytest.mark.parametrize(
+    ("error", "fallback"),
+    [
+        (openai_error("APIConnectionError")("x"), True),
+        (type("OpenAITimeoutError", (openai_error("APITimeoutError"),), {})("x"), True),
+        (httpx.ConnectError("refused"), False),
+        (ConnectionRefusedError("refused"), False),
+        (ValueError("x"), False),
+    ],
+)
+def test_an_error_is_the_fallback_s_when_openai_raised_it(error: Exception, fallback: bool) -> None:
+    assert raised_by_fallback(error) is fallback
+
+
+def test_a_fallback_whose_class_will_not_import_says_how_to_install_it(
+    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # openai present (the eval extra's), langchain_openai not: the allowlist's import fails.
+    monkeypatch.setenv("RAG_FALLBACK_API_KEY", "gsk-sentinel")
+
+    def no_langchain_openai(spec: Any) -> None:
+        raise ImportError("Could not import 'langchain_openai.ChatOpenAI': No module named it")
+
+    monkeypatch.setattr("rag_qa.components._build_model", no_langchain_openai)
+    with pytest.raises(ConfigError, match="It needs the fallback extra: install it with"):
+        build_fallback_llm(load_config(make_config(with_fallback)))
+
+
+def test_preflight_reports_a_fallback_that_fails_to_build_as_the_reason(
+    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(config: Any) -> None:
+        raise RuntimeError("bad entry")
+
+    monkeypatch.setattr("rag_qa.components.build_fallback_llm", broken)
+    check = preflight(load_config(make_config(ollama_with_fallback(closed_port()))))
+    assert check == Preflight(
+        problem="cannot build the hosted fallback components.llms.groq_fallback: "
+        "RuntimeError: bad entry"
+    )
+
+
+def test_preflight_closes_the_fallback_when_the_model_will_not_build(
+    make_config: MakeConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed: list[Any] = []
+    spare = FakeListChatModel(responses=["x"])
+
+    async def record(model: Any) -> None:
+        closed.append(model)
+
+    def broken(config: Any, **kwargs: Any) -> None:
+        raise RuntimeError("bad model")
+
+    monkeypatch.setattr("rag_qa.components.build_fallback_llm", lambda config: spare)
+    monkeypatch.setattr("rag_qa.components.build_llm", broken)
+    monkeypatch.setattr("rag_qa.components.aclose_llm", record)
+    check = preflight(load_config(make_config(ollama_with_fallback(closed_port()))))
+    assert check.problem is not None
+    assert check.problem.startswith(
+        "cannot build the language model components.llms.mistral_ollama: RuntimeError: bad model"
+    )
+    assert closed == [spare]  # built, never used, and not left open

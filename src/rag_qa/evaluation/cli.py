@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from rag_qa.chain import NoIndexError
-from rag_qa.components import build_store
+from rag_qa.components import build_store, preflight
 from rag_qa.config import ConfigError, load_config, resolve_config_path
 from rag_qa.evaluation.checkpoint import CheckpointError, checkpoint_path, discard
 from rag_qa.evaluation.dataset import ExpectedSource, GoldenItem, GoldenSetError, load_golden
@@ -445,6 +445,10 @@ def run_generate(args: argparse.Namespace) -> int:
     except _CannotRun as e:
         return _cannot_run(e)
     if (problem := _store_problem(setup.config)) is not None:
+        return _cannot_run(problem)
+    # Ollama next, as rag-query asks it (S3-6): down, it is one reason and exit 2, not a
+    # traceback. Never the hosted fallback: tier 2 measures the model it names.
+    if (problem := preflight(setup.config, fallback=False).problem) is not None:
         return _cannot_run(problem)
     out = Path(args.out) if args.out else setup.eval_dir / RUNS_DIR / ANSWERS_FILE
     total = len(setup.golden) if args.limit is None else min(args.limit, len(setup.golden))

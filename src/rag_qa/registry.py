@@ -53,10 +53,13 @@ from typing import Any
 #: Since S3-2 no module imports ``langchain_community`` or FAISS either: the store is
 #: :mod:`rag_qa.vectorstore` on ``qdrant-client``. S3-3 removed both packages, so only
 #: the ``eval`` extra, through ragas, installs ``langchain_community``.
+#: S3-6 added ``langchain_openai.``: ``components.llms.groq_fallback``, the hosted fallback
+#: (DEC-21), is built on ``ChatOpenAI``, from the ``fallback`` extra.
 ALLOWED_PREFIXES = (
     "langchain_core.",
     "langchain_huggingface.",
     "langchain_ollama.",
+    "langchain_openai.",
     "langchain_text_splitters.",
     "rag_qa.",
 )

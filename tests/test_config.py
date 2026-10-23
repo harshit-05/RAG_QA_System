@@ -8,7 +8,7 @@ from conftest import REAL_CONFIG, REPO_ROOT, MakeConfig
 
 from rag_qa.config import ConfigError, check_imports, load_config
 from rag_qa.schema import RagConfig
-from rag_qa.settings import ENV_STATE_PATH, ENV_VECTOR_STORE_PATH
+from rag_qa.settings import ENV_STATE_PATH, ENV_VECTOR_STORE_PATH, FallbackSettings
 
 
 def test_real_config_loads_and_every_reference_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -439,3 +439,45 @@ def test_trust_remote_code_in_the_config_file_is_a_load_error_naming_where(
     with pytest.raises(ConfigError) as exc:
         load_config(make_config(edit))
     assert "components: embedders.minilm_cpu.model_kwargs.trust_remote_code" in str(exc.value)
+
+
+# --- the hosted fallback and its key (S3-6, DEC-21) -----------------------------------------
+
+
+def test_the_committed_config_names_no_fallback_and_loads_with_its_own() -> None:
+    assert load_config(REAL_CONFIG).pipeline.query.fallback_llm is None
+
+
+def test_the_committed_fallback_entry_passes_its_rules_once_set(make_config: MakeConfig) -> None:
+    # The real check's scratch config: the committed entry, referenced (D8 of S3-6's plan).
+    path = make_config(
+        lambda c: c["pipeline"]["query"].update(fallback_llm="components.llms.groq_fallback")
+    )
+    spec = load_config(path).component("components.llms.groq_fallback").spec()
+    assert spec["base_url"] == "https://api.groq.com/openai/v1"
+    assert spec["max_retries"] == 0
+
+
+def test_an_api_key_in_an_llm_entry_is_refused_at_load_without_its_value(
+    make_config: MakeConfig,
+) -> None:
+    path = make_config(
+        lambda c: c["components"]["llms"]["groq_fallback"].update(api_key="gsk-sentinel")
+    )
+    with pytest.raises(ConfigError) as exc:
+        load_config(path)
+    assert "llms.groq_fallback.api_key: an API key in a config file" in str(exc.value)
+    assert "gsk-sentinel" not in str(exc.value)
+
+
+def test_the_fallback_s_key_is_read_from_the_environment_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert FallbackSettings().api_key is None
+    monkeypatch.setenv("RAG_FALLBACK_API_KEY", "")
+    assert FallbackSettings().api_key is None  # empty counts as unset, as every RAG_* does
+    monkeypatch.setenv("RAG_FALLBACK_API_KEY", "gsk-sentinel")
+    settings = FallbackSettings()
+    assert settings.api_key is not None
+    assert settings.api_key.get_secret_value() == "gsk-sentinel"
+    assert "gsk-sentinel" not in repr(settings) and "gsk-sentinel" not in str(settings)

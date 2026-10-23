@@ -235,7 +235,8 @@ from qdrant_client import QdrantClient
 import rag_qa.vectorstore
 rag_qa.vectorstore.connect = lambda *args, **kwargs: QdrantClient(":memory:")
 from rag_qa.api import server
-server.preflight = lambda config: None
+from rag_qa.components import Preflight
+server.preflight = lambda config: Preflight()
 server.create_app = lambda config, settings: FastAPI()
 sys.exit(server.main(sys.argv[1:]))
 """

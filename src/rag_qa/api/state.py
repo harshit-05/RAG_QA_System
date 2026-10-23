@@ -30,11 +30,19 @@ retrieval waits for the orphaned one instead of competing with it for the CPU, w
 free slot gets 503 rather than a place in a queue. A :class:`Slot` is released by
 whichever comes first, the answer stream's ``finally`` or the request's teardown, and
 only once.
+
+**Breakers** (DEC-21, S3-6). The store and each model have one, shared by every request.
+While one that a question needs is open, :meth:`Serving.unavailable` says so and the route
+answers 503 with ``Retry-After``, before the first byte; with a hosted fallback whose own
+breaker is not open, an open breaker on the model is not one of them. While Qdrant's is
+open, :meth:`Serving.refresh` does not ask Qdrant at all: the back-off after a failed
+reopen.
 """
 
 import asyncio
 import inspect
 import logging
+import math
 import threading
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
@@ -51,12 +59,19 @@ from rag_qa.chain import (
     QueryPipeline,
     Retrieval,
     RetrievalQuery,
-    build_prompt,
+    assemble,
     live_generation,
     open_retrieval,
 )
-from rag_qa.components import build_embedder, build_llm, build_reranker, build_store
+from rag_qa.components import (
+    build_embedder,
+    build_fallback_llm,
+    build_llm,
+    build_reranker,
+    build_store,
+)
 from rag_qa.manifest import Manifest
+from rag_qa.resilience import OPEN, CircuitBreaker
 from rag_qa.schema import RagConfig
 from rag_qa.vectorstore import QdrantStore, StoreError
 
@@ -73,6 +88,14 @@ REINGEST = (
     "the index cannot be used with this configuration: re-ingest with --rebuild "
     '(POST /v1/ingest with {"rebuild": true}); the server log says why'
 )
+#: Why a question is refused while a breaker it needs is open (DEC-21): fixed text that names
+#: the service, never its address (DEC-18). ``Retry-After`` says when to ask again.
+STORE_DOWN = "Qdrant is not answering; ask again after Retry-After"
+
+
+def wait_s(seconds: float) -> int:
+    """A ``Retry-After`` in whole seconds, at least 1."""
+    return max(1, math.ceil(seconds))
 
 
 @dataclass(frozen=True)
@@ -280,19 +303,18 @@ class Serving:
 
         Blocking, for seconds: run it in a thread. The LLM comes first, since it is the
         part whose failure stops the server (Ollama down); ``rag-serve`` has checked Qdrant
-        before that. A missing or unusable index only makes the server not-ready.
+        before that. A missing or unusable index only makes the server not-ready. With a
+        hosted fallback configured, it is built too, and the model without asking Ollama
+        anything: Ollama down is then the fallback's case, not a failure (DEC-21).
         """
-        llm = build_llm(config)  # validate_model_on_init asks Ollama for its models
+        spare = build_fallback_llm(config)  # needs its key; asks nothing of the provider
+        # Without a fallback, validate_model_on_init asks Ollama for its models.
+        llm = build_llm(config) if spare is None else build_llm(config, validate=False)
         store = build_store(config)
         embeddings = build_embedder(config)
         reranker = build_reranker(config)
         retrieve, served = open_served(config, store, embeddings, reranker)
-        pipeline = QueryPipeline(
-            retrieve=retrieve,
-            prompt=build_prompt(config),
-            llm=llm,
-            corpus_root=config.paths.data,
-        )
+        pipeline = assemble(config, retrieve, llm, spare)
         return cls(
             config,
             pipeline,
@@ -328,7 +350,12 @@ class Serving:
         failed one records no generation as seen, so without the attempt count each request
         queued behind it would try again in turn (S2-7's second review). An alias that
         cannot be read makes the server not-ready until one can.
+
+        While Qdrant's breaker is open, it returns at once and asks nothing: the back-off
+        after a failed reopen (DEC-21). The first refresh after the wait is the probe.
         """
+        if self.store.breaker.state == OPEN:
+            return
         current = await self._current()
         if not isinstance(current, StoreError) and self._unchanged(current):
             return
@@ -352,6 +379,44 @@ class Serving:
     def _reopen(self) -> tuple[Runnable[RetrievalQuery, list[Document]] | None, Served]:
         with self.retrieval_lock:
             return open_served(self.config, self.store, self.embeddings, self.reranker)
+
+    def breakers(self) -> dict[str, CircuitBreaker]:
+        """Each dependency's breaker, by what ``GET /v1/health`` calls it: ``qdrant``,
+        ``llm``, and ``fallback`` when one is configured."""
+        pipeline = self.pipeline
+        found = {"qdrant": self.store.breaker, "llm": pipeline.llm_breaker}
+        if pipeline.fallback_llm is not None:
+            found["fallback"] = pipeline.fallback_breaker
+        return found
+
+    def unavailable(self) -> tuple[str, int] | None:
+        """Why no question can be answered now, and the seconds before one may be, or
+        ``None``: a breaker the answer needs is open (DEC-21).
+
+        Qdrant's always counts. The model's counts unless the hosted fallback can answer in
+        its place, its own breaker not open; then both do, and the sooner probe is the wait.
+        A half-open breaker lets the question through: it may be the probe. The text is
+        fixed, and names the service, never its address (DEC-18).
+        """
+        qdrant = self.store.breaker
+        if qdrant.state == OPEN:
+            return STORE_DOWN, wait_s(qdrant.retry_after_s())
+        pipeline = self.pipeline
+        llm = pipeline.llm_breaker
+        if llm.state != OPEN:
+            return None
+        if pipeline.fallback_llm is None:
+            return (
+                f"{llm.name} is not answering; ask again after Retry-After",
+                wait_s(llm.retry_after_s()),
+            )
+        spare = pipeline.fallback_breaker
+        if spare.state != OPEN:
+            return None  # the fallback answers in its place
+        return (
+            f"neither {llm.name} nor {spare.name} is answering; ask again after Retry-After",
+            wait_s(min(llm.retry_after_s(), spare.retry_after_s())),
+        )
 
     async def aclose(self) -> None:
         """Close the model's and the store's clients, on the server's loop."""

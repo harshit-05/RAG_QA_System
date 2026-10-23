@@ -4,10 +4,12 @@ The only reader of the ``RAG_*`` environment variables (ARCHITECTURE.md §1.2). 
 empty variable counts as unset, so ``RAG_DATA_PATH= rag-ingest`` means "use the config
 file's value", as it always has.
 
-Three groups: :class:`EnvSettings`, the overrides every command reads;
-:class:`StoreSettings`, the ``RAG_QDRANT_*`` ones the vector store reads (DEC-19); and
-:class:`ServerSettings`, the ``RAG_API_*`` settings only ``rag-serve`` reads (DEC-18).
-``config.yaml`` stays about the pipeline, and a secret never lives in it.
+Four groups: :class:`EnvSettings`, the overrides every command reads;
+:class:`StoreSettings`, the ``RAG_QDRANT_*`` ones the vector store reads (DEC-19);
+:class:`FallbackSettings`, the hosted fallback's key (DEC-21); and :class:`ServerSettings`,
+the ``RAG_API_*`` settings only ``rag-serve`` reads (DEC-18). ``config.yaml`` stays about
+the pipeline, and a secret never lives in it: a component key named like one is refused at
+load (:meth:`rag_qa.schema.Components.check_api_keys`).
 """
 
 import ipaddress
@@ -82,6 +84,28 @@ class StoreSettings(BaseSettings):
         if problem is not None:
             raise ValueError(problem)
         return collection
+
+
+#: The hosted fallback's key (DEC-21, S3-6): one variable whatever the provider.
+ENV_FALLBACK_PREFIX = "RAG_FALLBACK_"
+ENV_FALLBACK_API_KEY = f"{ENV_FALLBACK_PREFIX}API_KEY"
+
+
+class FallbackSettings(BaseSettings):
+    """The hosted fallback's API key, from the environment only (DEC-21, amended in S3-6).
+
+    One provider-neutral variable, which our code passes to the fallback's model itself.
+    Left to its own default, ``ChatOpenAI`` would read ``OPENAI_API_KEY``, or a LangSmith
+    gateway key, and send it to whatever ``base_url`` the config names. Like
+    :class:`EnvSettings`, read on every use, never at import. The shell may load it from a
+    gitignored ``.env`` (``set -a; . ./.env; set +a``); rag_qa never reads that file.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix=ENV_FALLBACK_PREFIX, env_ignore_empty=True, frozen=True
+    )
+
+    api_key: SecretStr | None = None
 
 
 #: The prefix of the HTTP server's settings: ``RAG_API_TOKEN``, ``RAG_API_MAX_CONCURRENT``,
