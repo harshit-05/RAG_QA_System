@@ -21,11 +21,14 @@ from rag_qa.resilience import (
     CONNECTION,
     HALF_OPEN,
     OPEN,
+    PROBE_WAIT_S,
     TIMEOUT,
     UNAVAILABLE,
     BreakerOpenError,
     CircuitBreaker,
     classify,
+    is_marked_fallback,
+    mark_fallback,
 )
 from rag_qa.resilience import backoff_s as real_backoff_s  # before the conftest's patch
 
@@ -106,6 +109,51 @@ def test_half_open_lets_exactly_one_probe_through_and_its_success_closes_it() ->
     probe.succeeded()
     assert b.state == CLOSED
     b.allow().succeeded()
+
+
+def test_it_refuses_while_open_and_while_its_probe_is_out() -> None:
+    clock = FakeClock()
+    b = breaker(clock)
+    assert b.refusal_s() is None  # closed
+    fail(b, 3)
+    clock.now += 12
+    assert b.refusal_s() == pytest.approx(18.0)  # open: the wait that is left
+    clock.now += 18
+    assert b.state == HALF_OPEN
+    assert b.refusal_s() is None  # half-open, no probe yet: the next attempt is the probe
+    probe = b.allow()
+    assert b.refusal_s() == PROBE_WAIT_S  # the probe is out: everything else is refused
+    probe.succeeded()
+    assert b.refusal_s() is None
+
+
+def test_an_abandoned_probe_stops_the_refusal() -> None:
+    clock = FakeClock()
+    b = breaker(clock)
+    fail(b, 3)
+    clock.now += 30
+    probe = b.allow()
+    assert b.refusal_s() == PROBE_WAIT_S
+    probe.abandoned()
+    assert b.refusal_s() is None  # half-open still, and its probe free again
+
+
+def test_an_error_is_marked_as_the_fallback_s_only_when_it_is_marked() -> None:
+    error = ConnectionError("x")
+    assert not is_marked_fallback(error)
+    mark_fallback(error)
+    assert is_marked_fallback(error)
+    assert not is_marked_fallback(ConnectionError("x"))  # the mark is on the instance
+
+
+def test_marking_an_error_that_takes_no_attributes_is_harmless() -> None:
+    class Frozen(Exception):
+        def __setattr__(self, name: str, value: object) -> None:
+            raise AttributeError(name)
+
+    error = Frozen()
+    mark_fallback(error)  # must not raise: the answer's own error is what matters
+    assert not is_marked_fallback(error)
 
 
 def test_a_failed_probe_opens_it_again_for_a_fresh_wait() -> None:

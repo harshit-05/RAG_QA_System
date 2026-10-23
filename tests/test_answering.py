@@ -59,7 +59,13 @@ from rag_qa.answering import (
 )
 from rag_qa.chain import NoIndexError, QueryPipeline, build_query_pipeline, format_docs
 from rag_qa.config import load_config
-from rag_qa.resilience import FALLBACK_ATTEMPTS, LLM_ATTEMPTS, BreakerOpenError, CircuitBreaker
+from rag_qa.resilience import (
+    FALLBACK_ATTEMPTS,
+    LLM_ATTEMPTS,
+    BreakerOpenError,
+    CircuitBreaker,
+    is_marked_fallback,
+)
 
 CORPUS = Path("/corpus")
 DOCS = [
@@ -480,6 +486,39 @@ def test_without_a_fallback_a_refused_connection_is_the_answer_s_error() -> None
     with pytest.raises(httpx.ConnectError):
         asyncio.run(collect(stream_answer(pipeline, "q")))
     assert primary.attempts == LLM_ATTEMPTS
+
+
+def test_an_error_from_the_fallback_s_stream_is_marked_as_its_own() -> None:
+    # Its HTTP client's errors are httpx's (httpx2's, under openai 3): nothing in their class
+    # tells them from Ollama's, so the answer that read the stream says whose they are.
+    spare = BreaksAfterAToken()
+    pipeline = two_models(StreamingFakeChatModel(), spare, llm_breaker=opened("Ollama"))
+    with pytest.raises(httpx.RemoteProtocolError) as after_a_token:
+        asyncio.run(collect(stream_answer(pipeline, "q")))
+    assert is_marked_fallback(after_a_token.value)
+
+    refusing = two_models(
+        Refusing(), Refusing(error=httpx.ConnectError("refused")), llm_breaker=opened("Ollama")
+    )
+    with pytest.raises(httpx.ConnectError) as before_one:
+        asyncio.run(collect(stream_answer(refusing, "q")))
+    assert is_marked_fallback(before_one.value)
+
+
+def test_the_model_s_own_errors_are_not_marked_as_the_fallback_s() -> None:
+    after_a_token = two_models(BreaksAfterAToken(), StreamingFakeChatModel())
+    with pytest.raises(httpx.RemoteProtocolError) as caught:
+        asyncio.run(collect(stream_answer(after_a_token, "q")))
+    assert not is_marked_fallback(caught.value)
+    # Refused by the model, then by the fallback: the error raised is the fallback's, and
+    # the model's own, kept apart, was never marked.
+    primary_error = httpx.ConnectError("Ollama refused")
+    refusing = two_models(
+        Refusing(error=primary_error), Refusing(error=httpx.ConnectError("spare refused"))
+    )
+    with pytest.raises(httpx.ConnectError):
+        asyncio.run(collect(stream_answer(refusing, "q")))
+    assert not is_marked_fallback(primary_error)
 
 
 def test_a_failure_after_the_first_token_is_neither_repeated_nor_routed() -> None:

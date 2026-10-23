@@ -32,9 +32,10 @@ whichever comes first, the answer stream's ``finally`` or the request's teardown
 only once.
 
 **Breakers** (DEC-21, S3-6). The store and each model have one, shared by every request.
-While one that a question needs is open, :meth:`Serving.unavailable` says so and the route
-answers 503 with ``Retry-After``, before the first byte; with a hosted fallback whose own
-breaker is not open, an open breaker on the model is not one of them. While Qdrant's is
+While one that a question needs refuses, open or half-open with its probe out,
+:meth:`Serving.unavailable` says so and the route answers 503 with ``Retry-After``, before
+the first byte; with a hosted fallback whose own breaker is not refusing, one on the model
+is not one of them. While Qdrant's is
 open, :meth:`Serving.refresh` does not ask Qdrant at all: the back-off after a failed
 reopen.
 """
@@ -394,28 +395,28 @@ class Serving:
         ``None``: a breaker the answer needs is open (DEC-21).
 
         Qdrant's always counts. The model's counts unless the hosted fallback can answer in
-        its place, its own breaker not open; then both do, and the sooner probe is the wait.
-        A half-open breaker lets the question through: it may be the probe. The text is
-        fixed, and names the service, never its address (DEC-18).
+        its place, its own breaker refusing nothing; then both do, and the sooner wait is the
+        wait. A breaker refuses while it is open, and while it is half-open with its probe
+        out (:meth:`~rag_qa.resilience.CircuitBreaker.refusal_s`): a second question then
+        gets this 503 rather than a retrieval and an ``error`` event. The first question of a
+        half-open breaker goes through: it is the probe. The text is fixed, and names the
+        service, never its address (DEC-18).
         """
         qdrant = self.store.breaker
-        if qdrant.state == OPEN:
-            return STORE_DOWN, wait_s(qdrant.retry_after_s())
+        if (refused := qdrant.refusal_s()) is not None:
+            return STORE_DOWN, wait_s(refused)
         pipeline = self.pipeline
         llm = pipeline.llm_breaker
-        if llm.state != OPEN:
+        if (refused := llm.refusal_s()) is None:
             return None
         if pipeline.fallback_llm is None:
-            return (
-                f"{llm.name} is not answering; ask again after Retry-After",
-                wait_s(llm.retry_after_s()),
-            )
+            return f"{llm.name} is not answering; ask again after Retry-After", wait_s(refused)
         spare = pipeline.fallback_breaker
-        if spare.state != OPEN:
+        if (spare_refused := spare.refusal_s()) is None:
             return None  # the fallback answers in its place
         return (
             f"neither {llm.name} nor {spare.name} is answering; ask again after Retry-After",
-            wait_s(min(llm.retry_after_s(), spare.retry_after_s())),
+            wait_s(min(refused, spare_refused)),
         )
 
     async def aclose(self) -> None:

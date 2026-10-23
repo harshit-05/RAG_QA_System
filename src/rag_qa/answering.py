@@ -156,6 +156,7 @@ class _Model:
     ref: str  # its config reference, which Done names when it answers
     breaker: CircuitBreaker
     attempts: int  # tries before its first token, each after a failed connection
+    fallback: bool = False  # the hosted fallback: its errors are marked as such
 
 
 def _models(pipeline: QueryPipeline) -> list[_Model]:
@@ -168,6 +169,7 @@ def _models(pipeline: QueryPipeline) -> list[_Model]:
                 pipeline.fallback_ref,
                 pipeline.fallback_breaker,
                 resilience.FALLBACK_ATTEMPTS,
+                fallback=True,
             )
         )
     return models
@@ -242,6 +244,8 @@ async def stream_answer(
                         tried.succeeded()  # the first token: the service answered
                     yield Token(text)
             except Exception as e:
+                if model.fallback:  # its HTTP errors look like Ollama's: say whose they are
+                    resilience.mark_fallback(e)
                 if ttft_ms is not None:
                     raise  # after the first token: never repeated, never routed
                 verdict = resilience.classify(e)

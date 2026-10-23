@@ -43,6 +43,11 @@ FAILURES: Final = 3
 #: Seconds an open breaker refuses every attempt before it lets one probe through.
 RESET_AFTER_S: Final = 30.0
 
+#: What a refused question is told to wait while a half-open breaker's probe is still out:
+#: nobody knows when it will end (a model's first token can take minutes), so a short,
+#: fixed time, after which the question is asked again and finds the answer.
+PROBE_WAIT_S: Final = 5.0
+
 #: Attempts at one Qdrant call: every call is safe to repeat (DEC-21; ``vectorstore``).
 QDRANT_ATTEMPTS: Final = 3
 #: Attempts at a model's answer, made only before its first token and only after a failed
@@ -181,6 +186,23 @@ class CircuitBreaker:
         with self._lock:
             return self._wait() if self._state() == OPEN else 0.0
 
+    def refusal_s(self) -> float | None:
+        """Seconds before an attempt would be let through, or ``None`` when one would be.
+
+        An open breaker refuses until its wait is over, :meth:`retry_after_s`. A half-open
+        one refuses while its probe is out, for :data:`PROBE_WAIT_S`: the front ends ask this
+        before taking a question, so that a second question during a slow probe is told to
+        wait rather than let in to be refused after its retrieval (S3-6's first review).
+        It reserves nothing: :meth:`allow` decides.
+        """
+        with self._lock:
+            state = self._state()
+            if state == OPEN:
+                return self._wait()
+            if state == HALF_OPEN and self._probing:
+                return PROBE_WAIT_S
+            return None
+
     def allow(self) -> Attempt:
         """Let one attempt through, or raise :class:`BreakerOpenError`.
 
@@ -213,6 +235,28 @@ class CircuitBreaker:
             # reaches the count. Failures while it is open already change nothing else.
             if probe or (self._opened_at is None and self._failed >= self.failures):
                 self._opened_at = self._clock()
+
+
+#: The attribute that marks an error as the hosted fallback's (:func:`mark_fallback`).
+_FALLBACK_MARK: Final = "_rag_qa_fallback"
+
+
+def mark_fallback(error: BaseException) -> None:
+    """Record that ``error`` was raised by the hosted fallback's stream.
+
+    The fallback's stream raises its HTTP client's own errors unwrapped (httpx2's, under
+    openai 3), which nothing in their class tells from Ollama's; the answer knows which
+    model it was reading, so it says so (S3-6's first review).
+    """
+    try:
+        setattr(error, _FALLBACK_MARK, True)
+    except (AttributeError, TypeError):  # an error that takes no attributes: left unmarked
+        pass
+
+
+def is_marked_fallback(error: BaseException) -> bool:
+    """Whether :func:`mark_fallback` marked ``error``."""
+    return getattr(error, _FALLBACK_MARK, False) is True
 
 
 def _is_ollama_stream_error(error: BaseException) -> bool:

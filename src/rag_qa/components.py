@@ -37,6 +37,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 from pydantic import ValidationError
 
+from rag_qa import resilience
 from rag_qa.config import ConfigError
 from rag_qa.manifest import SparseRecord, sparse_record
 from rag_qa.registry import build_object
@@ -152,10 +153,11 @@ def service_of(config: RagConfig) -> str:
 
 
 def raised_by_fallback(error: BaseException) -> bool:
-    """Whether ``error`` came from the hosted fallback's client: openai's errors, and their
-    subclasses in langchain-openai. Ollama's are httpx's, ollama's or the builtins'. By
-    module name, so nothing here imports openai."""
-    return any(
+    """Whether ``error`` came from the hosted fallback: marked so by the answer that was
+    reading its stream (:func:`rag_qa.resilience.mark_fallback`), which is how its stream's
+    own HTTP errors are told from Ollama's; or openai's own errors, and their subclasses in
+    langchain-openai, by module name, so nothing here imports openai."""
+    return resilience.is_marked_fallback(error) or any(
         kind.__module__.split(".")[0] in ("openai", "langchain_openai")
         for kind in type(error).__mro__
     )

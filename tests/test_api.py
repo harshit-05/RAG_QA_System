@@ -71,7 +71,7 @@ from rag_qa.components import build_store
 from rag_qa.config import load_config
 from rag_qa.ingest import CorpusUnreadableError, IngestionRunningError, IngestReport, ingest
 from rag_qa.manifest import STORE, DocumentRecord, EmbedderRecord, Manifest, SplitterRecord
-from rag_qa.resilience import BreakerOpenError, CircuitBreaker
+from rag_qa.resilience import PROBE_WAIT_S, BreakerOpenError, CircuitBreaker, mark_fallback
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_DATA_PATH, ServerSettings
 from rag_qa.vectorstore import StoreUnavailableError
@@ -1334,6 +1334,56 @@ def with_models(
         **breakers,
     )
     return serving
+
+
+def test_a_second_question_during_a_slow_probe_is_refused_before_the_first_byte(
+    fake_config: RagConfig, tmp_path: Path
+) -> None:
+    # Half-open, the first question is the probe, and it may take minutes to its first token
+    # (a model reloading). Another question then gets the 503 an open breaker gives, before
+    # any retrieval: not a 200 that streams its sources and ends in an error (S3-6's first
+    # review).
+    clock = Clock()
+    model = StreamingFakeChatModel(prefill_s=1.5)
+    breaker = CircuitBreaker("Ollama", clock=clock)
+    serving = with_models(fake_serving(fake_config, model, max_concurrent=2), llm_breaker=breaker)
+    open_breaker(breaker)
+    retrievals: list[RetrievalQuery] = []
+    inner = serving.pipeline.retrieve
+    assert inner is not None
+    serving.pipeline = replace(
+        serving.pipeline,
+        retrieve=RunnableLambda(lambda asked: retrievals.append(asked) or inner.invoke(asked)),
+    )
+    with serve(fake_config, tmp_path, serving) as (client, serving):
+        clock.now += 30  # half-open: the next question is the probe
+        probe: dict[str, httpx.Response] = {}
+        thread = threading.Thread(
+            target=lambda: probe.update(r=client.post("/v1/query", json={"question": "probe"}))
+        )
+        thread.start()
+        deadline = time.monotonic() + 5
+        while not model.log and time.monotonic() < deadline:
+            time.sleep(0.01)  # the probe is at the model
+        assert breaker.state == "half-open"
+        second = client.post("/v1/query", json={"question": "second"})
+        thread.join()
+    assert second.status_code == 503
+    assert second.headers["Retry-After"] == str(int(PROBE_WAIT_S))
+    assert second.json()["detail"] == "Ollama is not answering; ask again after Retry-After"
+    assert [asked.question for asked in retrievals] == ["probe"]  # none for the refused one
+    assert model.prompts and len(model.prompts) == 1
+    assert probe["r"].status_code == 200
+    assert [name for name, _ in sse_events(probe["r"].text)][-1] == "done"
+    assert breaker.state == "closed"
+    assert serving.slots.in_use == 0
+
+
+def test_a_dropped_fallback_stream_is_reported_as_the_fallback_s() -> None:
+    drop = httpx.ReadError("peer closed connection")
+    assert routes.error_message(drop) == "the language model is unreachable"
+    mark_fallback(drop)
+    assert routes.error_message(drop) == "the hosted fallback is unreachable"
 
 
 def test_an_open_breaker_refuses_a_question_before_the_first_byte_and_takes_no_slot(

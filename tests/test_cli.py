@@ -42,7 +42,7 @@ from rag_qa.answering import Done, Token
 from rag_qa.chain import QueryPipeline, RetrievalQuery
 from rag_qa.cli import EXIT_CANNOT_START, EXIT_OK, HF_CACHE_HINT, describe_failure, repl
 from rag_qa.components import OLLAMA_HINT
-from rag_qa.resilience import BreakerOpenError
+from rag_qa.resilience import BreakerOpenError, mark_fallback
 from rag_qa.vectorstore import QDRANT_HINT, StoreError, StoreUnavailableError
 
 CTRL_C = "ctrl-c"  # script: the user presses Ctrl-C once, mid-answer
@@ -784,6 +784,17 @@ def test_the_line_under_an_answer_names_the_fallback_only_when_it_answered(capsy
     assert f"(answered by the hosted fallback, {FALLBACK})" in capsys.readouterr().out
     asyncio.run(cli.render(events("components.llms.mistral_ollama"), fallback=FALLBACK))
     assert "answered by" not in capsys.readouterr().out
+
+
+def test_a_dropped_fallback_stream_is_the_fallback_s_not_ollama_s() -> None:
+    # httpx's error, as the fallback's stream raises it: marked by the answer that read it.
+    ollama = ChatOllama(model="mistral", base_url=dead_url())
+    error = httpx.RemoteProtocolError("peer closed connection")
+    unmarked = describe_failure(error, ollama)
+    assert unmarked.startswith("the connection to Ollama failed") and OLLAMA_HINT in unmarked
+    mark_fallback(error)
+    said = describe_failure(error, ollama)
+    assert said == "the hosted fallback failed (RemoteProtocolError: peer closed connection)"
 
 
 @pytest.mark.parametrize(
