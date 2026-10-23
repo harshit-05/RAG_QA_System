@@ -232,7 +232,8 @@ uv run rag-serve                       # http://127.0.0.1:8000; --host, --port, 
 It checks that Qdrant and Ollama answer, then loads the models, which takes a few seconds.
 It starts without an index too: it then reports not-ready until an ingest builds one. If
 Qdrant goes away while it runs, it reports not-ready (503) rather than failing, and serves
-again on the first request after Qdrant is back.
+again once Qdrant is back. With a [hosted fallback](#hosted-fallback) set, it starts with
+Ollama down too, and the fallback answers until Ollama is back.
 
 | Method and path | Does |
 | --- | --- |
@@ -240,7 +241,7 @@ again on the first request after Qdrant is back.
 | `POST /v1/ingest` `{"rebuild": false}` | starts an ingest job, as `rag-ingest` (`--rebuild` with `true`); 202 with its `job_id` |
 | `GET /v1/ingest/{job_id}` | the job: `status`, `rag-ingest`'s `exit_code`, the `report` and the `log` |
 | `GET /v1/documents` | what the index holds, from its manifest |
-| `GET /v1/health` | 200 when an index is served and Ollama answers; 503, saying what is missing |
+| `GET /v1/health` | 200 when an index is served and Ollama answers, or the hosted fallback can answer in its place; 503, saying what is missing. `breakers` reports each dependency's circuit breaker |
 | `GET /v1/health/live` | 200 while the process runs |
 | `GET /docs`, `/openapi.json` | the docs and the schema, to read: a browser's "Try it out" POST sends `Origin` and gets `403` |
 
@@ -265,13 +266,14 @@ event: token
 data: {"text": " YO"}
 
 event: done
-data: {"ttft_ms": 157033.62593899964, "total_ms": 176273.471257}
+data: {"ttft_ms": 157033.62593899964, "total_ms": 176273.471257, "model": "components.llms.mistral_ollama"}
 ```
 
 `sources` comes first, after about a second of retrieval. While the model reads the prompt
 (minutes on CPU; 157 s above), the stream carries a `: ping` comment every 15 seconds.
-Each `token` is a chunk of the answer. A stream that ends with neither `done` nor `error`
-was cut off.
+Each `token` is a chunk of the answer, and `done`'s `model` names the config entry of the
+model that answered: the hosted fallback's, when it answered. A stream that ends with
+neither `done` nor `error` was cut off.
 
 To answer from some documents only, list them in `sources`, by their paths relative to
 the corpus, as `GET /v1/documents` names them (50 at most):
@@ -298,6 +300,21 @@ How it behaves:
 - **One answer at a time.** A question that arrives while another is being answered gets
   `503` with `Retry-After`, rather than waiting in a queue for minutes.
   `RAG_API_MAX_CONCURRENT` raises the limit.
+- **A dependency that is down gets a fast refusal.** Every call to Qdrant and Ollama has a
+  timeout; Ollama's are 5 s to connect and 600 s to read, which outlasts a prompt
+  evaluation on CPU. A Qdrant request that gets no answer, or a 5xx, is tried up to three
+  times, and a connection to Ollama that fails before the first token, twice. After three
+  failed attempts in a row, a service's circuit breaker opens for 30 s: a question then gets
+  `503` with `Retry-After` at once, before any event, and the first question after the wait
+  tries the service again. `GET /v1/health` reports each breaker:
+
+  ```json
+  "breakers": {"qdrant": {"state": "closed", "retry_after_s": null},
+               "llm": {"state": "open", "retry_after_s": 18}}
+  ```
+
+  With a hosted fallback set, an open breaker on Ollama refuses nothing: the fallback
+  answers, and `breakers` lists its own breaker too.
 - **Leaving stops the answer.** Closing the connection (Ctrl-C on `curl`) stops
   generation, as Ctrl-C does in `rag-query`, and frees the slot at once. If it lands while
   the model reads the prompt, Ollama may finish that step first (see Known limitations).
@@ -401,9 +418,46 @@ directory. Environment variables override them, and the store's settings:
 | `RAG_QDRANT_URL` | the Qdrant server, default `http://localhost:6333` |
 | `RAG_QDRANT_COLLECTION` | the index's name, default `rag_qa`; another name is a separate index (a scratch one, say) |
 | `RAG_QDRANT_API_KEY` | Qdrant's API key, when it has one; read from the environment only, never from a file |
+| `RAG_FALLBACK_API_KEY` | the [hosted fallback](#hosted-fallback)'s API key, whatever its provider; read from the environment only |
 
 `RAG_VECTOR_STORE_PATH`, v0.3's index folder, is refused while it is set
 ([Upgrading from v0.3](#upgrading-from-v03)).
+
+No key belongs in a config file: one named `api_key`, or ending in `_api_key`, anywhere in
+`components`, is refused at load. `.env.example` lists the variables a shell sets: copy it
+to `.env` (gitignored), fill it in, and load it with `set -a; . ./.env; set +a`. rag_qa
+never reads either file.
+
+### Hosted fallback
+
+When Ollama cannot answer, an OpenAI-compatible provider can answer in its place. It is off
+by default, and while it is off nothing leaves this machine.
+
+- **When it answers.** A question goes to Ollama, as always. It goes to the fallback only
+  when Ollama cannot take it: its circuit breaker is open, or the connection to it failed
+  twice before the first token. An Ollama that answered with an error, or timed out, is
+  reported as before, and once a token has arrived nothing is routed or repeated. With a
+  fallback set, `rag-query` and `rag-serve` start while Ollama is down, with a warning.
+- **What leaves the host.** When the fallback answers, the question and its retrieved
+  chunks are sent to the provider at the entry's `base_url`. `rag-query` prints
+  "(answered by the hosted fallback, …)" under such an answer, the API's `done` event names
+  it in `model`, and `rag-serve` logs a warning for each one.
+- **Turning it on:**
+
+  ```bash
+  uv sync --extra fallback          # a plain `uv sync` removes it again
+  export RAG_FALLBACK_API_KEY=...   # or set it in .env and load that
+  ```
+
+  then set `pipeline.query.fallback_llm: components.llms.groq_fallback` in `config.yaml`.
+  That entry is Groq's `openai/gpt-oss-120b`, a reasoning model: `reasoning_effort: low`
+  and `include_reasoning: false` keep its reasoning short and out of the reply. An entry of
+  your own must be on `langchain_openai.ChatOpenAI`, with a `base_url`, `max_retries: 0` and
+  a `timeout`, which the config's load checks: the OpenAI SDK would otherwise retry twice on
+  its own, hiding a dead provider for minutes.
+- **What it never does.** Tier 2 never uses it: `rag-eval generate` measures the model
+  `pipeline.query.llm` names. And with a fallback set, Ollama is not asked at start-up
+  whether it has the model, so a model that was never pulled shows at the first answer.
 
 ## Adding documents
 
@@ -525,6 +579,10 @@ as a regression alarm rather than a measure of absolute quality.
   run.
 - **Latency.** On CPU, answers take minutes, not seconds. The long-term target of under
   2 seconds to the first word needs GPU serving.
+- **A short outage can close the API for 30 seconds.** After three failed attempts in a
+  row, a service is not asked again for 30 s, so a Qdrant restart of a few seconds can
+  refuse questions (`503`, with `Retry-After`) for that long. That is the circuit breaker's
+  trade: a dead service costs a fast refusal rather than a timeout per question.
 - **The config is trusted like code.** The `_target_` allowlist limits which classes a
   config can build, not the arguments it passes them. A config that sets
   `trust_remote_code` anywhere is refused at load, since that runs Python from someone
@@ -536,6 +594,7 @@ as a regression alarm rather than a measure of absolute quality.
 ```text
 config.yaml        component library + pipeline assembly
 compose.yaml       Qdrant, the vector store (`docker compose up -d qdrant`)
+.env.example       the variables a shell sets, names only: copy it to .env (not tracked)
 corpus/            your documents; everything in here gets ingested
 var/               paths.state: the writer lock (not tracked)
 src/rag_qa/
@@ -543,7 +602,10 @@ src/rag_qa/
   schema.py        what a valid config is; checked at load
   settings.py      the RAG_* environment overrides
   registry.py      builds objects from `_target_` entries, within an import allowlist
-  components.py    builds the pipeline's loaders, splitter, embedder and LLM
+  components.py    builds the pipeline's loaders, splitter, embedder and LLM, and the hosted
+                   fallback
+  resilience.py    circuit breakers, retries and deadlines for Qdrant, Ollama and the
+                   fallback
   loaders.py       PDF, DOCX and text loaders
   rerankers.py     the cross-encoder that rescores retrieved chunks
   sparse.py        the BM25 encoder that writes hybrid retrieval's keyword vectors
