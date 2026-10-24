@@ -11,7 +11,7 @@ counts and the two capacity benchmarks; S3-7b, traces and alerts, follows on a b
 own. The plan is in the story ("Plan").
 
 **S3-7 is built and reviewed, awaiting the close-out** (PR #25, 2026-10-24; CI green on
-`df6fd57`). **First review (2026-10-24): no blocker; 1 privacy defect, 2 flaky tests and 6
+`df6fd57`, and on `c9647b5`, run 40116138049). **First review (2026-10-24): no blocker; 1 privacy defect, 2 flaky tests and 6
 smaller findings, fixed on the PR.** Detail in the story ("First review").
 
 - **Fixed: `rag-serve`'s console log printed the question and the chunks** after a failed
@@ -26,6 +26,23 @@ smaller findings, fixed on the PR.** Detail in the story ("First review").
   names; 1490 passed, coverage 98.36%.
 - **Open for the maintainer: NFR-2a is missed** (p95 2.09 s, then 2.02 s, against under
   2 s), and no story owns its levers (fewer rerank candidates, a smaller cross-encoder).
+
+**Second review of S3-7 (2026-10-25, on `c9647b5`): no blocker; 1 metrics defect, 2 doc
+claims and 1 test gap, fixed on the PR.** The live Qdrant was only read, and no model was
+run. Detail in the story ("Second review").
+
+- **Fixed: the answer latencies missed the dependencies' time.** FastAPI starts the route's
+  body only after its dependencies, so the alias read before each answer, and Qdrant's
+  retries of it, never reached `rag_sources_seconds`, `rag_ttft_seconds` or
+  `rag_answer_seconds` (1.5 s waited, 0.006 s recorded). They now run from the first
+  dependency, with a test.
+- **Fixed:** the README's `done` example (token counts from no run, now marked
+  illustrative); ARCHITECTURE's source for the token buckets (the convention's text, not the
+  package); a test that a refusal after the slot counts no answer, whose guard had survived
+  its removal.
+- **Held:** the gates (1490 passed, 98.36%; `rag-eval check` exit 0; tier 1 IDENTICAL,
+  `5a36e2f9…`), the cancel path, the privacy fix under mutation, the library claims against
+  their source, the lock, and the audit today. After the fixes: 1492 passed, coverage 98.36%.
 
 **S3-6 is merged** (2026-10-23, PR #24, merge commit `c486134`). CI was green on the PR's last
 head, `cd79459`, the second review's record (run 39947739963), and is green on `main` after the

@@ -2606,10 +2606,16 @@ _As built in S3-7 (2026-10-23), from its approved plan (the story's "Plan", D1â€
   - **an answer's outcome is counted once, when its slot is released.** A client dropped
     between two events leaves the route's generator paused, and only the garbage collector
     closes it, so a count in its `finally` was missed (the forced-window test);
-  - **the token histogram** takes its name, labels and buckets from
-    opentelemetry-semantic-conventions 0.66b1. Its GenAI constants are marked deprecated,
-    moved to the GenAI conventions' own repository, which has no Python package yet. Reading
-    a member raises no warning; calling an enum does, so the code reads members only.
+  - **an answer's times run from its first dependency,** `bind_request`, which notes when the
+    request arrived. FastAPI starts the route's body only once every dependency has resolved,
+    so timed from there, the alias read before each answer and Qdrant's retries of it went
+    unseen (second review: 1.5 s waited, 0.006 s recorded);
+  - **the token histogram** takes its name and labels from
+    opentelemetry-semantic-conventions 0.66b1, and its buckets from the convention's text
+    (semantic conventions 1.37.0), which the package does not carry. Its GenAI constants are
+    marked deprecated, moved to the GenAI conventions' own repository, which has no Python
+    package yet. Reading a member raises no warning; calling an enum does, so the code reads
+    members only.
     `ollama` is a custom provider value, which the convention allows. `model_identity` lives
     in `observability/genai.py` and maps a model by its class's package, so the package
     still loads no model stack.

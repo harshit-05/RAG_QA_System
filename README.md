@@ -251,7 +251,8 @@ curl -N -X POST localhost:8000/v1/query -H 'content-type: application/json' \
 ```
 
 `-N` turns off curl's buffering, so events print as they arrive. From a run on this
-host's CPU (file names shortened, and four of the five sources left out):
+host's CPU (file names shortened, and four of the five sources left out). That run predates
+the token counts, so the two in `done` are illustrative:
 
 ```text
 event: sources

@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In progress (plan approved 2026-10-23): on `feat/s3-7-observability`. The plan splits the story at design review 1's seam: the traces and the alerts are S3-7b. On Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-24 as PR #25 (`71555f5` … `df6fd57`, CI green on `df6fd57`); the first review (2026-10-24) found one privacy defect, two flaky tests and six smaller things, fixed on the PR ("First review"). The close-out record (Discovered, Deviation, Verification record) is still to be written, after the maintainer's call on NFR-2a. |
+| **Status** | In progress (plan approved 2026-10-23): on `feat/s3-7-observability`. The plan splits the story at design review 1's seam: the traces and the alerts are S3-7b. On Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-24 as PR #25 (`71555f5` … `df6fd57`, CI green on `df6fd57`); the first review (2026-10-24) found one privacy defect, two flaky tests and six smaller things, fixed on the PR ("First review"); the second (2026-10-25, on `c9647b5`) found one metrics defect, two doc claims and one test gap, fixed on the PR ("Second review"). The close-out record (Discovered, Deviation, Verification record) is still to be written, after the maintainer's call on NFR-2a. |
 | **Closes** | NFR-10 (logs and metrics); NFR-1 (verified); NFR-2 (a), measured (DEC-27); NFR-3; DEC-22 (logs and metrics); backlog: the two plural slips in `rag-ingest`'s log (S3-4's "Published …: 1 documents" is the second of them), the API's ingest jobs printing pypdf's warnings, and the traceback an open breaker logs mid-stream (S3-6) |
 | **Depends on** | S3-6 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -231,6 +231,87 @@ coverage 98.36%; eight warm repeats of the files that flaked all green.
 a missed target) and leaks its scratch collection if the payload index fails right after
 creation; `opentelemetry-semantic-conventions>=0.66b1` has no cap while its constants are
 deprecated; `/metrics` carries no token (documented), so S3-9's compose must keep it internal.
+
+## Second review (2026-10-25, Opus 5.5, on `c9647b5`)
+
+**1 defect in the metrics, 2 doc claims and 1 test gap, all fixed on the PR; nothing blocks
+the cancel path.** Run on the PR's head, with the first review's record treated as claims to
+check. The live Qdrant was only read: the alias still names `…7f20891e`, and its two
+generations are the only collections. Probes and mutations ran in a scratch copy of `HEAD`;
+the library claims were checked against the installed source (langchain-openai 1.6.2 in an
+isolated environment); the maintainer's logs of 2026-10-23 in `~/dev/rag-s3-7/` were read
+as evidence. No model was run.
+
+- **Reproduced on `c9647b5`:** ruff, format and mypy clean; **1490 passed, 18 skipped, 5
+  xfailed**, coverage **98.36%**, the HF cache empty; the 11 `qdrant_server` tests;
+  `rag-eval check` exit 0; tier 1 0.950 / 0.796 / 0.858, the contexts digest `5a36e2f9…`,
+  IDENTICAL; CI green on the head (run 40116138049); CI's audit command over the locked
+  default export, today: "No known vulnerabilities found, 11 ignored".
+- **DEC-14's cancel path:** what the story adds to the route and `stream_answer` is
+  synchronous, and every ending of an answer reaches `Slot.release()` once, its outcome set
+  before.
+- **The first review's privacy fix holds:** with `plain_traceback` removed, the
+  console/detailed case fails and the other three pass (control clean). structlog 26.1 shows
+  locals by default in its dictionary form (`SHOW_LOCALS = True`) and in rich's console form.
+- **The claims, against the installed source:** langchain-openai 1.6.2 streams usage only
+  for OpenAI's own base URL and client; ChatOllama reports usage only on its `done` chunk,
+  which has no text; uvicorn with `log_config=None` only sets levels; calling a semconv enum
+  warns, reading a member does not; `observability` imports no LangChain, torch, numpy or
+  qdrant_client; a bad `RAG_LOG_FORMAT` exits 2 in all four commands without printing it.
+- **The lock:** three packages added, filelock and setuptools bumped for their advisories,
+  pypdf 6.19.0; each new floor equals its locked version.
+- **The real run's logs** (2026-10-23): `request_id` on each request's lines; the `done`
+  events' counts (1,460 and 128) equal to the token metric's; the outcomes and the `busy`
+  refusal counted; the README's capacity tables equal to `bench.log` and `bench-2.log`. The
+  10k run's `GenerationGoneError` was the two-runs race that `create()`'s 409 now prevents.
+- **Records and commits:** the eleven ignores consistent everywhere; the ten commits'
+  headers and trailers, the `!` and `BREAKING-CHANGE:`, no body line over 72, no attribution.
+
+Findings, all fixed:
+
+1. **The answer's latency histograms missed the time spent in the route's dependencies.**
+   FastAPI 0.143 starts the SSE producer, and so the route's body, only once
+   `solve_dependencies` returns. `rag_sources_seconds`, `rag_ttft_seconds` and
+   `rag_answer_seconds` therefore started after `served_pipeline`'s `await
+   serving.refresh()`: the alias read before each answer (about 3 ms here), a reopen after an
+   ingest, and Qdrant's retries of the read, each attempt up to `timeout_s: 10`. With
+   `refresh()` delayed by 1.5 s, the client waited 1.529 s and the three recorded 0.006,
+   0.009 and 0.010 s; their help and the README say "from a question". Now `bind_request`,
+   the first dependency, notes `request.state.received_at`, and the route times from it. A
+   new test delays the refresh by 0.3 s and requires all three to count it; it fails with the
+   old start.
+2. **The README's `done` example** carried token counts (1,302 and 87) that no run produced,
+   under "From a run on this host's CPU": the run is S2-7's, older than the counts, and
+   S3-7's real runs asked another question (1,460 and 128). The text now says the two are
+   illustrative.
+3. **ARCHITECTURE said the token histogram's buckets come from
+   opentelemetry-semantic-conventions 0.66b1.** The package's
+   `create_gen_ai_client_token_usage` carries the name, description and unit only; the
+   buckets are the convention's text (v1.37.0's `gen-ai-metrics.md`), which they equal.
+   Reworded, as `metrics.py`'s docstring already had it.
+4. **No test said a question refused after taking its slot counts no answer.** The no-index
+   503 and a malformed body's 422 are refused by dependencies after `take_slot`. With
+   `Slot.release`'s `if self.outcome is not None` removed, they would add a
+   `rag_answers_total{outcome="None"}` series, and the 165 tests of `test_metrics.py` and
+   `test_api.py` still passed. A new test covers both refusals and every series of the
+   counter; it fails with the guard removed.
+
+**After the fixes:** 1492 passed, 18 skipped, 5 xfailed, coverage 98.36%; the 11 server
+tests; ruff, format and mypy clean; `rag-eval check` exit 0. Four mutations beyond the first
+review's 15: two caught as the tests stood (the usage read after the empty-text skip; the
+answers file's token fields dumped as `null`), one caught only by finding 4's test, and one
+survives (below). Both new tests fail with their defect put back, after clean controls.
+
+**Nits left:**
+
+- "The last chunk that reports usage wins" is untested (a first-wins mutant survives), and is
+  not LangChain's own merge, which sums the chunks' usage (`add_usage`). The two agree for
+  Ollama and OpenAI, which report once; a provider that reports deltas would lose its input
+  count.
+- The `BREAKING-CHANGE:` trailer names `rag-ingest`'s progress only. Every command's log is
+  now JSON when stderr is not a terminal, `rag-serve`'s under a service manager included:
+  worth a line in the PR body or the merge message.
+- The first review's three nits stand.
 
 ## Discovered
 
