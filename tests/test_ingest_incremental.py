@@ -180,8 +180,8 @@ def test_a_run_with_nothing_to_do_says_so_and_exits_0(scratch: Scratch, capsys: 
     assert scratch.main() == EXIT_OK
     capsys.readouterr()
     assert scratch.main() == EXIT_OK
-    out = capsys.readouterr().out
-    assert "Nothing changed: the index is up to date." in out
+    out, err = capsys.readouterr()
+    assert "Nothing changed: the index is up to date." in err  # the log, on stderr (S3-7)
     assert "5 unchanged" in out
     assert "Nothing changed; the Qdrant collection 'rag_qa' at" in out
 
@@ -297,7 +297,7 @@ def test_a_folder_that_cannot_be_listed_keeps_its_documents_chunks(
     finally:
         locked.chmod(0o755)
     out, err = capsys.readouterr()
-    assert "Cannot list sub/" in out
+    assert "Cannot list sub/" in err  # the log, on stderr (S3-7)
     assert "2 failed and kept their previous chunks" in out
     after = scratch.documents()
     for name in ("sub/report.docx", "sub/deeper/LOUD.TXT"):
@@ -316,8 +316,9 @@ def test_an_indexed_file_that_turns_unreadable_keeps_its_chunks_and_nothing_is_p
         assert scratch.main() == EXIT_RUN_FAILED
     finally:
         notes.chmod(0o644)
-    out, err = capsys.readouterr()
-    assert "Nothing changed apart from the documents that could not be read." in out
+    err = capsys.readouterr().err
+    # The first line is the log's, on stderr since S3-7; the second the outcome's.
+    assert "Nothing changed apart from the documents that could not be read." in err
     assert "Nothing else changed; the failed documents kept their previous chunks" in err
     assert scratch.generations() == [first.published]
 
@@ -576,8 +577,8 @@ def test_a_file_above_max_file_mb_is_skipped_reported_and_never_read(
     monkeypatch.setattr("rag_qa.ingest.file_sha256", recording)
     path = scratch.config_path(max_file_mb(0.004))
     assert main(["--config", str(path)]) == EXIT_OK  # skipped, as an unmapped file is
-    out = capsys.readouterr().out
-    assert "  - Skipped big.txt (0.005 MB, above the 0.004 MB limit)" in out
+    out, err = capsys.readouterr()
+    assert "  - Skipped big.txt (0.005 MB, above the 0.004 MB limit)" in err  # the log (S3-7)
     assert "Skipped 1 file(s) above the 0.004 MB limit (max_file_mb)." in out
     assert "big.txt" not in hashed  # a limit is there so that the file is never read
     assert set(scratch.documents()) == DOCUMENTS
@@ -1127,9 +1128,10 @@ def test_a_new_unreadable_file_is_not_said_to_have_kept_anything(
         assert scratch.main() == EXIT_RUN_FAILED
     finally:
         locked.chmod(0o644)
-    out, err = capsys.readouterr()
-    assert "Nothing changed apart from the documents that could not be read." in out
-    assert "up to date" not in out.split("Nothing changed apart")[0]
+    err = capsys.readouterr().err
+    # The log's lines, on stderr since S3-7, then the outcome's.
+    assert "Nothing changed apart from the documents that could not be read." in err
+    assert "up to date" not in err.split("Nothing changed apart")[0]
     assert "kept their previous chunks, if they had any" in err
 
 

@@ -1604,7 +1604,9 @@ def test_the_done_event_names_the_model_that_answered(
     done = sse_events(response.text)[-1]
     assert done[0] == "done"
     assert done[1]["model"] == "components.llms.fake"
-    assert set(done[1]) == {"ttft_ms", "total_ms", "model"}
+    # S3-7 added the token counts; null when the provider reported none, as this fake does.
+    assert set(done[1]) == {"ttft_ms", "total_ms", "model", "input_tokens", "output_tokens"}
+    assert (done[1]["input_tokens"], done[1]["output_tokens"]) == (None, None)
 
 
 def test_health_reports_each_breaker_by_role(fake_config: RagConfig, tmp_path: Path) -> None:

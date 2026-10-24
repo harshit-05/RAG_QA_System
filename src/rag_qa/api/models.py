@@ -118,6 +118,12 @@ class IngestReportOut(BaseModel):
     symlinks: list[str]
     ignored: int
     failed: list[tuple[str, str]]
+    #: The run's phases, in seconds (NFR-3, S3-7): loading and splitting, embedding, and
+    #: writing the new generation; and the points it holds.
+    load_s: float
+    embed_s: float
+    write_s: float
+    points: int
 
 
 class IngestAccepted(BaseModel):

@@ -4,7 +4,7 @@
 | --- | --- |
 | **Status** | Todo |
 | **Closes** | NFR-5; DEC-23; backlog: multi-user auth and rate limiting (API deployment hardening), request size and health-check load, statelessness |
-| **Depends on** | S3-7 |
+| **Depends on** | S3-7b (S3-7 was split in its plan, 2026-10-23) |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
 | **Plan-first** | yes |
 | **Branch** | `feat/s3-8-api-hardening`. Risky: authentication, and the job records several replicas share. |
@@ -54,7 +54,7 @@ Design: ARCHITECTURE.md §3.1, DEC-23. TLS is S3-9's, at the proxy.
     A valid key without the scope gets 403. The test that sends every route a request
     without a token grows a case for every route without its scope.
   - **The key's name** (never the token) is bound into logs and spans (S3-7's context
-    variables).
+    variables, S3-7b's spans).
   - **"No credential" means neither a token nor a keys file** (DEC-23, design review 2).
     Only then does `rag-serve` refuse a non-loopback host, and does `check_host` refuse a
     non-loopback `Host`. Both test `settings.token is None` today (`routes.py`). So with a

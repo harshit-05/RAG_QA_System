@@ -266,14 +266,15 @@ event: token
 data: {"text": " YO"}
 
 event: done
-data: {"ttft_ms": 157033.62593899964, "total_ms": 176273.471257, "model": "components.llms.mistral_ollama"}
+data: {"ttft_ms": 157033.62593899964, "total_ms": 176273.471257, "model": "components.llms.mistral_ollama", "input_tokens": 1302, "output_tokens": 87}
 ```
 
 `sources` comes first, after about a second of retrieval. While the model reads the prompt
 (minutes on CPU; 157 s above), the stream carries a `: ping` comment every 15 seconds.
 Each `token` is a chunk of the answer, and `done`'s `model` names the config entry of the
-model that answered: the hosted fallback's, when it answered. A stream that ends with
-neither `done` nor `error` was cut off.
+model that answered: the hosted fallback's, when it answered. `input_tokens` and
+`output_tokens` are the model server's own counts, `null` when it reports none. A stream
+that ends with neither `done` nor `error` was cut off.
 
 To answer from some documents only, list them in `sources`, by their paths relative to
 the corpus, as `GET /v1/documents` names them (50 at most):
@@ -333,6 +334,7 @@ How it behaves:
 | `RAG_API_TOKEN` | unset | when set, every endpoint but the health probes needs `Authorization: Bearer <token>` |
 | `RAG_API_HOST`, `RAG_API_PORT` | `127.0.0.1`, `8000` | `--host` and `--port` override them |
 | `RAG_API_MAX_CONCURRENT` | `1` | answers streamed at once |
+| `RAG_API_METRICS_PORT` | unset | when set, the [metrics](#metrics) for Prometheus, on the API's host and this port |
 
 - **Without a token, the server listens only on this machine.** `rag-serve` refuses any
   other `--host`, and the server refuses requests whose `Host` header is not loopback,
@@ -361,7 +363,7 @@ abandons) is skipped, and uvicorn logs the cancelled tasks as errors. It still e
 A SIGTERM stops it the same way as one Ctrl-C, and the process then ends by that signal
 (status 143), as service managers expect. It exits 2, with the reason, when it cannot
 start: invalid settings, a non-loopback host without a token, a configuration error,
-Qdrant or Ollama not answering, or the port in use.
+Qdrant or Ollama not answering, or the port in use, the metrics' included.
 
 ## Configuration
 
@@ -464,7 +466,9 @@ by default, and while it is off nothing leaves this machine.
 Add, edit or delete files in `corpus/`, then run `uv run rag-ingest` again. Only new and
 changed files are loaded and embedded, and the chunks of deleted ones are removed, so a
 run where little changed takes seconds. Embedding the whole sample corpus (three PDFs,
-561 pages) takes about two minutes on CPU.
+561 pages) takes about two minutes on CPU. The progress goes to stderr and the summary to
+stdout; the summary ends with the run's throughput, pages loaded, chunks embedded and
+points written per second ([Capacity planning](#capacity-planning)).
 
 - A file that fails to load keeps the chunks it had, and the run exits 1 naming it. The
   next run tries it again.
@@ -560,6 +564,132 @@ as a regression alarm rather than a measure of absolute quality.
    `uv run rag-eval check --with-ollama` also compares the recorded model digests with your
    local ones.
 
+## Observability
+
+Every command logs through one formatter, and `rag-serve` can serve its metrics to
+Prometheus. Neither ever holds a question's or an answer's text.
+
+### Logs
+
+Every command writes its log to stderr, and its results to stdout: `rag-ingest`'s summary,
+`rag-query`'s answers, `rag-eval`'s tables. uvicorn's lines go through the same formatter
+as ours.
+
+- **JSON lines** when stderr is not a terminal (a pipe, a file, a container's log), or with
+  `RAG_LOG_FORMAT=json`. **Console lines** otherwise, or with `RAG_LOG_FORMAT=console`,
+  which keeps a run piped into `tee` readable. `rag-ingest`'s console lines are its progress
+  as it always read; `rag-serve`'s carry the time, the level and the logger.
+- **Each JSON line** holds `event` (the message), `level`, `logger`, `timestamp` (UTC) and
+  its own fields, plus the request's `request_id` in the API, and the job's `job_id` in an
+  ingest job. A complete answer logs one line, in the API and in `rag-query`:
+
+  ```json
+  {"event": "Answered by components.llms.mistral_ollama in 176.3 s (first token at 157.0 s), 1,302 input and 87 output tokens.", "ttft_ms": 157033.6, "total_ms": 176273.5, "model": "components.llms.mistral_ollama", "input_tokens": 1302, "output_tokens": 87, "level": "info", "logger": "rag_qa.api.routes", "request_id": "…", "timestamp": "…"}
+  ```
+
+- **Levels:** our own lines from INFO, other libraries' from WARNING, and pypdf's from ERROR
+  (a broken PDF is reported once, by the run). `rag-eval` logs warnings only.
+- **No question, prompt or answer text, ever:** a traceback is plain text in every format,
+  without the variables of its frames.
+- **Not every stderr line is JSON.** The model loader's own `Loading weights` progress bar
+  still prints between JSON lines when a model loads; `HF_HUB_DISABLE_PROGRESS_BARS=1`
+  silences it. The embedding progress bar is off in JSON mode.
+
+### Metrics
+
+```bash
+RAG_API_METRICS_PORT=9464 uv run rag-serve
+curl -s 127.0.0.1:9464/metrics | grep -E '^(rag_|gen_ai_)'
+```
+
+The metrics listen on a port of their own, on the API's host (`127.0.0.1` unless `--host`
+says otherwise), with no token: they hold counts and times, never a question, a path or a
+key. Off unless the variable is set; a port in use stops `rag-serve` with exit 2.
+
+| Metric | Measures |
+| --- | --- |
+| `rag_retrieval_seconds` | one retrieval's query embedding and vector search, the rerank left out: what NFR-1 bounds (p95 under 0.3 s) |
+| `rag_rerank_seconds` | one retrieval's rerank |
+| `rag_sources_seconds` | from a question to its `sources` event: what NFR-2a bounds (p95 under 2 s, with the model idle) |
+| `rag_ttft_seconds` | from a question to its first token (NFR-2b), cancelled answers included |
+| `rag_answer_seconds` | from a question to the end of its complete answer |
+| `gen_ai_client_token_usage` | the input and output tokens of each answer, by provider and model, as the OpenTelemetry GenAI conventions name them |
+| `rag_answers_total{outcome}` | answers whose stream began: `answered`, `failed` (an `error` event after the 200), or `cancelled` (the client left) |
+| `rag_fallback_answers_total` | answers the hosted fallback gave: their question and chunks left this machine |
+| `rag_refusals_total{code, reason}` | questions refused before their first byte: `503` `busy`, `dependency_down` or `no_index` |
+| `rag_ingest_runs_total{status}`, `rag_ingest_chunks_total` | the API's ingest jobs, by how they ended, and the chunks they embedded |
+| `rag_breaker_state{breaker, state}` | 1 for each breaker's current state (`qdrant`, `llm`, `fallback`), as `/v1/health` reports them |
+| `rag_index_documents` | the documents in the index served, 0 while none is |
+
+Plus the process's own: memory, CPU, open files. A `rag-ingest` run has no listener; its
+throughput is in its summary ([Capacity planning](#capacity-planning)).
+
+## Capacity planning
+
+Measured on 2026-10-23 on this laptop: an Intel Core i7-1255U (12 threads), 15 GB of RAM,
+no GPU, with Qdrant v1.19.2 in Docker on the same machine and Ollama idle. Retrieval is
+timed by a script, ingestion by `rag-ingest` itself.
+
+```bash
+docker compose up -d qdrant
+uv run python scripts/bench_retrieval.py   # a few minutes; exit 1 if a target is missed
+```
+
+The script fills a scratch collection, `bench_s3_7`, with 100,000 points, times its searches
+and deletes it, on Ctrl-C too; it never writes the `rag_qa` alias or its generations. Qdrant
+holds about 0.4 GB more while it runs. `--cleanup` deletes a collection a killed run left.
+It warns when Ollama holds a model, whose CPU would skew the timings.
+
+### Retrieval at 100k chunks
+
+The target is retrieval at p95 under 300 ms, over up to 100k chunks. The script times the
+query's embedding plus an exact search at k=20, the reranker's candidates, which is stricter
+than the target's k=10. The points are random unit vectors of the embedder's 384
+dimensions, with keyword vectors of texts resampled from the index's chunks: a search costs
+the same whatever the vectors mean. It asks 200 questions: the 25 golden ones, and 175 from
+templates over the corpus's phrases. The rerank is left out; the next table has it.
+
+| Search | p50 | p95 | max |
+| --- | --- | --- | --- |
+| dense | 26.6 ms | 29.7 ms | 34.3 ms |
+| hybrid (prefetch 40, rrf_k 60) | 31.5 ms | 38.0 ms | 46.3 ms |
+
+**Held**, by a factor of about eight. An earlier run the same day gave 28.2 ms and 35.1 ms
+at p95.
+
+### The first answer event
+
+The target is the `sources` event at p95 under 2 s, with the model idle. That event waits
+for the retrieval and the rerank of its 20 candidates. The script times both through the
+pipeline's own code, on the index in use (1,708 chunks), over the 25 golden questions.
+
+| Run | p50 | p95 | max |
+| --- | --- | --- | --- |
+| first | 1.45 s | 2.09 s | 2.11 s |
+| second | 1.46 s | 2.02 s | 2.09 s |
+
+**Missed, narrowly, in both runs**, so the script exits 1 today. Nearly all of the time is
+the rerank: the cross-encoder scores 20 chunks on the CPU, where the search takes about
+30 ms. Fewer candidates or a smaller reranker would be faster, but each changes the
+answers, so each is a tier-2 decision ([Evaluation](#evaluation)) rather than a setting to
+tune here. With Ollama busy, the rerank slows too. In the API, `rag_sources_seconds` keeps
+measuring this.
+
+### Ingestion
+
+`rag-ingest --rebuild` of the sample corpus, logged as JSON lines:
+
+| Phase | Work | Time | Rate |
+| --- | --- | --- | --- |
+| load | 3 PDFs, 561 pages, split into 1,708 chunks | 34.7 s | 16.2 pages/s |
+| embed | the 1,708 chunks' dense vectors (the shipped config sets no sparse encoder) | 70.7 s | 24.2 chunks/s |
+| write | 1,708 points into a new index version, then the alias switch | 0.63 s | 2,695 points/s |
+
+The embed time leaves out loading the model. Every run's summary ends with its own rates,
+for the phases that ran. Embedding is the bottleneck: at this rate 100k chunks take about
+70 minutes on this CPU, which is the work a GPU notebook does faster
+([GPU embeddings](#gpu-embeddings-colab--kaggle)).
+
 ## Known limitations
 
 - **Answers can misstate facts.** In testing, retrieval found the right passages, but the
@@ -616,13 +746,15 @@ src/rag_qa/
   chain.py         the retrieval and answer chain (LangChain LCEL)
   cli.py           the rag-query command
   answering.py     one answer as a stream of events, for the CLI, the API and evaluation
+  observability/   structured logs for every command, and the metrics rag-serve serves
   api/             the rag-serve command: the HTTP API, its ingest jobs and its checks
   evaluation/      the rag-eval command: retrieval scores (tier 1), and generation
                    scored by RAGAs offline, then checked against the floors (tier 2)
 eval/              the golden set, the floors, the judge's Modelfile and the committed
                    tier-2 run
 scripts/           fetch_dataset.py, a standalone helper that downloads a Hugging Face
-                   dataset to downloads/, never into a corpus
+                   dataset to downloads/, never into a corpus; bench_retrieval.py, the
+                   retrieval benchmark behind Capacity planning
 tests/             the test suite, including one regression case per Phase 0 bug
 docs/              specification, architecture, workflow and decision records
 stories/           the delivery board and a record of each change

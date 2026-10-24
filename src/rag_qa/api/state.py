@@ -72,6 +72,7 @@ from rag_qa.components import (
     build_store,
 )
 from rag_qa.manifest import Manifest
+from rag_qa.observability import metrics
 from rag_qa.resilience import OPEN, BreakerOpenError, CircuitBreaker
 from rag_qa.schema import RagConfig
 from rag_qa.vectorstore import QdrantStore, StoreError
@@ -94,11 +95,21 @@ REINGEST = (
 STORE_DOWN = "Qdrant is not answering; ask again after Retry-After"
 
 
+def breaker_refusal(error: BaseException) -> BreakerOpenError | None:
+    """The breaker refusal behind ``error``, or ``None``: the error itself, or the cause of a
+    store error, since the store turns a refused request into one (DEC-21)."""
+    if isinstance(error, BreakerOpenError):
+        return error
+    if isinstance(error, StoreError) and isinstance(error.__cause__, BreakerOpenError):
+        return error.__cause__
+    return None
+
+
 def _refused(current: str | None | StoreError) -> bool:
     """Whether reading the alias was refused by Qdrant's breaker, open or half-open with a
     probe out, rather than failed against Qdrant: :meth:`Serving.refresh` learns nothing
     from such a refusal."""
-    return isinstance(current, StoreError) and isinstance(current.__cause__, BreakerOpenError)
+    return isinstance(current, StoreError) and breaker_refusal(current) is not None
 
 
 def wait_s(seconds: float) -> int:
@@ -218,12 +229,19 @@ class Slot:
 
     Released once, however many paths release it: the stream's ``finally``
     (:meth:`release`) and the request's teardown (:meth:`aclose`).
+
+    **How the answer ended is counted at that one release** (S3-7): ``outcome`` is set by
+    the route once its answer begins, and moved as it ends. A drop between events ends the
+    route's own generator nowhere but in garbage collection, while the teardown always
+    releases, so this is the one place every ending passes exactly once.
     """
 
     def __init__(self, pool: "SlotPool") -> None:
         self._pool = pool
         self._released = False
         self._answer: AsyncGenerator[Any, None] | None = None
+        #: ``rag_answers_total``'s outcome, once the answer began: ``None`` before.
+        self.outcome: str | None = None
 
     def hold(self, answer: AsyncGenerator[Any, None]) -> None:
         """The answer stream to close when the request ends (:meth:`aclose`)."""
@@ -233,6 +251,8 @@ class Slot:
         if not self._released:
             self._released = True
             self._pool.in_use -= 1
+            if self.outcome is not None:
+                metrics.ANSWERS.labels(outcome=self.outcome).inc()
 
     async def aclose(self) -> None:
         """The request's teardown: close the answer stream if it is still open, then

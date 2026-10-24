@@ -9,6 +9,7 @@ stories' manual steps.
 
 import asyncio
 import dataclasses
+import logging
 import re
 import signal
 import socket
@@ -38,7 +39,7 @@ from pydantic import Field
 from qdrant_client import QdrantClient
 
 from rag_qa import cli, vectorstore
-from rag_qa.answering import Done, Token
+from rag_qa.answering import Done, Sources, Token
 from rag_qa.chain import QueryPipeline, RetrievalQuery
 from rag_qa.cli import EXIT_CANNOT_START, EXIT_OK, HF_CACHE_HINT, describe_failure, repl
 from rag_qa.components import OLLAMA_HINT
@@ -784,6 +785,34 @@ def test_the_line_under_an_answer_names_the_fallback_only_when_it_answered(capsy
     assert f"(answered by the hosted fallback, {FALLBACK})" in capsys.readouterr().out
     asyncio.run(cli.render(events("components.llms.mistral_ollama"), fallback=FALLBACK))
     assert "answered by" not in capsys.readouterr().out
+
+
+def test_a_complete_answer_logs_one_line_after_its_sources_and_never_its_text(
+    capsys: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    # NFR-10's "every query" (S3-7): the model, the times and the counts, on stderr.
+    async def events() -> AsyncIterator[Any]:
+        yield Sources([])
+        yield Token("A secret answer.")
+        yield Done(ttft_ms=1500.0, total_ms=2500.0, model="m", input_tokens=10, output_tokens=4)
+
+    caplog.set_level(logging.INFO, logger="rag_qa")
+    asyncio.run(cli.render(events()))
+    (record,) = [r for r in caplog.records if r.name == "rag_qa.cli"]
+    assert record.getMessage() == (
+        "Answered by m in 2.5 s (first token at 1.5 s), 10 input and 4 output tokens."
+    )
+    assert "A secret answer." not in caplog.text
+    assert "A secret answer." in capsys.readouterr().out  # the answer itself, as ever
+
+
+def test_an_unfinished_answer_logs_no_answer_line(caplog: pytest.LogCaptureFixture) -> None:
+    async def events() -> AsyncIterator[Any]:
+        yield Token("cut")
+
+    caplog.set_level(logging.INFO, logger="rag_qa")
+    asyncio.run(cli.render(events()))
+    assert [r for r in caplog.records if r.name == "rag_qa.cli"] == []
 
 
 def test_a_dropped_fallback_stream_is_the_fallback_s_not_ollama_s() -> None:

@@ -16,6 +16,9 @@ them are path-free (S2-6), since they go over HTTP.
 - **In memory.** The last :data:`KEEP` jobs are kept; Phase 3 brings a durable queue.
 - **What it changes.** When a job ends, ``after`` runs (the server's refresh), so a
   published generation is served at once.
+- **What it reports** (S3-7): the job's log lines carry its ``job_id``, and each job counts in
+  ``rag_ingest_runs_total`` by how it ended, its embedded chunks in ``rag_ingest_chunks_total``.
+  A ``rag-ingest`` run outside the server has no metrics listener: it reports in its log.
 """
 
 import asyncio
@@ -43,6 +46,7 @@ from rag_qa.ingest import (
     outcome,
 )
 from rag_qa.ingest import logger as ingest_logger
+from rag_qa.observability import logs, metrics
 from rag_qa.schema import RagConfig
 from rag_qa.vectorstore import StoreUnavailableError
 
@@ -134,6 +138,7 @@ class IngestJobs:
 
     def _work(self, job: IngestJob) -> None:
         """The run itself, in the job's thread. Never raises: every ending is recorded."""
+        logs.bind(job_id=job.job_id)  # this thread's own context: every line of the run
         job.started_at = datetime.now(UTC)
         job.status = "running"
         handler = _JobLog(job.log, threading.get_ident())
@@ -169,7 +174,11 @@ class IngestJobs:
             ingest_logger.removeHandler(handler)
             ingest_logger.setLevel(level)
             job.finished_at = datetime.now(UTC)
-            job.status = "succeeded" if job.exit_code == EXIT_OK else "failed"  # last
+            status: JobStatus = "succeeded" if job.exit_code == EXIT_OK else "failed"
+            metrics.INGEST_RUNS.labels(status=status).inc()
+            if job.report is not None:
+                metrics.INGEST_CHUNKS.inc(job.report.chunks)
+            job.status = status  # last: a reader that sees it sees the rest
 
 
 async def _in_daemon_thread(work: Callable[[IngestJob], None], job: IngestJob) -> None:

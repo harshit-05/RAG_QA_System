@@ -152,6 +152,9 @@ components:
     # of the reply, and its reasoning tokens count against max_completion_tokens.
     # max_retries 0, and a timeout, so its breaker sees every failure: the OpenAI SDK
     # otherwise retries twice on its own, with a 600 s timeout.
+    # stream_usage asks the provider for the answer's token counts, which done and the
+    # metrics report (S3-7): langchain-openai leaves it off for any base_url but OpenAI's.
+    # Groq returns them (checked 2026-10-23).
     groq_fallback:
       _target_: langchain_openai.ChatOpenAI
       model: "openai/gpt-oss-120b"
@@ -160,6 +163,7 @@ components:
       max_completion_tokens: 1024
       reasoning_effort: low
       extra_body: {include_reasoning: false}
+      stream_usage: true
       max_retries: 0
       timeout: {connect: 5, read: 60, write: 30, pool: 30}
 

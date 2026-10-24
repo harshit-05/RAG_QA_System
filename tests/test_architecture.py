@@ -26,6 +26,8 @@
   ragas.
 * DEC-20 (S3-5): ``rag_qa.sparse``, the BM25 encoder, imports the standard library only, on
   the parsed imports, and loads no LangChain.
+* DEC-22 (S3-7): ``rag_qa.observability`` loads no model stack, no LangChain and no store
+  client, in a fresh interpreter: any module may import it.
 """
 
 import ast
@@ -85,6 +87,31 @@ def test_the_config_layer_loads_no_langchain(module: str) -> None:
     # is the manifest, whose identities S2-5's fingerprint computes in that same gate.
     langchain = sorted(m for m in modules_loaded_by(module) if m.startswith("langchain"))
     assert langchain == []
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "rag_qa.observability",
+        "rag_qa.observability.logs",
+        "rag_qa.observability.metrics",
+        "rag_qa.observability.genai",
+    ],
+)
+def test_observability_loads_no_model_stack(module: str) -> None:
+    # ARCHITECTURE.md §3.2 (S3-7): any module may import it, the store and the config layer
+    # included, so it brings in neither a model, LangChain nor the store's client.
+    stack = {
+        "langchain_core",
+        "langchain_ollama",
+        "langchain_huggingface",
+        "torch",
+        "sentence_transformers",
+        "transformers",
+        "qdrant_client",
+    }
+    loaded = modules_loaded_by(module)
+    assert sorted(m for m in loaded if m.split(".")[0] in stack) == []
 
 
 @pytest.mark.parametrize("module", ["rag_qa.evaluation.gate", "rag_qa.evaluation.cli"])

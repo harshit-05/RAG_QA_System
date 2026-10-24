@@ -43,6 +43,7 @@ from langchain_core.runnables import RunnableLambda
 from rag_qa.api.app import create_app
 from rag_qa.api.state import Serving, Slot
 from rag_qa.chain import RetrievalQuery
+from rag_qa.observability import metrics
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ServerSettings
 
@@ -105,6 +106,11 @@ def read_until(sock: socket.socket, needle: bytes, count: int = 1, timeout_s: fl
     return received
 
 
+def answers(outcome: str) -> float:
+    """``rag_answers_total`` for ``outcome`` now (S3-7)."""
+    return metrics.REGISTRY.get_sample_value("rag_answers_total", {"outcome": outcome}) or 0.0
+
+
 def within(seconds: float, condition: Callable[[], bool]) -> bool:
     """Whether ``condition`` holds, polled until ``seconds`` have passed."""
     deadline = time.monotonic() + seconds
@@ -141,12 +147,15 @@ def test_a_drop_mid_stream_closes_the_models_stream(
 ) -> None:
     model = StreamingFakeChatModel(tokens=[f"t{i} " for i in range(400)], gap_s=0.01)
     serving = fake_serving(fake_config, model)
+    cancelled = answers("cancelled")
     sock = ask(serve(start_server, fake_config, serving))
     read_until(sock, b"event: token", count=3)
     sock.close()
     assert within(CLOSE_WITHIN_S, lambda: model.closed), "generation ran on after the drop"
     assert len(model.log) < 100  # "start", the tokens sent so far, "closed": not 400
     assert within(CLOSE_WITHIN_S, lambda: serving.slots.in_use == 0)
+    # Counted once, as cancelled (S3-7): the metrics' observation awaits nothing.
+    assert within(CLOSE_WITHIN_S, lambda: answers("cancelled") == cancelled + 1)
 
 
 class Refused(StreamingFakeChatModel):
@@ -309,11 +318,15 @@ def test_a_drop_while_an_event_waits_to_be_sent_still_closes_the_stream(
     blocked_sends: dict[str, int],
     no_garbage_collection: None,
 ) -> None:
+    cancelled = answers("cancelled")
     model, serving = drop_while_an_event_waits(start_server, fake_config, blocked_sends)
     assert within(CLOSE_WITHIN_S, lambda: model.closed), (
         "the model's stream stayed open after a drop between events"
     )
     assert within(CLOSE_WITHIN_S, lambda: serving.slots.in_use == 0)
+    # The slot's close ends the stream at its yield (GeneratorExit, not a cancel): it still
+    # counts once, as cancelled (S3-7).
+    assert within(CLOSE_WITHIN_S, lambda: answers("cancelled") == cancelled + 1)
 
 
 @pytest.mark.xfail(

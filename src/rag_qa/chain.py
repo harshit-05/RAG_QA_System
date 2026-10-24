@@ -26,6 +26,7 @@ of the legacy chain helpers: the ``RetrievalQA`` this replaces now lives only in
 maintenance-mode "classic" package, which application code never imports.
 """
 
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from operator import itemgetter
@@ -53,6 +54,7 @@ from rag_qa.components import (
     service_of,
 )
 from rag_qa.manifest import Manifest, embedder_identity, same_sparse
+from rag_qa.observability import metrics
 from rag_qa.resilience import CircuitBreaker
 from rag_qa.schema import RagConfig
 from rag_qa.sparse import Bm25Encoder
@@ -294,6 +296,9 @@ def _bound(
     else (:func:`rag_qa.vectorstore.source_filter`). One function rather than a sequence,
     because the reranker needs the question as well as the chunks. Awaited, it runs in an
     executor thread, retrieval included (DEC-14).
+
+    Each half is timed for the metrics (S3-7): the query embedding and the search, which
+    NFR-1 bounds, then the rerank.
     """
     query = config.pipeline.query
     spec = config.retriever(query.retriever)
@@ -307,10 +312,15 @@ def _bound(
     )
 
     def retrieve(asked: RetrievalQuery) -> list[Document]:
+        started = time.perf_counter()
         docs = found.invoke(asked.question, sources=asked.sources)
+        metrics.RETRIEVAL_SECONDS.observe(time.perf_counter() - started)
         if reranker is None:
             return docs
-        return list(reranker.compress_documents(docs, asked.question))
+        started = time.perf_counter()
+        kept = list(reranker.compress_documents(docs, asked.question))
+        metrics.RERANK_SECONDS.observe(time.perf_counter() - started)
+        return kept
 
     return RunnableLambda(retrieve)
 

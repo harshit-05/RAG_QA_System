@@ -32,11 +32,15 @@ never exit 1: they record, and ``check`` judges.
 ``generate`` and ``score`` keep each finished item in a checkpoint beside the file they
 write (``answers-latest.partial.jsonl`` for ``answers-latest.json``). Run the same command
 again after an interruption, and it resumes (:mod:`.checkpoint`, S2-5b).
+
+Its log lines go to stderr, as every command's do: JSON when stderr is not a terminal
+(:func:`rag_qa.observability.logs.configure_logging`, S3-7). Its results are printed.
 """
 
 import argparse
 import asyncio
 import json
+import logging
 import string
 import sys
 import traceback
@@ -82,6 +86,7 @@ from rag_qa.evaluation.retrieval import (
     context_record,
     evaluate_retrieval,
 )
+from rag_qa.observability.logs import LogSettingsError, configure_logging
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_CONFIG
 from rag_qa.vectorstore import StoreUnavailableError
@@ -745,6 +750,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{args.command} --limit needs --out: a partial run must not overwrite "
             f"the committed file"
         )
+    try:
+        # Warnings only: the results are the printed tables, and the corpus walk's progress
+        # would be noise beside them.
+        configure_logging(level=logging.WARNING)
+    except LogSettingsError as e:
+        return _cannot_run(f"invalid log settings: {e}")
     try:
         status: int = args.run(args)
     # The backstop: whatever a command did not foresee is "could not run", never exit 1,
