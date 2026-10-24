@@ -87,7 +87,7 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
       the ingest that builds one.
     - **SSE and bodies:** `flush_interval -1`, and `request_body max_size 64KB`.
   - **Profile `observability`:** Jaeger 2.22.0, Prometheus v3.15.0 (scraping the app's
-    metrics port on the internal network) and Alertmanager v0.34.1, with S3-7's files.
+    metrics port on the internal network) and Alertmanager v0.34.1, with S3-7b's files.
   - **`.env.example`** (committed): every variable named, `UID` and `GID` included, no
     values. `.env` stays gitignored.
 - **Signals** (the backlog line). With `init: true`, `docker stop` ends `rag-serve` with
@@ -146,7 +146,7 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     (`docker buildx imagetools inspect <image> --format '{{json .Manifest.Digest}}'`) and
     compared with DEC-24's table. Another digest for the same immutable tag is investigated,
     not accepted.
-  - **`deploy-config`** (S3-7's job) adds `docker compose config -q`, with `.env.example`
+  - **`deploy-config`** (S3-7b's job) adds `docker compose config -q`, with `.env.example`
     as the environment.
   - **The audit policy,** as DEC-24 states it:
     - `--ignore-vuln` entries only for advisories with no fixed release, each with a reason
