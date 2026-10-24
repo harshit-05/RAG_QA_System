@@ -34,8 +34,10 @@ events instead (:meth:`rag_qa.api.state.Slot.aclose`).
 **Logs and metrics** (NFR-10, DEC-22, S3-7). Every request's log lines carry its
 ``request_id`` (:func:`bind_request`). The refusals count in ``rag_refusals_total``; an answer
 times its ``sources`` event, its first token and its end, counts its tokens, and logs one line
-when complete; how it ended counts in ``rag_answers_total``. All of it synchronous: the cancel
-paths await nothing new.
+when complete; how it ended counts in ``rag_answers_total``. The times run from the request's
+first dependency, not from the route's body, which FastAPI starts only once every dependency
+has resolved: the alias read before each answer counts, and Qdrant's retries of it (S3-7's
+second review). All of it synchronous: the cancel paths await nothing new.
 """
 
 import asyncio
@@ -105,11 +107,13 @@ def get_settings(request: Request) -> ServerSettings:
     return cast(ServerSettings, request.app.state.settings)
 
 
-async def bind_request() -> None:
-    """Give the request's log lines a ``request_id`` of their own (S3-7). The first of the
-    app's dependencies, and ``async``: FastAPI runs a plain function in a worker thread, whose
-    context the request never sees, while this runs in the request's own task, which the SSE
-    producer task copies."""
+async def bind_request(request: Request) -> None:
+    """Give the request's log lines a ``request_id`` of their own (S3-7), and note when it
+    arrived, which an answer's times start from (``request.state.received_at``). The first of
+    the app's dependencies, and ``async``: FastAPI runs a plain function in a worker thread,
+    whose context the request never sees, while this runs in the request's own task, which the
+    SSE producer task copies."""
+    request.state.received_at = time.perf_counter()
     logs.bind_request()
 
 
@@ -361,6 +365,7 @@ def answered(event: Done, pipeline: QueryPipeline, seconds: float) -> None:
     },
 )
 async def query(
+    request: Request,
     _: Annotated[None, Depends(refuse_while_down)],
     slot: Annotated[Slot, Depends(take_slot, scope="request")],
     pipeline: Annotated[QueryPipeline, Depends(served_pipeline)],
@@ -375,7 +380,9 @@ async def query(
         stream_answer(pipeline, body.question, sources=tuple(dict.fromkeys(body.sources))),
     )
     slot.hold(answer)
-    entered = time.perf_counter()
+    # From the request's arrival: this body starts only after the dependencies, the alias read
+    # in served_pipeline among them, and the client waited for those too.
+    received: float = request.state.received_at
     first_token = True
     # Cancelled unless it ends otherwise; the slot counts it at its one release, which every
     # ending reaches, a drop between events included (Slot's docstring).
@@ -383,14 +390,14 @@ async def query(
     try:
         async for event in answer:
             if isinstance(event, Sources):
-                metrics.SOURCES_SECONDS.observe(time.perf_counter() - entered)
+                metrics.SOURCES_SECONDS.observe(time.perf_counter() - received)
             elif isinstance(event, Token):
                 if first_token:
                     first_token = False
-                    metrics.TTFT_SECONDS.observe(time.perf_counter() - entered)
+                    metrics.TTFT_SECONDS.observe(time.perf_counter() - received)
             else:
                 slot.outcome = metrics.ANSWERED
-                answered(event, pipeline, time.perf_counter() - entered)
+                answered(event, pipeline, time.perf_counter() - received)
             yield answer_event(event)
     except asyncio.CancelledError:
         logger.info("Answer cancelled: its client disconnected")

@@ -5,6 +5,7 @@ The registry is the process's, so every test reads a metric before and after, an
 difference.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -317,6 +318,62 @@ def test_each_refusal_counts_with_its_reason(fake_config: RagConfig) -> None:
 
 async def _done() -> None:
     return None
+
+
+def answer_outcomes() -> dict[str, float]:
+    """``rag_answers_total`` by outcome: every series the registry holds, not only the three
+    started at zero."""
+    return {
+        sample.labels["outcome"]: sample.value
+        for family in metrics.REGISTRY.collect()
+        if family.name == "rag_answers"
+        for sample in family.samples
+        if sample.name == "rag_answers_total"
+    }
+
+
+def test_a_question_refused_after_taking_its_slot_counts_no_answer(
+    fake_config: RagConfig,
+) -> None:
+    # No index (503) and a malformed body (422) are refused by dependencies that run after
+    # take_slot: the slot is released with no answer begun, and no outcome may count, nor a
+    # series for none (S3-7's second review: the guard survived its removal).
+    empty = fake_serving(fake_config, StreamingFakeChatModel())
+    empty.served = Served(generation=None, manifest=None, problem="no index yet")
+    empty.refresh = lambda: _done()  # type: ignore[method-assign]  # keep the problem
+    before = answer_outcomes()
+    with served(fake_config, empty) as client:
+        assert client.post("/v1/query", json={"question": "q"}).status_code == 503
+    with served(fake_config, fake_serving(fake_config, StreamingFakeChatModel())) as client:
+        assert client.post("/v1/query", json={}).status_code == 422
+    assert answer_outcomes() == before
+    assert set(before) == {"answered", "failed", "cancelled"}
+
+
+#: How long the alias read takes in the next test, as when Qdrant answers slowly or is retried.
+SLOW_REFRESH_S = 0.3
+
+
+def test_the_answer_times_start_when_the_request_arrives_not_when_the_route_does(
+    fake_config: RagConfig,
+) -> None:
+    # FastAPI starts the route's generator only after its dependencies, served_pipeline's
+    # alias read among them, and the client waits for that read too. Timed from the route,
+    # a slow read was invisible: 1.5 s waited, 0.006 s recorded (S3-7's second review).
+    serving = fake_serving(fake_config, StreamingFakeChatModel())
+    refresh = serving.refresh
+
+    async def slow_refresh() -> None:
+        await asyncio.sleep(SLOW_REFRESH_S)
+        await refresh()
+
+    serving.refresh = slow_refresh  # type: ignore[method-assign]
+    sums = ("rag_sources_seconds_sum", "rag_ttft_seconds_sum", "rag_answer_seconds_sum")
+    counts = Counts(*((name, {}) for name in sums))
+    with served(fake_config, serving) as client:
+        assert client.post("/v1/query", json={"question": "q"}).status_code == 200
+    for name in sums:
+        assert counts.moved(name) >= SLOW_REFRESH_S * 0.9, name
 
 
 def test_an_ingest_job_moves_the_runs_and_the_chunks(
