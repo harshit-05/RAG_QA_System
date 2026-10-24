@@ -171,7 +171,13 @@ class Generator(_Run):
 
 
 class AnswerItem(_Run):
-    """One golden question, answered through ``stream_answer``."""
+    """One golden question, answered through ``stream_answer``.
+
+    The token counts are the provider's (S3-7), and are left out of the file while unset.
+    A run written before them must keep its identity (:func:`answers_identity`), which the
+    committed scores record: fields dumped as ``null`` would change it, and ``check`` would
+    call every earlier run stale (S3-7's plan; a test pins the committed run's).
+    """
 
     id: str
     question: str
@@ -181,6 +187,8 @@ class AnswerItem(_Run):
     sources: list[dict[str, Any]]  # SourceRef fields, as the stream reported them
     ttft_ms: float | None
     total_ms: float
+    input_tokens: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    output_tokens: int | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class AnswersRun(_Run):

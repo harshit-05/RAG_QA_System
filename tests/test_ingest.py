@@ -29,6 +29,7 @@ from rag_qa.ingest import (
     scan_corpus,
 )
 from rag_qa.loaders import PdfLoader
+from rag_qa.observability import logs
 
 
 @pytest.fixture
@@ -379,17 +380,73 @@ def test_the_summary_leaves_out_every_zero_count(report: IngestReport, summary: 
     assert report.summary() == summary
 
 
+@pytest.mark.parametrize(
+    ("report", "line"),
+    [
+        pytest.param(
+            IngestReport(
+                documents=561, chunks=1708, points=1708, load_s=9.8, embed_s=173.5, write_s=3.9
+            ),
+            "Throughput: 57.2 pages/s loaded, 9.84 chunks/s embedded, 438 points/s written.",
+            id="a rebuild",
+        ),
+        pytest.param(
+            IngestReport(points=1708, write_s=1.2),  # an update that only removed a document
+            "Throughput: 1,423 points/s written.",
+            id="only a write",
+        ),
+        pytest.param(
+            IngestReport(documents=1, chunks=1, points=1, load_s=2.0, embed_s=4.0, write_s=8.0),
+            "Throughput: 0.500 pages/s loaded, 0.250 chunks/s embedded, 0.125 points/s written.",
+            id="below one a second",
+        ),
+    ],
+)
+def test_the_summary_reports_the_runs_throughput(report: IngestReport, line: str) -> None:
+    # NFR-3 (S3-7): pages loaded, chunks embedded and points written per second, for the
+    # phases that ran; three significant figures, never an exponent.
+    assert line in report.summary().splitlines()
+
+
+def test_one_document_of_one_chunk_is_logged_in_the_singular(
+    tmp_path: Path,
+    make_config: MakeConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The two plural slips S2-8 left (backlog): "Embedding 1 chunks..." and "Published …:
+    # 1 documents, 1 chunks." (S3-4 found the second again).
+    corpus = tmp_path / "one"
+    corpus.mkdir()
+    (corpus / "note.txt").write_text("A single short note.\n")
+    monkeypatch.setenv("RAG_DATA_PATH", str(corpus))
+    with caplog.at_level(logging.INFO, logger="rag_qa.ingest"):
+        report = ingest(load_config(make_config(use_fake_embedder)))
+    assert "Embedding 1 chunk..." in caplog.messages
+    published = [r for r in caplog.records if r.getMessage().startswith("Published ")]
+    (line,) = published
+    assert line.getMessage() == f"Published {report.published}: 1 document, 1 chunk."
+    # The same line carries NFR-3's numbers as fields, for the JSON log (S3-7).
+    fields = line.__dict__
+    assert (fields["documents"], fields["points"], fields["pages_loaded"]) == (1, 1, 1)
+    assert fields["chunks_embedded"] == 1 and fields["write_s"] > 0
+    assert {"pages_per_s", "chunks_per_s", "points_per_s"} <= fields.keys()
+    assert report.points == 1 and report.load_s > 0 and report.embed_s > 0
+
+
 def test_no_line_of_a_real_run_prints_a_zero_count(
     run: Any, sample_corpus: Path, capsys: Any
 ) -> None:
     # Verification 4's grep, over a full rebuild, a run that changes nothing and an update.
+    # Both streams: the summary is printed, and the progress is the log, on stderr (S3-7).
     outputs = []
     for change in [None, None, "added.txt"]:
         if change:
             (sample_corpus / change).write_text("One more document.\n")
         status, _ = run(sample_corpus)
         assert status == EXIT_OK
-        outputs.append(capsys.readouterr().out)
+        captured = capsys.readouterr()
+        outputs.append(captured.out + captured.err)
     for out in outputs:
         assert re.findall(r".* 0 .*", out) == []
     assert "Nothing changed" in outputs[1]
@@ -412,10 +469,12 @@ def test_a_corrupt_pdf_prints_the_clean_error_without_pypdfs_own_warnings(
     assert status == EXIT_RUN_FAILED
     assert re.search(r"broken\.pdf: \w+Error: ", capsys.readouterr().out)
     assert [r.getMessage() for r in caplog.records if r.name.startswith("pypdf")] == []
-    assert logging.getLogger("pypdf").level == logging.NOTSET  # for rag-ingest's run only
+    # For the whole process since S3-7, so the API's ingest jobs are quiet too.
+    assert logging.getLogger("pypdf").level == logging.ERROR
 
     # The control: without rag-ingest's setting, the same file does log pypdf's warnings,
     # so the check above could have failed.
+    logs.reset_logging()
     caplog.clear()
     with caplog.at_level(logging.WARNING):
         ingest(load_config(make_config(use_fake_embedder)))

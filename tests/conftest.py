@@ -20,7 +20,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import numpy as np
 import pytest
@@ -31,6 +31,7 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from pydantic import Field
 from qdrant_client import QdrantClient
 
+from rag_qa.observability import logs, metrics
 from rag_qa.settings import ENV_CONFIG, ENV_DATA_PATH, ENV_STATE_PATH
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -195,11 +196,23 @@ def isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A developer's exported RAG_* variables must not leak into any test: the paths, since
     S2-7 the server's RAG_API_* settings, a token included, and since S3-2 the store's
     RAG_QDRANT_* ones, a key included. ``paths.state`` goes to the test's own folder, so
-    no test takes the repository's writer lock."""
+    no test takes the repository's writer lock. A command's log lines come out as console
+    lines (S3-7), so a test reads them as a person would; ``tests/test_logs.py`` asks for
+    the JSON ones, and for the choice made without the variable."""
     for name in {ENV_CONFIG, ENV_DATA_PATH, *os.environ}:
         if name.startswith("RAG_"):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(ENV_STATE_PATH, str(tmp_path / "var"))
+    monkeypatch.setenv("RAG_LOG_FORMAT", "console")
+
+
+@pytest.fixture(autouse=True)
+def reset_logging() -> Iterator[None]:
+    """Undo whatever a command's ``configure_logging`` set (S3-7): its root handler and its
+    levels, pypdf's included. One process runs the whole session's commands."""
+    yield
+    logs.reset_logging()
+    metrics.unwatch()
 
 
 @pytest.fixture
@@ -247,12 +260,14 @@ class StreamingFakeChatModel(BaseChatModel):
     ``gap_s`` apart. ``log`` gets ``"start"``, each token as it is yielded, and
     ``"closed"`` from a ``finally``: the stand-in for ChatOllama's HTTP response being
     closed, which is what cancelling an answer must achieve (DEC-14). ``prompts`` holds
-    every prompt it was given, rendered as text.
+    every prompt it was given, rendered as text. With ``usage``, a last chunk with no text
+    carries those token counts, as ChatOllama's does (S3-7).
     """
 
     tokens: list[str] = Field(default_factory=lambda: ["Station ", "Kestrel ", "staff."])
     prefill_s: float = 0.0
     gap_s: float = 0.0
+    usage: dict[str, int] | None = None
     prompts: list[str] = Field(default_factory=list)
     log: list[str] = Field(default_factory=list)
 
@@ -285,6 +300,9 @@ class StreamingFakeChatModel(BaseChatModel):
                 self.log.append(token)
                 yield ChatGenerationChunk(message=AIMessageChunk(content=token))
                 await asyncio.sleep(self.gap_s)
+            if self.usage is not None:
+                done = AIMessageChunk(content="", usage_metadata=cast(Any, self.usage))
+                yield ChatGenerationChunk(message=done)
         finally:
             self.log.append("closed")
 

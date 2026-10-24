@@ -1,0 +1,339 @@
+"""The metrics (NFR-10, DEC-22, S3-7): ``rag_qa.observability.metrics``, and the API moving
+them as answers, refusals and ingests happen.
+
+The registry is the process's, so every test reads a metric before and after, and checks the
+difference.
+"""
+
+import logging
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+from conftest import MakeConfig, StreamingFakeChatModel, fake_serving, sse_events, use_fakes
+from fastapi.testclient import TestClient
+from langchain_core.documents import Document
+from langchain_core.runnables import RunnableLambda
+from opentelemetry.semconv._incubating.attributes import gen_ai_attributes as gen_ai
+from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
+from prometheus_client import generate_latest
+
+from rag_qa.api.app import create_app
+from rag_qa.api.state import Served, Serving
+from rag_qa.chain import RetrievalQuery
+from rag_qa.config import load_config
+from rag_qa.observability import metrics
+from rag_qa.observability.genai import ModelIdentity, model_identity
+from rag_qa.resilience import BreakerOpenError, CircuitBreaker
+from rag_qa.schema import RagConfig
+from rag_qa.settings import ENV_DATA_PATH, ServerSettings
+from rag_qa.vectorstore import StoreUnavailableError
+
+USAGE = {"input_tokens": 900, "output_tokens": 120, "total_tokens": 1020}
+
+
+def value(name: str, **labels: str) -> float:
+    """A sample's value now, 0 when it has none yet."""
+    return metrics.REGISTRY.get_sample_value(name, labels) or 0.0
+
+
+class Counts:
+    """Samples read at the start, for the differences a test checks."""
+
+    def __init__(self, *names: tuple[str, dict[str, str]]) -> None:
+        self.before = {
+            (name, tuple(labels.items())): value(name, **labels) for name, labels in names
+        }
+
+    def moved(self, name: str, **labels: str) -> float:
+        return value(name, **labels) - self.before[(name, tuple(labels.items()))]
+
+
+ANSWER_SAMPLES = (
+    ("rag_answers_total", {"outcome": "answered"}),
+    ("rag_answers_total", {"outcome": "failed"}),
+    ("rag_answers_total", {"outcome": "cancelled"}),
+    ("rag_fallback_answers_total", {}),
+    ("rag_sources_seconds_count", {}),
+    ("rag_ttft_seconds_count", {}),
+    ("rag_answer_seconds_count", {}),
+)
+
+
+def tokens(provider: str, model: str, kind: str) -> tuple[str, dict[str, str]]:
+    return (
+        "gen_ai_client_token_usage_sum",
+        {
+            "gen_ai_operation_name": "chat",
+            "gen_ai_provider_name": provider,
+            "gen_ai_request_model": model,
+            "gen_ai_token_type": kind,
+        },
+    )
+
+
+@contextmanager
+def served(config: RagConfig, serving: Serving) -> Iterator[TestClient]:
+    app = create_app(config, ServerSettings(), serving=serving)
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        yield client
+
+
+# --- the module ------------------------------------------------------------------------------
+
+
+def test_the_token_metric_is_named_as_the_genai_convention_names_it() -> None:
+    # Taken from the package's own constants, never typed (S3-7's plan).
+    assert metrics.TOKEN_USAGE._name == gen_ai_metrics.GEN_AI_CLIENT_TOKEN_USAGE.replace(".", "_")
+    assert list(metrics.TOKEN_USAGE._labelnames) == [
+        name.replace(".", "_")
+        for name in (
+            gen_ai.GEN_AI_OPERATION_NAME,
+            gen_ai.GEN_AI_PROVIDER_NAME,
+            gen_ai.GEN_AI_REQUEST_MODEL,
+            gen_ai.GEN_AI_TOKEN_TYPE,
+        )
+    ]
+    # The convention's buckets: powers of 4 from 1 to 4^13.
+    assert list(metrics.TOKEN_USAGE._upper_bounds)[:-1] == [4**n for n in range(14)]
+
+
+@pytest.mark.parametrize(
+    ("histogram", "objective"),
+    [
+        (metrics.RETRIEVAL_SECONDS, 0.3),  # NFR-1
+        (metrics.SOURCES_SECONDS, 2.0),  # NFR-2a
+        (metrics.TTFT_SECONDS, 300.0),  # NFR-2b, this CPU's class
+    ],
+)
+def test_each_slo_histogram_has_a_bucket_at_its_objective(histogram: Any, objective: float) -> None:
+    # S3-7b's burn-rate rules count the answers under it: le="<objective>".
+    assert objective in histogram._upper_bounds
+
+
+def test_every_label_set_is_there_at_zero_and_no_created_series() -> None:
+    text = generate_latest(metrics.REGISTRY).decode()
+    for line in (
+        'rag_answers_total{outcome="cancelled"}',
+        'rag_refusals_total{code="503",reason="busy"}',
+        'rag_refusals_total{code="503",reason="dependency_down"}',
+        'rag_refusals_total{code="503",reason="no_index"}',
+        'rag_ingest_runs_total{status="failed"}',
+    ):
+        assert line in text
+    assert "_created" not in text
+
+
+def test_the_breakers_and_the_documents_are_read_at_each_scrape() -> None:
+    states = {"qdrant": "closed", "llm": "open"}
+    metrics.watch(lambda: states, lambda: 3)
+    assert value("rag_breaker_state", breaker="llm", state="open") == 1.0
+    assert value("rag_breaker_state", breaker="llm", state="closed") == 0.0
+    assert value("rag_index_documents") == 3.0
+    states["llm"] = "half-open"  # read again at the next scrape
+    assert value("rag_breaker_state", breaker="llm", state="half-open") == 1.0
+    metrics.unwatch()
+    assert (
+        metrics.REGISTRY.get_sample_value("rag_breaker_state", {"breaker": "llm", "state": "open"})
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("module", "attributes", "identity"),
+    [
+        ("langchain_ollama.chat_models", {"model": "mistral"}, ModelIdentity("ollama", "mistral")),
+        (
+            "langchain_openai.chat_models.base",
+            {"model_name": "openai/gpt-oss-120b"},
+            ModelIdentity("openai", "openai/gpt-oss-120b"),
+        ),
+        ("tests.fakes", {}, ModelIdentity("tests", "Fake")),
+    ],
+)
+def test_a_models_identity_comes_from_its_class_and_its_model(
+    module: str, attributes: dict[str, str], identity: ModelIdentity
+) -> None:
+    fake = type("Fake", (), {"__module__": module, **attributes})()
+    assert model_identity(fake) == identity
+
+
+# --- the API ---------------------------------------------------------------------------------
+
+
+def test_an_answer_moves_its_times_its_tokens_and_its_outcome(
+    fake_config: RagConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    serving = fake_serving(fake_config, StreamingFakeChatModel(usage=USAGE))
+    # The fake's identity: its package, and its class for want of a model name.
+    sent_in, sent_out = (
+        tokens("conftest", "StreamingFakeChatModel", k) for k in ("input", "output")
+    )
+    counts = Counts(*ANSWER_SAMPLES, sent_in, sent_out)
+    caplog.set_level(logging.INFO, logger="rag_qa")
+    with served(fake_config, serving) as client:
+        response = client.post("/v1/query", json={"question": "How many staff?"})
+    done = sse_events(response.text)[-1]
+    assert done == (
+        "done",
+        {
+            "ttft_ms": done[1]["ttft_ms"],
+            "total_ms": done[1]["total_ms"],
+            "model": "llm",
+            "input_tokens": 900,
+            "output_tokens": 120,
+        },
+    )
+    assert counts.moved("rag_answers_total", outcome="answered") == 1
+    for name in ("rag_sources_seconds_count", "rag_ttft_seconds_count", "rag_answer_seconds_count"):
+        assert counts.moved(name) == 1
+    assert counts.moved(sent_in[0], **sent_in[1]) == 900
+    assert counts.moved(sent_out[0], **sent_out[1]) == 120
+    assert counts.moved("rag_fallback_answers_total") == 0
+    (line,) = [r for r in caplog.records if r.getMessage().startswith("Answered by")]
+    assert line.getMessage() == (
+        f"Answered by llm in {done[1]['total_ms'] / 1000:.1f} s (first token at "
+        f"{done[1]['ttft_ms'] / 1000:.1f} s), 900 input and 120 output tokens."
+    )
+    assert (line.input_tokens, line.output_tokens, line.model) == (900, 120, "llm")  # type: ignore[attr-defined]
+    assert "How many staff?" not in caplog.text  # never the question
+
+
+def test_a_fallbacks_answer_counts_as_one_that_left_the_host(
+    fake_config: RagConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    serving = fake_serving(fake_config, StreamingFakeChatModel())
+    breaker = CircuitBreaker("Ollama")
+    for _ in range(breaker.failures):
+        breaker.allow().failed()
+    spare = StreamingFakeChatModel(usage=USAGE)
+    serving.pipeline = replace(serving.pipeline, fallback_llm=spare, llm_breaker=breaker)
+    counts = Counts(*ANSWER_SAMPLES)
+    with served(fake_config, serving) as client:
+        response = client.post("/v1/query", json={"question": "q"})
+    assert sse_events(response.text)[-1][1]["model"] == "fallback"
+    assert counts.moved("rag_fallback_answers_total") == 1
+    assert counts.moved("rag_answers_total", outcome="answered") == 1
+    assert "Answered by the hosted fallback fallback: the question and its retrieved" in caplog.text
+
+
+class TimesOut(StreamingFakeChatModel):
+    """A model that times out before its first token: the answer's error (DEC-21)."""
+
+    async def _astream(self, *args: Any, **kwargs: Any) -> Any:
+        raise httpx.ReadTimeout("no answer in time")
+        yield  # an async generator, like every model's stream
+
+
+def test_an_answer_that_fails_after_its_200_counts_as_failed(fake_config: RagConfig) -> None:
+    serving = fake_serving(fake_config, TimesOut())
+    counts = Counts(*ANSWER_SAMPLES)
+    with served(fake_config, serving) as client:
+        events = sse_events(client.post("/v1/query", json={"question": "q"}).text)
+    assert [name for name, _ in events] == ["sources", "error"]
+    assert counts.moved("rag_answers_total", outcome="failed") == 1
+    assert counts.moved("rag_answers_total", outcome="answered") == 0
+    assert counts.moved("rag_answer_seconds_count") == 0
+
+
+def test_an_open_breaker_after_the_stream_began_is_one_warning_line_not_a_traceback(
+    fake_config: RagConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    # S3-6's backlog line: the breaker opened between the refusal before the first byte and the
+    # model's turn (here, during the retrieval), so the stream had begun.
+    breaker = CircuitBreaker("Ollama")
+    docs = [Document(page_content="Station Kestrel.", metadata={"source": "notes.txt"})]
+
+    def retrieve(asked: RetrievalQuery) -> list[Document]:
+        for _ in range(breaker.failures):
+            breaker.allow().failed()
+        return docs
+
+    serving = fake_serving(fake_config, StreamingFakeChatModel(), retrieve=RunnableLambda(retrieve))
+    serving.pipeline = replace(serving.pipeline, llm_breaker=breaker)
+    with served(fake_config, serving) as client:
+        events = sse_events(client.post("/v1/query", json={"question": "q"}).text)
+    assert events[-1][0] == "error"
+    (line,) = [r for r in caplog.records if "after its stream began" in r.getMessage()]
+    assert line.levelno == logging.WARNING
+    assert line.exc_info is None  # one line: no traceback
+    assert line.getMessage().startswith(
+        "An answer was refused after its stream began: Ollama is not answering, and is asked "
+        "again in "
+    )
+    assert (line.service, line.retry_after_s) == ("Ollama", 30)  # type: ignore[attr-defined]
+
+
+def test_a_store_refused_by_its_breaker_mid_answer_is_one_warning_line_too(
+    fake_config: RagConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    def retrieve(asked: RetrievalQuery) -> list[Document]:
+        raise StoreUnavailableError("Qdrant is not answering") from BreakerOpenError(
+            "Qdrant", 12.0, 3
+        )
+
+    serving = fake_serving(fake_config, StreamingFakeChatModel(), retrieve=RunnableLambda(retrieve))
+    with served(fake_config, serving) as client:
+        client.post("/v1/query", json={"question": "q"})
+    (line,) = [r for r in caplog.records if "after its stream began" in r.getMessage()]
+    assert (line.levelno, line.exc_info, line.service) == (logging.WARNING, None, "Qdrant")  # type: ignore[attr-defined]
+
+
+def test_each_refusal_counts_with_its_reason(fake_config: RagConfig) -> None:
+    reasons = ("busy", "dependency_down", "no_index")
+    counts = Counts(*(("rag_refusals_total", {"code": "503", "reason": r}) for r in reasons))
+
+    busy = fake_serving(fake_config, StreamingFakeChatModel())
+    busy.slots.in_use = busy.slots.limit
+    down = fake_serving(fake_config, StreamingFakeChatModel())
+    for _ in range(down.store.breaker.failures):
+        down.store.breaker.allow().failed()
+    empty = fake_serving(fake_config, StreamingFakeChatModel())
+    empty.served = Served(generation=None, manifest=None, problem="no index yet")
+    empty.refresh = lambda: _done()  # type: ignore[method-assign]  # keep the problem
+
+    for serving in (busy, down, empty):
+        with served(fake_config, serving) as client:
+            assert client.post("/v1/query", json={"question": "q"}).status_code == 503
+    for reason in reasons:
+        assert counts.moved("rag_refusals_total", code="503", reason=reason) == 1
+
+
+async def _done() -> None:
+    return None
+
+
+def test_an_ingest_job_moves_the_runs_and_the_chunks(
+    make_config: MakeConfig, sample_corpus: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
+    config = load_config(make_config(use_fakes))
+    counts = Counts(
+        ("rag_ingest_runs_total", {"status": "succeeded"}),
+        ("rag_ingest_chunks_total", {}),
+        ("rag_index_documents", {}),
+    )
+    with TestClient(create_app(config, ServerSettings()), base_url="http://127.0.0.1") as client:
+        started = client.post("/v1/ingest", json={"rebuild": False}).json()
+        job = _wait(client, started["job_id"])
+        documents = value("rag_index_documents")
+    assert job["status"] == "succeeded"
+    assert counts.moved("rag_ingest_runs_total", status="succeeded") == 1
+    assert counts.moved("rag_ingest_chunks_total") == job["report"]["chunks"] > 0
+    assert documents == 5  # read from what the server serves, once the job published
+    assert value("rag_index_documents") == 0  # the lifespan stopped reporting it
+
+
+def _wait(client: TestClient, job_id: str) -> dict[str, Any]:
+    end = time.monotonic() + 30
+    while time.monotonic() < end:
+        job = client.get(f"/v1/ingest/{job_id}").json()
+        if job["status"] in ("succeeded", "failed"):
+            return dict(job)
+        time.sleep(0.02)
+    raise AssertionError("the ingest job did not end")

@@ -15,10 +15,16 @@ uvicorn reports ASGI spec 2.3, under which a client disconnect cancels its answe
 during the model's prompt evaluation too. That is why this command runs uvicorn and
 nothing else (DEC-18).
 
+**Logs and metrics** (NFR-10, DEC-22, S3-7). Its log lines, uvicorn's included, go through
+:func:`rag_qa.observability.logs.configure_logging`: JSON when stderr is not a terminal, or
+with ``RAG_LOG_FORMAT=json``. With ``RAG_API_METRICS_PORT`` set, Prometheus scrapes the
+metrics there, on the API's own host, from a listener of its own that starts before uvicorn
+and stops after it.
+
 ``rag-serve`` exit codes: **0** the server ran and was stopped with Ctrl-C; **2** it could
 not start (invalid settings, a non-loopback host without a token, a configuration error,
 Qdrant unusable, the model's server not answering with no hosted fallback configured, the
-address in use, or a usage error).
+address in use, the metrics port in use or the API's own, or a usage error).
 A SIGTERM shuts
 it down the same way, and uvicorn then ends the process by that signal, as service
 managers expect (status 143 in a shell).
@@ -27,7 +33,7 @@ managers expect (status 143 in a shell).
 import argparse
 import logging
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import uvicorn
 from pydantic import ValidationError
@@ -35,6 +41,8 @@ from pydantic import ValidationError
 from rag_qa.api.app import create_app
 from rag_qa.components import build_store, preflight
 from rag_qa.config import ConfigError, load_config
+from rag_qa.observability import metrics
+from rag_qa.observability.logs import LogSettingsError, configure_logging
 from rag_qa.settings import (
     ENV_CONFIG,
     ServerSettings,
@@ -68,7 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Exit status: 0 the server ran and was stopped with Ctrl-C; 2 could not "
         "start (invalid settings, a non-loopback host without RAG_API_TOKEN, a "
         "configuration error, the language model's server not answering with no hosted "
-        "fallback configured, the address in use, or a usage error).",
+        "fallback configured, the address in use, the metrics port in use or the API's "
+        "own, or a usage error). Set RAG_API_METRICS_PORT for Prometheus's metrics.",
     )
     parser.add_argument(
         "--config",
@@ -86,24 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def configure_logging() -> None:
-    """Show the package's own log lines (progress, readiness, ingest jobs) beside uvicorn's.
-
-    Idempotent, so calling ``main`` twice in one process never prints a line twice.
-    """
-    package = logging.getLogger("rag_qa")
-    if any(getattr(handler, "rag_serve", False) for handler in package.handlers):
-        return
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    handler.rag_serve = True  # type: ignore[attr-defined]
-    package.addHandler(handler)
-    package.setLevel(logging.INFO)
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point (``rag-serve``). Returns the exit status; see the module docstring."""
     args = build_parser().parse_args(argv)  # --help and usage errors exit here, before any work
+    try:
+        configure_logging(detailed=True)
+    except LogSettingsError as e:
+        print(f"Error: invalid log settings: {e}", file=sys.stderr)
+        return EXIT_CANNOT_START
     try:
         settings = ServerSettings()
     except ValidationError as e:
@@ -111,6 +110,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_CANNOT_START
     host = args.host or settings.host
     port = args.port if args.port is not None else settings.port
+    if settings.metrics_port == port:
+        print(
+            f"Error: RAG_API_METRICS_PORT is {port}, the API's own port: give the metrics "
+            f"another one.",
+            file=sys.stderr,
+        )
+        return EXIT_CANNOT_START
     if settings.token is None and not is_loopback(host):
         print(
             f"Error: refusing to listen on {host} without a token. Set RAG_API_TOKEN to "
@@ -127,7 +133,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_CANNOT_START
     store.close()  # the server builds its own, which lives as long as it does
 
-    configure_logging()
     if not is_loopback(host):
         logger.warning(
             "Listening on %s: the bearer token travels in cleartext over HTTP until Phase 3 "
@@ -155,8 +160,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             host=host,
             port=port,
             timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+            # uvicorn's lines go through our formatter (S3-7): no config of its own, and so
+            # it sets its loggers' level itself.
+            log_config=None,
+            log_level="info",
         )
     )
+    stop_metrics: Callable[[], None] | None = None
+    if settings.metrics_port is not None:
+        try:
+            stop_metrics = metrics.serve(host, settings.metrics_port)
+        except OSError as e:
+            print(
+                f"Error: cannot serve the metrics on port {settings.metrics_port} "
+                f"({e.strerror or e}): set RAG_API_METRICS_PORT to a free port.",
+                file=sys.stderr,
+            )
+            return EXIT_CANNOT_START
+        logger.info("Serving the metrics on %s, port %d, at /metrics", host, settings.metrics_port)
     try:
         server.run()
     except SystemExit:  # uvicorn exits when it cannot bind the address, after saying why
@@ -166,6 +187,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # asyncio's runner turned that into KeyboardInterrupt (S2-9's end-to-end run). The
         # stop was asked for, so the status below reports it, without a traceback.
         pass
+    finally:
+        if stop_metrics is not None:
+            stop_metrics()
     return EXIT_OK if server.started else EXIT_CANNOT_START  # a failed lifespan: logged
 
 
