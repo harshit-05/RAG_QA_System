@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In progress (plan approved 2026-10-23): on `feat/s3-7-observability`. The plan splits the story at design review 1's seam: the traces and the alerts are S3-7b. On Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-24 as PR #25 (`71555f5` … `df6fd57`, CI green on `df6fd57`); the first review (2026-10-24) found one privacy defect, two flaky tests and six smaller things, fixed on the PR ("First review"); the second (2026-10-25, on `c9647b5`) found one metrics defect, two doc claims and one test gap, fixed on the PR ("Second review"). The close-out record (Discovered, Deviation, Verification record) is still to be written, after the maintainer's call on NFR-2a. |
+| **Status** | Done 2026-10-25 (PR #25, awaiting its merge). Plan approved 2026-10-23; it split the story at design review 1's seam, so the traces and the alerts are S3-7b. On Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-24 (`a052877` … `df6fd57`). The first review (2026-10-24) found one privacy defect, two flaky tests and six smaller things; the second (2026-10-25, on `c9647b5`) found one metrics defect, two doc claims and one test gap; both were fixed on the PR (`ce42616` … `bc5dcbe`). CI is green on `bc5dcbe` (run 40128517639). NFR-1 held; NFR-2a missed, and the maintainer gave its levers to S3-11's stage 2 at the close-out. |
 | **Closes** | NFR-10 (logs and metrics); NFR-1 (verified); NFR-2 (a), measured (DEC-27); NFR-3; DEC-22 (logs and metrics); backlog: the two plural slips in `rag-ingest`'s log (S3-4's "Published …: 1 documents" is the second of them), the API's ingest jobs printing pypdf's warnings, and the traceback an open breaker logs mid-stream (S3-6) |
 | **Depends on** | S3-6 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -102,6 +102,30 @@ uv run python scripts/bench_retrieval.py 2>&1 | tee -i ~/dev/rag-s3-7/bench.log
                                             # NFR-2a: the golden questions' p95 < 2 s
 gh pr checks
 ```
+
+## Verification record (2026-10-23 to 2026-10-25)
+
+Rows 1–7 were run again on 2026-10-25 on `bc5dcbe`, the PR's head after both reviews; their
+first runs, on 2026-10-23, gave the same results with the suite then at 1481 tests. Rows 9–13
+ran in the maintainer's terminal on 2026-10-23, each logged with `tee -i` to
+`~/dev/rag-s3-7/`; rows 2, 9 and 13 were run twice.
+
+| # | Command | Result |
+| --- | --- | --- |
+| 1 | `uv run rag-eval check` | exit 0: the six parts `ok`, every floor met. `groq_fallback`'s `stream_usage: true` moved nothing (its spec is not hashed), and neither did the answers file's token fields |
+| 2 | `uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-7/contexts.json`, then `contexts-2.json` | 0.950 (19 of 20) / 0.796 / 0.858 both times, every floor met. The first log ends in a `KeyboardInterrupt` traceback from pydantic's schema building, its head overwritten by a complete run's output, the mark of a second writer on the file; the watched second run exited cleanly (Discovered) |
+| 3 | `diff ~/dev/rag-s3-2/contexts-qdrant.json` against each | IDENTICAL, both; `5a36e2f9d00bbdaf49edaf07b8ba6af6f0e2ed52a5cf4c2e16c39aa66a074cbc` |
+| 4 | `HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q` | 1492 passed, 18 skipped, 5 xfailed; coverage 98.36%; `HF_HOME` stayed empty |
+| 5 | `uv run ruff check && uv run ruff format --check && uv run mypy` | all checks passed; 73 files formatted; no issues in 36 source files |
+| 6 | `RAG_TEST_QDRANT_URL=http://127.0.0.1:6333 uv run pytest -m qdrant_server -q` | 11 passed, each on a collection of its own (`test_fallback_openai.py`'s module skip is the 1 skipped); the live collections unchanged |
+| 7 | the lock against `main`: `git diff -U0 main -- uv.lock \| grep -E '^[-+](name\|version) = '` | added structlog 26.1.0, prometheus-client 0.26.0 and opentelemetry-semantic-conventions 0.66b1; moved filelock 4.0.0 → 4.2.4 and setuptools 84.0.0 → 84.2.1 for their advisories (Deviation); pypdf 6.19.0; `uv lock --check` resolves 181. CI's Audit command, run locally: "No known vulnerabilities found, 11 ignored" |
+| 8 | `uv sync --extra fallback`, the answering and fallback tests, then `uv sync` | 80 passed; the environment back to CI's. One real Groq call with `stream_usage: true` reported `input_tokens` 78, `output_tokens` 18 (8 of them reasoning), so the config line went in |
+| 9 | `RAG_LOG_FORMAT=console RAG_API_METRICS_PORT=9464 uv run rag-serve 2>&1 \| tee -i …/serve.log`, then `serve-2.log` | "Serving the metrics on 127.0.0.1, port 9464", then uvicorn's lines through our formatter, each request's with its `request_id`. First run: one answer (183.5 s, first token at 156.4 s) and a 503 while it streamed. Second: four questions: answered in 184.8 s (first token 155.7 s); a client that left after 17 s ("Answer cancelled: its client disconnected"); answered in 257.9 s (first token 228.6 s, behind the dropped prompt, Discovered); and a 503. Each answer: "Answered by components.llms.mistral_ollama …, 1,460 input and 128 output tokens", with the same values as fields. `done`: `{"ttft_ms": 228604.2, "total_ms": 257934.1, "model": "components.llms.mistral_ollama", "input_tokens": 1460, "output_tokens": 128}` |
+| 10 | `curl -s 127.0.0.1:9464/metrics \| grep -E '^(rag_\|gen_ai_)' > …/metrics.txt` (second run) | `rag_answers_total` answered 2, cancelled 1, failed 0; `rag_refusals_total{code="503",reason="busy"} 1`; `gen_ai_client_token_usage` input count 2, sum 2920, output sum 256; `rag_sources_seconds` count 3; `rag_ttft_seconds` count 2; `rag_breaker_state` `qdrant` and `llm` closed; `rag_index_documents` 3 |
+| 11 | `RAG_LOG_FORMAT=json RAG_QDRANT_COLLECTION=s3_7_scratch uv run rag-ingest --rebuild 2>&1 \| tee -i …/ingest-json.log \| tail -5`, then the scratch generations deleted | JSON lines; the summary's "Throughput: 16.2 pages/s loaded, 24.2 chunks/s embedded, 2,695 points/s written."; the "Published" line's fields: 561 pages, 1,708 chunks and points, `load_s` 34.692, `embed_s` 70.672, `write_s` 0.634. Afterwards only `rag_qa`'s two generations remain, the alias on `…7f20891e` (as in `collections-before.txt`, and again on 2026-10-25) |
+| 12 | `uv run python scripts/bench_retrieval.py --points 10000 2>&1 \| tee -i …/bench-10k.log` | the dry run found the two-runs race: a second run, started 4 s after the first, deleted the first's collection mid-timing (`GenerationGoneError`). Fixed with a test (Discovered) |
+| 13 | `uv run python scripts/bench_retrieval.py 2>&1 \| tee -i …/bench.log`, then `bench-2.log` | NFR-1, 100,000 points, 200 questions, k=20: dense p50 23.9 / p95 28.2 / max 42.4 ms, hybrid 28.6 / 35.1 / 48.4 ms; then dense 26.6 / 29.7 / 34.3 ms, hybrid 31.5 / 38.0 / 46.3 ms: held. NFR-2a, 25 golden questions, the rerank included: p50 1.45 / p95 2.09 / max 2.11 s, then 1.46 / 2.02 / 2.09 s: MISSED, exit 1. Filling took 53 s, then 51 s, and `bench_s3_7` was deleted each time |
+| 14 | `gh pr checks` | red on `a12d32f` (run 40073376741): Audit alone, on seven advisories published on 2026-10-23 (three pypdf, three filelock, one setuptools). Green on `df6fd57` (run 40080480605), on `c9647b5` (run 40116138049) and on `bc5dcbe` (run 40128517639): `check` and `eval-retrieval` |
 
 ## Review notes for the human
 
@@ -222,6 +246,7 @@ coverage 98.36%; eight warm repeats of the files that flaked all green.
   not, and S3-11's levers do not include them. The text now calls it an open decision. Options:
   accept "measured, not met" and add a backlog line; or add reranker candidates / a smaller
   cross-encoder to S3-11's levers (both move hashed inputs, so tier 2 once, in S3-11b).
+  **Decided at the close-out (2026-10-25):** the second; S3-11's stage 2 owns them.
 - **Verification 87** (`git diff -U0 uv.lock | grep …` "nothing") shows the two advisory bumps
   (filelock 4.0.0 → 4.2.4, setuptools 84.0.0 → 84.2.1, `1cc5c54`); record under Deviation.
 - **D7 said the API's job report is unchanged;** it gained `load_s`, `embed_s`, `write_s`
@@ -310,13 +335,89 @@ survives (below). Both new tests fail with their defect put back, after clean co
   count.
 - The `BREAKING-CHANGE:` trailer names `rag-ingest`'s progress only. Every command's log is
   now JSON when stderr is not a terminal, `rag-serve`'s under a service manager included:
-  worth a line in the PR body or the merge message.
+  worth a line in the PR body or the merge message. **Taken at the close-out:** both carry
+  it (Deviation).
 - The first review's three nits stand.
 
 ## Discovered
 
-(Filled during implementation.)
+- **semconv 0.66b1 marks every GenAI constant deprecated,** "moved to the OpenTelemetry
+  GenAI semantic conventions repository", which publishes no Python package yet; the strings
+  are unchanged. Reading a constant or an enum member raises no warning, but calling an enum
+  (`GenAiOperationNameValues("chat")`) raises a `DeprecationWarning`, which the deprecation
+  gate fails on. So `observability/genai.py` reads members only. The package has no upper
+  bound (S3-7b's backlog line).
+- **ChatOllama reports its usage on its final chunk, which has no text,** and
+  `stream_answer` skipped empty chunks before reading anything. The usage is now read first.
+- **langchain-openai 1.6.2 turns `stream_usage` off for a custom `base_url` or HTTP
+  client,** and the fallback has both. `groq_fallback` sets `stream_usage: true` after one
+  real call showed Groq answers it (row 8).
+- **The answers file's identity is a trap for any new field** (caveat 40). A field
+  defaulting to `None` changed the committed answers' identity from `a11e3ddd…` to
+  `21601f51…`, so `rag-eval check` would have asked for a T4 re-score. `exclude_if` keeps
+  it, from pydantic 2.12 (the first review), and a test pins the identity.
+- **structlog shows each frame's local variables by default,** in `dict_tracebacks`
+  (`show_locals=True`) and, through rich, in the console renderer. Either would have put a
+  question or the retrieved chunks into the log. Tracebacks are text in JSON
+  (`format_exc_info`) and plain in the console (the first review).
+- **A client dropped between two events leaves the route's generator paused,** and only
+  the garbage collector closes it, so an outcome counted in its `finally` was missed (the
+  forced-window test). The outcome is counted once, in `Slot.release()`.
+- **FastAPI runs a route's body only after its dependencies,** so an answer's times
+  started late, after the alias read and its retries; they now start at the first
+  dependency (the second review). That dependency is `async`, since a sync one runs in a
+  thread whose context, and so the request ID, is lost.
+- **uvicorn's default `dictConfig` gives the `uvicorn` logger a handler of its own and
+  stops it propagating;** with `log_config=None` it configures nothing and sets no level,
+  so `rag-serve` passes `log_level="info"`.
+- **`serialized`'s `run_in_executor` copies no context variables;** LangChain's own does,
+  on the CLI's path. Nothing in S3-7 needs it; S3-7b's spans do.
+- **`rag-eval check` printed the corpus walk's INFO lines** among its tables, so
+  `rag-eval` logs warnings only.
+- **pytest's own handler formats a record before ours,** which leaves `message` and
+  `asctime` on it. They are dropped, so they never become JSON fields.
+- **Under `2>&1 | tee -i`, stderr is a pipe,** so the log is JSON unless
+  `RAG_LOG_FORMAT=console` (caveat 39). The model loader's `Loading weights` bar still
+  prints between JSON lines (S3-9's backlog line).
+- **The benchmark could delete another run's collection.** Two runs started 4 s apart both
+  passed the check for an existing collection, during the embedder's load. The second's
+  create got a 409, and its cleanup then deleted the first's collection mid-timing (row 12).
+  `create()` now reports a lost race, the run exits 2, and it deletes only a collection it
+  created; a test reproduces the race.
+- **NFR-2a is missed by the rerank:** a p95 of 2.09 s, then 2.02 s. The search takes about
+  30 ms; `ms-marco-MiniLM-L-6-v2` scoring 20 candidates is the rest. Its levers move hashed
+  inputs (S3-11's stage 2, the backlog line).
+- **A cancelled question delays the next one's first token.** In row 9's second run, the
+  answer after a dropped question reached its first token at 228.6 s, not about 156 s:
+  Ollama most likely read the dropped prompt first, as README's known limitation says. It is
+  inside the 300 s objective S3-7b's alert will use.
+- **The first tier-1 log's `KeyboardInterrupt`** came from pydantic's schema building, not
+  our exit path. Its traceback begins mid-line where a complete run's output ends, the mark
+  of a second writer on the same file. The watched second run exited cleanly, with the same
+  scores and contexts.
+- **Seven advisories were published on 2026-10-23,** after the local audit and before the
+  push: three in pypdf (the exception, now eleven), three in filelock and one in setuptools
+  (bumped alone).
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **The model:** Opus 5.5 at max effort, in place of Fable, which is unavailable (CLAUDE.md).
+- **`model_identity` is in `observability/genai.py`,** not `components.py` (D4). It reads
+  the model's class and attributes without importing LangChain, so `observability` still
+  loads no model stack, and S3-7b's spans can share it.
+- **The API's job report gained `load_s`, `embed_s`, `write_s` and `points`;** D7 said it
+  was unchanged. Its model must mirror `IngestReport`, as a test requires. Additive.
+- **`rag-eval` logs at WARNING,** where D2 set `rag_qa` at INFO for every command
+  (Discovered).
+- **Tracebacks are text, not `dict_tracebacks`** (D2), and plain in the console (the first
+  review): both forms structlog offered show local variables (Discovered).
+- **An answer's outcome is counted in `Slot.release()`,** not in the query route (D4),
+  and its times start at the first dependency, not the route's body (the second review).
+- **The lock moved two versions D1 did not plan:** filelock 4.0.0 → 4.2.4 and setuptools
+  84.0.0 → 84.2.1, each bumped alone for advisories published during the PR (`1cc5c54`).
+  pydantic's floor rose to 2.12, its locked version unchanged (`47709e9`). So
+  Verification's lock line prints those two bumps, not nothing.
+- **The `BREAKING-CHANGE:` trailer of `f11f694` names `rag-ingest`'s progress only.** Every
+  command's log is now JSON when stderr is not a terminal, `rag-serve`'s under a service
+  manager included, and an unknown `RAG_LOG_FORMAT` exits 2. The commit is on the pushed
+  branch, so the PR body and the merge commit's message say it in full.

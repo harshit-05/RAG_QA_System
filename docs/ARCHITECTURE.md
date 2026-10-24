@@ -2059,7 +2059,7 @@ NFR-4 and the whole of §2.4.
 | §11 repository hygiene | none (ISS-09: S0-1; history not rewritten, ADR-002) | Phase 0 | `tests/test_repo_hygiene.py` |
 | FR-3, hybrid retrieval and filters | dense only | S3-5: BM25 sparse vectors fused by RRF, and a `sources` filter, both measured by tier 1; S3-11b switches hybrid on if tier 1 earns it | S3-5's tier-1 table; a filtered query that cites one file, and a 422 for an unknown one |
 | NFR-1, retrieval under 300 ms at p95 | never measured | S3-7: `scripts/bench_retrieval.py` on 100k synthetic chunks, at k=20 | the p95, dense and hybrid, in README's "Capacity planning" |
-| NFR-2, time to first token | 2 s is out of reach on CPU (ADR-016) | revised by DEC-27; S3-7 measures (a), S3-11 and S3-11b report (b) | (a) the `sources` p95 over the golden questions, model idle; (b) the TTFT p95 here and on a T4 |
+| NFR-2, time to first token | 2 s is out of reach on CPU (ADR-016) | revised by DEC-27; S3-7 measures (a), and missed it; S3-11's stage 2 takes its levers; S3-11 and S3-11b report (b) | (a) the `sources` p95 over the golden questions, model idle; (b) the TTFT p95 here and on a T4 |
 | NFR-3, ingestion throughput | undocumented | S3-7: `rag-ingest` reports it | a `--rebuild` into a scratch collection; README's table |
 | NFR-4, incremental upsert | embedding is incremental (S2-6), but FAISS rewrites the index whole | S3-2: unchanged points copied, the changed documents' chunks upserted | a second `rag-ingest` embeds nothing; a one-file change embeds that file only |
 | NFR-5, a stateless query tier | jobs in memory, the index in process | S3-8: job records in SQLite, the alias resolved per request; S3-9: two replicas behind Caddy | S3-8's two-instance test; `--scale app=2` |
@@ -2638,8 +2638,9 @@ _As built in S3-7 (2026-10-23), from its approved plan (the story's "Plan", D1�
   - **NFR-1 held:** at 100k points and k=20, a p95 of 29.7 ms dense and 38.0 ms hybrid.
   - **NFR-2a missed, narrowly:** a p95 of 2.09 s, then 2.02 s on a second run. The rerank is
     nearly all of it, and its levers (fewer candidates, a smaller cross-encoder) move hashed
-    inputs. None is among S3-11's levers, so the miss is **an open decision for the
-    maintainer** (S3-7's first review), and the amend session (S3-12) sets DEC-27 (a).
+    inputs. The maintainer gave them to S3-11's stage 2 at S3-7's close-out (2026-10-25),
+    measured by tier 1 and this benchmark; S3-11b times what ships; and the amend session
+    (S3-12) sets DEC-27 (a) from that number only if it still misses.
   - **NFR-3:** 16.2 pages/s loaded, 24.2 chunks/s embedded, 2,695 points/s written.
 - **The benchmark deletes only a collection it created** (found in its own run). Two runs
   started seconds apart both passed the check for an existing collection. The second's
@@ -3075,7 +3076,9 @@ hashed input, and S3-11b commits them.**
   server idle. It was about 0.8 s in S2-9. `rag_sources_seconds` watches it.
   - **Measured as a p95** (design review 1): one sample is not one, and the rerank alone
     takes a median of 1.4 s, up to 2 s (§2.1). S3-7 times the 25 golden questions with the
-    model idle, and S3-11b times them again if hybrid retrieval is switched on.
+    model idle, and S3-11b times them again on what ships. _As measured in S3-7:_ a p95 of
+    2.09 s, then 2.02 s, a miss. S3-11's stage 2 owns the rerank's levers (DEC-22's as-built
+    note).
 - **(b)** The time to first token is measured on every answer and reported per class of
   hardware: on this CPU, the p95 from the committed tier-2 run (S3-11b; about 155–170 s
   today); on a T4, the p95 measured in S3-11.

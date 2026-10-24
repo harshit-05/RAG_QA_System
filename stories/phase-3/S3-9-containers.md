@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **Status** | Todo |
-| **Closes** | SRS §11 (CI: container build and vulnerability scan, merges blocked on red; containerization; config management); SRS §8.3 (environment overlays); SRS §9 LLM05 (the image scanned); DEC-24; backlog: the Docker image's install, its stop signal and a forced stop; the audit-gate policy; TLS |
+| **Closes** | SRS §11 (CI: container build and vulnerability scan, merges blocked on red; containerization; config management); SRS §8.3 (environment overlays); SRS §9 LLM05 (the image scanned); DEC-24; backlog: the Docker image's install, its stop signal and a forced stop; the audit-gate policy; TLS; the retrieval deadline that is not a hard bound (moved from S3-7); the model loader's progress bar in JSON logs (S3-7) |
 | **Depends on** | S3-8 |
 | **Model** | Opus 5.5 at max effort (Docker and CI surface new to this repository, with known traps: the torch variant, PID 1's signals, SSE through a proxy) |
 | **Plan-first** | yes |
@@ -42,6 +42,10 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     - any non-root uid, the one compose gives it: the models readable by all, nothing
       written outside `var/` (design review 2);
     - `HF_HUB_OFFLINE=1`;
+    - `HF_HUB_DISABLE_PROGRESS_BARS=1` (S3-7's first review): a container's stderr is no
+      terminal, so the logs are JSON lines, and the model loader's `Loading weights` bar
+      would print between them. huggingface_hub reads it at import, so it is set in the
+      image, not in code;
     - `HEALTHCHECK` on `/v1/health/live`;
     - `ENTRYPOINT ["rag-serve"]`, `CMD ["--host", "0.0.0.0"]`, which needs a key or a token:
       DEC-18's refusal stands.
@@ -88,6 +92,16 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     - **SSE and bodies:** `flush_interval -1`, and `request_body max_size 64KB`.
   - **Profile `observability`:** Jaeger 2.22.0, Prometheus v3.15.0 (scraping the app's
     metrics port on the internal network) and Alertmanager v0.34.1, with S3-7b's files.
+    The metrics port carries no token (S3-7), so it is never published. `rag-serve` binds
+    it where the API listens, `0.0.0.0` in the container, so only a published port would
+    expose it beyond the internal network.
+- **The retrieval deadline that is not a hard bound** (moved from S3-7; the backlog line).
+  qdrant-client 1.19.1's `get_aliases`, `get_collection(s)` and `info` take no per-call
+  timeout, so against a Qdrant that accepts and never answers, a retrieval under
+  `deadline_s: 15` takes 20.2 s. Reproduce it with `docker compose pause qdrant`. Then
+  either cap every request inside the deadline, or state the bound as `deadline_s` plus
+  `timeout_s` (25 s) in the README and DEC-21's note. Capping must not fail healthy reads
+  late in a slow retrieval, as under caveat 26's CPU contention.
   - **`.env.example`** (committed): every variable named, `UID` and `GID` included, no
     values. `.env` stays gitignored.
 - **Signals** (the backlog line). With `init: true`, `docker stop` ends `rag-serve` with

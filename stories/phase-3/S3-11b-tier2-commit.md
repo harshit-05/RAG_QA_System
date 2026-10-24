@@ -57,7 +57,9 @@ of scoring on the T4, by the judge S3-11 chose.
   recorded beside S3-11's stage 1. No re-run follows from it.
 - **NFR-2's numbers** (DEC-27):
   - (b): the p95 of `ttft_ms` here, from this run, and on the T4, from S3-11's runs;
-  - (a): if hybrid retrieval is on, the `sources` p95 again, with S3-7's script.
+  - (a): the `sources` p95 again, with S3-7's script, on what ships: the bumped chunks and
+    S3-11's retrieval and rerank choices. S3-7 measured 2.09 s, then 2.02 s, a miss; if it
+    still misses, S3-12's amend session sets the target from this number.
 - **Docs:** README's evaluation numbers and known limitations.
 
 ## Out of scope

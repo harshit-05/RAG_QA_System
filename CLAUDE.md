@@ -95,7 +95,9 @@ prototype to production via a spec-driven story loop.
 - Commands: `rag-ingest`, `rag-query`, `rag-serve` (the HTTP API) and `rag-eval`
   (`retrieval` for tier 1; `generate`, `score` and `check` for tier 2). Servers and
   model runs go in the maintainer's foreground terminal, logged with `tee -i`: a
-  plain `tee` dies with Ctrl-C and loses the shutdown lines.
+  plain `tee` dies with Ctrl-C and loses the shutdown lines. Since S3-7 every log goes to
+  stderr, as JSON when it is a pipe, so prefix such a run with `RAG_LOG_FORMAT=console`
+  (caveat 39).
 
 - **Tier 2 is committed and fingerprinted.** An edit to the prompt, an llm, retriever
   or reranker spec, the corpus, the embedder, splitter or loaders, or a golden

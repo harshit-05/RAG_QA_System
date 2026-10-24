@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **Status** | Todo |
-| **Closes** | DEC-2 (the revisit: the choice); DEC-26 (the sweep, stages 1–4); backlog: the lenient judge (measured), the tier-2 follow-ups (measured), `rag-eval check` recomputing the aggregates |
+| **Closes** | DEC-2 (the revisit: the choice); DEC-26 (the sweep, stages 1–4); backlog: the lenient judge (measured), the tier-2 follow-ups (measured), `rag-eval check` recomputing the aggregates, NFR-2a's missed target (the rerank's levers, chosen) |
 | **Depends on** | S3-5 (the tier-1 tables), S3-10; the maintainer's hand labels |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
 | **Plan-first** | yes |
@@ -18,6 +18,7 @@ levers:
 - the prompt (the refusal paraphrases, `glider-name`'s refusal, and LLM01's delimiting);
 - hybrid retrieval with its sparse encoder;
 - `min_score`;
+- the rerank's cost, for NFR-2a (added at S3-7's close-out);
 - the model (the DEC-2 revisit).
 
 S3-11b commits the choices with the one re-run, and the committed run describes the system
@@ -75,7 +76,21 @@ read off the results. The golden set can show only large differences:
 - **Stage 2, retrieval, fixed from tier 1** (S3-5's tables; no tier-2 sweep):
   - hybrid on or off;
   - `rrf_k` and the prefetch limit;
-  - `min_score`.
+  - `min_score`;
+  - **the rerank's cost, for NFR-2a** (maintainer, 2026-10-25, at S3-7's close-out):
+    - **Why:** S3-7 measured the `sources` p95 at 2.09 s, then 2.02 s, against DEC-27 (a)'s
+      under 2 s with the model idle. Nearly all of it is `ms-marco-MiniLM-L-6-v2` scoring
+      20 candidates on the CPU; the search takes about 30 ms.
+    - **The levers:** `reranker_candidates` below 20, and a smaller cross-encoder as a new
+      reranker entry (`cross-encoder/ms-marco-MiniLM-L-4-v2`, say). Both move hashed
+      inputs, so they ride S3-11b's one re-run.
+    - **How:** each setting gets tier 1, and `scripts/bench_retrieval.py`'s NFR-2a timing on
+      this CPU with the model idle: a few minutes each, no T4.
+    - **The rule, fixed with the others before stage 0** (its default): keep 20 candidates
+      and L-6 if they meet the target on the bumped chunks. Otherwise take the fastest
+      setting whose p95 is under 2 s and whose hit rate, MRR and recall each stay within
+      0.05 of that baseline's. If none qualifies, keep the baseline and record the miss for
+      S3-12's amend session, which then sets DEC-27 (a) from the measured p95.
 
   The choice is recorded here. The candidate runs use it through a scratch config, with a
   hybrid ingest on the T4 when hybrid is on; S3-11b sets it in `config.yaml`.
@@ -134,8 +149,9 @@ read off the results. The golden set can show only large differences:
     which has neither, still loads.
 - **Records:**
   - every stage's table goes here, with what it cost;
-  - the choices for S3-11b: the judge, the prompt revision, the retrieval settings, and the
-    model;
+  - the choices for S3-11b: the judge, the prompt revision, the retrieval settings, the
+    rerank's setting, and the model;
+  - stage 2's `sources` p95 for each rerank setting tried (NFR-2a);
   - the T4's time to first token (DEC-27 b);
   - stage 0's count of answers that differ, and the context digests' comparison.
 

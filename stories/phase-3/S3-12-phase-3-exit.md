@@ -63,6 +63,9 @@ design review 1). The docs then describe v1.0 as delivered, and 1.0.0 is release
     and a sweep of the ADRs and §1.8 for earlier departures that neither phase list holds.
     Among those are ADR-008's hand-composed chain and DEC-14's stream in place of §6.3's
     `create_retrieval_chain`, §6.3's allowlist prefixes, and §10's coverage targets.
+  - **NFR-2 (a)'s target** (DEC-27; added at S3-7's close-out): S3-7 missed it (a p95 of
+    2.09 s, then 2.02 s), and S3-11's stage 2 owns the levers. If S3-11b's `sources` p95
+    still misses 2 s, the amendment sets the target from that measured p95.
   - **The amendment:** the maintainer approves the merged list, and `docs/SRS.md` becomes
     revision 2.0, with a revision block naming each change.
   - **If the session runs long,** the release moves to S3-12b, as S2-5b split from S2-5.
