@@ -28,6 +28,11 @@ dependencies = [
     "qdrant-client>=1.19.1",   # the index (DEC-19, S3-2); only rag_qa.vectorstore imports it
     "tenacity>=9.1.4",   # retries around Qdrant's calls (NFR-6, DEC-21, S3-6)
     "httpx>=0.28.1",   # the timeouts of Ollama's client (S3-6); it came through ollama before
+    # Observability (NFR-10, DEC-22, S3-7): structured logs, and the metrics Prometheus scrapes.
+    # The semantic conventions name the GenAI metric and its labels; metrics.py imports them.
+    "structlog>=26.1.0",
+    "prometheus-client>=0.26.0",
+    "opentelemetry-semantic-conventions>=0.66b1",
 ]
 
 [project.scripts]
