@@ -95,9 +95,10 @@ jobs:
       #
       # One exception to the audit policy, which allows no ignore for an advisory with a
       # fixed release (DEC-24). The maintainer took it on 2026-10-22 (STATUS.md, caveat 37),
-      # and extended it on 2026-10-23 to three more found by S3-6's CI. Five pypdf 6.19.0
-      # advisories were published on 2026-10-21, and three on 2026-10-22. The releases that
-      # fix them (6.20.0 to 6.21.1) extract the corpus's text differently: 7 of the 25 golden
+      # and extended it on 2026-10-23 to three more found by S3-6's CI, and on 2026-10-24 to
+      # three more found by S3-7's. Five pypdf 6.19.0 advisories were published on
+      # 2026-10-21, three on 2026-10-22 and three on 2026-10-23. The releases that fix them
+      # (6.20.0 to 6.21.2) extract the corpus's text differently: 7 of the 25 golden
       # contexts change, so the bump needs CHUNKING_VERSION 2 and a tier-2 re-run, which
       # S3-11b's one re-run carries (DEC-26). Until then:
       #   GHSA-5hx5-vpf9-5wcv  JPEG data handed to Pillow: image extraction, never called
@@ -108,11 +109,14 @@ jobs:
       #   GHSA-7mh2-4gg2-979f  memory for streams with many filters: reached by extract_text
       #   GHSA-cgf9-327m-v77c  memory for content streams of many operations: extract_text
       #   GHSA-f54x-cmq8-qg57  memory for arrays or dictionaries of many items: any read
-      # The last four need a hostile PDF in corpus/, which only the operator fills: the
+      #   GHSA-gmh7-3g9r-mjh5  time for wrong upper limits in an xref table: any read
+      #   GHSA-jr96-gvgh-j3r4  time for repeated malformed xref streams: any read
+      #   GHSA-6c7f-9265-g8fw  time for many references to one missing object: reader.pages
+      # The last seven need a hostile PDF in corpus/, which only the operator fills: the
       # corpus is trusted, and nothing uploads into it (ARCHITECTURE.md, Phase 3, item 9).
       # The exception ends with S3-11b's bump, or on 2027-01-20 (90 days, as DEC-24 limits
       # Trivy's ignores), whichever comes first: after that date this step fails until the
-      # date check and the eight ignores are removed.
+      # date check and the eleven ignores are removed.
       - name: Audit
         run: |
           set -o pipefail
@@ -126,7 +130,9 @@ jobs:
             --ignore-vuln GHSA-5hx5-vpf9-5wcv --ignore-vuln GHSA-9mx8-4j7g-633p \
             --ignore-vuln GHSA-qfv9-64jg-mh7p --ignore-vuln GHSA-6vvc-x485-93v7 \
             --ignore-vuln GHSA-39mj-jf6j-2qj3 --ignore-vuln GHSA-7mh2-4gg2-979f \
-            --ignore-vuln GHSA-cgf9-327m-v77c --ignore-vuln GHSA-f54x-cmq8-qg57
+            --ignore-vuln GHSA-cgf9-327m-v77c --ignore-vuln GHSA-f54x-cmq8-qg57 \
+            --ignore-vuln GHSA-gmh7-3g9r-mjh5 --ignore-vuln GHSA-jr96-gvgh-j3r4 \
+            --ignore-vuln GHSA-6c7f-9265-g8fw
 
       # Tier 2 of the quality bar (DEC-15, S2-5b): the committed run in eval/runs/ against
       # eval/thresholds.yaml and this checkout. It needs no models, no Ollama and no eval
