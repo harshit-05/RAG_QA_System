@@ -38,10 +38,10 @@ of scoring on the T4, by the judge S3-11 chose.
     - tier 1's floors are re-baselined in `eval/thresholds.yaml` (the baseline minus 0.05),
       on CI's numbers;
     - `min_score` goes on the reranker entry;
-  - **the chunks** (caveat 37, added 2026-10-22): pypdf to 6.21.1 or later, with
+  - **the chunks** (caveat 37, added 2026-10-22): pypdf to 6.21.2 or later, with
     `CHUNKING_VERSION` 2, so the run's index is rebuilt from them, and S3-5's soft-hyphen
     question decided in the same change (STATUS.md backlog). Then remove the date check and
-    the eight pypdf `--ignore-vuln` (five from S3-5, three from S3-6) from both Audit steps
+    the eleven pypdf `--ignore-vuln` (five from S3-5, three each from S3-6 and S3-7) from both Audit steps
     in `ci.yml`, the main one and the
     `eval` extra's that S3-9 adds: the exception ends here (DEC-24);
   - **the model:** the chosen one as `pipeline.query.llm`. The others stay as entries (keep
@@ -57,7 +57,9 @@ of scoring on the T4, by the judge S3-11 chose.
   recorded beside S3-11's stage 1. No re-run follows from it.
 - **NFR-2's numbers** (DEC-27):
   - (b): the p95 of `ttft_ms` here, from this run, and on the T4, from S3-11's runs;
-  - (a): if hybrid retrieval is on, the `sources` p95 again, with S3-7's script.
+  - (a): the `sources` p95 again, with S3-7's script, on what ships: the bumped chunks and
+    S3-11's retrieval and rerank choices. S3-7 measured 2.09 s, then 2.02 s, a miss; if it
+    still misses, S3-12's amend session sets the target from this number.
 - **Docs:** README's evaluation numbers and known limitations.
 
 ## Out of scope

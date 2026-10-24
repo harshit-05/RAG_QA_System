@@ -3,9 +3,10 @@
 Each question goes through :func:`rag_qa.answering.stream_answer`, the stream the CLI
 and the API render (DEC-14), so tier 2 measures exactly what users get. The run records,
 per question, the answer, the chunks the prompt got (``contexts``, which RAGAs judges
-against), the sources as the stream reported them, and the time to the first token and
-to the end. It also records the four generation parts of the fingerprint
-(:mod:`.fingerprint`) and the generator's Ollama digest, which is recorded, never hashed.
+against), the sources as the stream reported them, the time to the first token and
+to the end, and the provider's token counts (S3-7). It also records the four generation
+parts of the fingerprint (:mod:`.fingerprint`) and the generator's Ollama digest, which is
+recorded, never hashed.
 ``rag-eval score`` then needs only this file, so scoring can run on Colab (DEC-15).
 
 **The index must match the corpus and config the run records.** The fingerprint is
@@ -152,6 +153,8 @@ async def answer(pipeline: QueryPipeline, item: GoldenItem) -> AnswerItem:
         sources=sources,
         ttft_ms=done.ttft_ms,
         total_ms=done.total_ms,
+        input_tokens=done.input_tokens,
+        output_tokens=done.output_tokens,
     )
 
 

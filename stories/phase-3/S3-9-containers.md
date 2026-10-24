@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **Status** | Todo |
-| **Closes** | SRS §11 (CI: container build and vulnerability scan, merges blocked on red; containerization; config management); SRS §8.3 (environment overlays); SRS §9 LLM05 (the image scanned); DEC-24; backlog: the Docker image's install, its stop signal and a forced stop; the audit-gate policy; TLS |
+| **Closes** | SRS §11 (CI: container build and vulnerability scan, merges blocked on red; containerization; config management); SRS §8.3 (environment overlays); SRS §9 LLM05 (the image scanned); DEC-24; backlog: the Docker image's install, its stop signal and a forced stop; the audit-gate policy; TLS; the retrieval deadline that is not a hard bound (moved from S3-7); the model loader's progress bar in JSON logs (S3-7) |
 | **Depends on** | S3-8 |
 | **Model** | Opus 5.5 at max effort (Docker and CI surface new to this repository, with known traps: the torch variant, PID 1's signals, SSE through a proxy) |
 | **Plan-first** | yes |
@@ -42,6 +42,10 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     - any non-root uid, the one compose gives it: the models readable by all, nothing
       written outside `var/` (design review 2);
     - `HF_HUB_OFFLINE=1`;
+    - `HF_HUB_DISABLE_PROGRESS_BARS=1` (S3-7's first review): a container's stderr is no
+      terminal, so the logs are JSON lines, and the model loader's `Loading weights` bar
+      would print between them. huggingface_hub reads it at import, so it is set in the
+      image, not in code;
     - `HEALTHCHECK` on `/v1/health/live`;
     - `ENTRYPOINT ["rag-serve"]`, `CMD ["--host", "0.0.0.0"]`, which needs a key or a token:
       DEC-18's refusal stands.
@@ -87,7 +91,17 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
       the ingest that builds one.
     - **SSE and bodies:** `flush_interval -1`, and `request_body max_size 64KB`.
   - **Profile `observability`:** Jaeger 2.22.0, Prometheus v3.15.0 (scraping the app's
-    metrics port on the internal network) and Alertmanager v0.34.1, with S3-7's files.
+    metrics port on the internal network) and Alertmanager v0.34.1, with S3-7b's files.
+    The metrics port carries no token (S3-7), so it is never published. `rag-serve` binds
+    it where the API listens, `0.0.0.0` in the container, so only a published port would
+    expose it beyond the internal network.
+- **The retrieval deadline that is not a hard bound** (moved from S3-7; the backlog line).
+  qdrant-client 1.19.1's `get_aliases`, `get_collection(s)` and `info` take no per-call
+  timeout, so against a Qdrant that accepts and never answers, a retrieval under
+  `deadline_s: 15` takes 20.2 s. Reproduce it with `docker compose pause qdrant`. Then
+  either cap every request inside the deadline, or state the bound as `deadline_s` plus
+  `timeout_s` (25 s) in the README and DEC-21's note. Capping must not fail healthy reads
+  late in a slow retrieval, as under caveat 26's CPU contention.
   - **`.env.example`** (committed): every variable named, `UID` and `GID` included, no
     values. `.env` stays gitignored.
 - **Signals** (the backlog line). With `init: true`, `docker stop` ends `rag-serve` with
@@ -146,14 +160,14 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     (`docker buildx imagetools inspect <image> --format '{{json .Manifest.Digest}}'`) and
     compared with DEC-24's table. Another digest for the same immutable tag is investigated,
     not accepted.
-  - **`deploy-config`** (S3-7's job) adds `docker compose config -q`, with `.env.example`
+  - **`deploy-config`** (S3-7b's job) adds `docker compose config -q`, with `.env.example`
     as the environment.
   - **The audit policy,** as DEC-24 states it:
     - `--ignore-vuln` entries only for advisories with no fixed release, each with a reason
       and a date in `ci.yml` and a STATUS.md line. One exception exists already, and S3-9
-      keeps it as it is (added 2026-10-22, extended 2026-10-23 in S3-6): eight pypdf
+      keeps it as it is (added 2026-10-22, extended 2026-10-23 in S3-6 and 2026-10-24 in S3-7): eleven pypdf
       advisories, with a date check, until S3-11b (caveat 37). The weekly run also turns red
-      on it after 2027-01-20. The `eval` extra's Audit step below carries the same eight
+      on it after 2027-01-20. The `eval` extra's Audit step below carries the same eleven
       ignores under the same date check: its export holds pypdf 6.19.0 too (S3-5's second
       review);
     - `.trivyignore.yaml` entries, each with a statement and an `expired_at` at most 90 days
@@ -167,7 +181,7 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
       advisories have no fixed release, and are the policy's first entries: `diskcache`
       5.6.3, PYSEC-2026-2447 (unsafe unpickling, which reaches only ragas's cache folder on a
       scoring machine), and `ragas` 0.4.3, PYSEC-2026-3046 (SSRF in the multimodal
-      faithfulness metric, which the judge does not use). It also carries pypdf's eight,
+      faithfulness metric, which the judge does not use). It also carries pypdf's eleven,
       above, and Pillow's 24 are gone with its bump.
   - **The ruleset recipe,** for the maintainer to run: a `gh api` call that requires
     `check`, `eval-retrieval`, `deploy-config` and `container` on `main`. The repository is
@@ -202,7 +216,7 @@ HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q
 uv run ruff check && uv run ruff format --check && uv run mypy
 
 # the bumps: exactly six packages' version lines move (langchain's five and Pillow), then
-# the eval extra's audit as CI runs it, with pypdf's eight ignores until S3-11b (caveat 37)
+# the eval extra's audit as CI runs it, with pypdf's eleven ignores until S3-11b (caveat 37)
 git diff main -- uv.lock | grep -E '^[-+]version = '
 uv export --no-dev --extra eval --no-emit-project --no-hashes | grep -v "sys_platform == 'darwin'" \
   | sed 's/^\(torch==[^ ;]*\)+cpu/\1/' > /tmp/s3-9-eval.txt
@@ -211,7 +225,9 @@ uv run --no-sync pip-audit --no-deps --disable-pip -r /tmp/s3-9-eval.txt \
   --ignore-vuln GHSA-5hx5-vpf9-5wcv --ignore-vuln GHSA-9mx8-4j7g-633p \
   --ignore-vuln GHSA-qfv9-64jg-mh7p --ignore-vuln GHSA-6vvc-x485-93v7 \
   --ignore-vuln GHSA-39mj-jf6j-2qj3 --ignore-vuln GHSA-7mh2-4gg2-979f \
-  --ignore-vuln GHSA-cgf9-327m-v77c --ignore-vuln GHSA-f54x-cmq8-qg57   # no known vulnerabilities
+  --ignore-vuln GHSA-cgf9-327m-v77c --ignore-vuln GHSA-f54x-cmq8-qg57 \
+  --ignore-vuln GHSA-gmh7-3g9r-mjh5 --ignore-vuln GHSA-jr96-gvgh-j3r4 \
+  --ignore-vuln GHSA-6c7f-9265-g8fw   # no known vulnerabilities
 
 docker build -t rag-qa:s3-9 .                              # fails if torch is not +cpu
 docker run --rm --entrypoint python rag-qa:s3-9 -c "import torch; print(torch.__version__)"   # +cpu

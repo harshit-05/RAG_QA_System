@@ -51,6 +51,12 @@ on the same host does not (STATUS.md caveat 36).
 
 Failures and log lines carry no absolute path: S2-7 returns both over HTTP (DEC-18).
 
+**What a run says** (NFR-3, NFR-10, S3-7). The progress is the log, on stderr, through
+:func:`rag_qa.observability.logs.configure_logging`: in a terminal the same lines as before,
+and JSON lines when read by a machine. The summary and the outcome are printed on stdout. A
+run times its phases, and the summary reports its throughput: pages loaded, chunks embedded
+and points written per second; the "Published …" line carries the same as fields.
+
 ``rag-ingest`` exit codes: **0** the index matches the corpus; **1** the run completed but
 a document or folder could not be read, or there was nothing to index — and also an
 unexpected error, which exits 1 with a traceback (Python's own status for an unhandled
@@ -66,6 +72,7 @@ import logging
 import os
 import re
 import sys
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -102,6 +109,7 @@ from rag_qa.manifest import (
     same_sparse,
     spec_identity,
 )
+from rag_qa.observability import logs
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_CONFIG
 from rag_qa.vectorstore import (
@@ -124,8 +132,8 @@ EXIT_OK = 0
 EXIT_RUN_FAILED = 1
 EXIT_CANNOT_START = 2
 
-#: Progress and document failures. ``rag-ingest`` prints it plainly to stdout; the API job
-#: (S2-7) and Phase 3's structlog consume the same records.
+#: Progress and document failures. ``rag-ingest`` writes it to stderr, through structlog
+#: (S3-7); the API's job (S2-7) keeps the same records' messages in its log.
 logger = logging.getLogger(__name__)
 
 #: The text an update embeds first, to check the embedder still makes vectors of the size
@@ -156,6 +164,11 @@ class IngestReport:
     applied (``None``: no limit). ``ignored`` counts hidden and lock files, and hidden
     folders once each: the walk never enters them, and a ``.git`` folder alone can hold
     thousands of files.
+
+    The seconds are this run's phases (NFR-3, S3-7): ``load_s`` loading and splitting the
+    documents, ``embed_s`` making their vectors, dense and sparse, and ``write_s`` writing
+    the new generation and switching to it; ``points`` counts the points it holds, copied
+    and new.
     """
 
     documents: int = 0
@@ -174,6 +187,23 @@ class IngestReport:
     symlinks: list[str] = field(default_factory=list)
     ignored: int = 0
     failed: list[tuple[str, str]] = field(default_factory=list)
+    load_s: float = 0.0
+    embed_s: float = 0.0
+    write_s: float = 0.0
+    points: int = 0
+
+    def rates(self) -> dict[str, float]:
+        """NFR-3's throughput, per second, for each phase that ran: pages loaded, chunks
+        embedded, points written."""
+        rates = {}
+        for name, count, seconds in (
+            ("pages_per_s", self.documents, self.load_s),
+            ("chunks_per_s", self.chunks, self.embed_s),
+            ("points_per_s", self.points, self.write_s),
+        ):
+            if count and seconds > 0:
+                rates[name] = count / seconds
+        return rates
 
     def summary(self) -> str:
         """The run in a few lines. A line, or a part of one, whose count is zero is left
@@ -201,6 +231,18 @@ class IngestReport:
         )
         if documents:
             lines.append(f"Documents: {documents}.")
+        rates = self.rates()
+        if rates:
+            parts = [
+                f"{_shown_rate(rates[name])} {what}"
+                for name, what in (
+                    ("pages_per_s", "pages/s loaded"),
+                    ("chunks_per_s", "chunks/s embedded"),
+                    ("points_per_s", "points/s written"),
+                )
+                if name in rates
+            ]
+            lines.append(f"Throughput: {', '.join(parts)}.")
         if self.skipped:
             lines.append(f"Skipped {len(self.skipped)} file(s) with no configured loader.")
         if self.too_large:
@@ -219,6 +261,14 @@ class IngestReport:
 def _counted(count: int, one: str, many: str) -> str:
     """``count`` and the noun that agrees with it: "1 chunk", "0 chunks", "7 chunks"."""
     return f"{count} {one if count == 1 else many}"
+
+
+def _shown_rate(rate: float) -> str:
+    """A rate to three significant figures, never as an exponent: ``0.523``, ``9.84``,
+    ``57.2``, ``1,438``."""
+    if rate >= 100:
+        return f"{rate:,.0f}"
+    return f"{rate:.{2 if rate < 10 else 1}f}" if rate >= 1 else f"{rate:.3f}"
 
 
 def _nonzero(*counts: tuple[int, str]) -> str:
@@ -697,7 +747,8 @@ def _embed_with_progress(embeddings: Embeddings, texts: list[str]) -> list[list[
     # builds a separate instance, so rag-query stays quiet, and the config itself
     # is never modified. Embedders without the switch simply run without a bar.
     # Here rather than at build time, so the one-text dimension probe draws none.
-    if hasattr(embeddings, "show_progress"):
+    # Not between JSON log lines (S3-7): a bar there is noise a log reader cannot parse.
+    if hasattr(embeddings, "show_progress") and logs.current_format() != logs.JSON:
         embeddings.show_progress = True
     return embeddings.embed_documents(texts)
 
@@ -795,7 +846,9 @@ def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestRe
     wanted = _Identities.of(config)
     encoder = build_sparse_encoder(config)  # before any work: a bad spec stops the run here
     live = plan.live
+    started = time.perf_counter()
     prepared = _prepare(config, plan, report)
+    report.load_s = time.perf_counter() - started
     report.chunks = len(prepared.texts)
     if live is None:  # a full rebuild
         if not prepared.texts:
@@ -825,15 +878,20 @@ def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestRe
         delete = [cid for name in (*plan.remove, *replaced) for cid in live.chunk_ids_of(name)]
 
     vectors: list[list[float]] = []
+    embed_s = 0.0
     if prepared.texts:  # a run that only deletes never loads the embedding model
-        logger.info("Embedding %d chunks...", len(prepared.texts))
+        logger.info("Embedding %s...", _counted(len(prepared.texts), "chunk", "chunks"))
         embeddings = plan.embeddings if plan.embeddings is not None else build_embedder(config)
+        started = time.perf_counter()  # the embedding alone: the model's load is not NFR-3's
         # One call over every chunk, in walk order: sentence-transformers sorts a call's
         # texts by length before batching, so these are the batches v0.2 embedded, and a
         # full rebuild reproduces its vectors exactly.
         vectors = _embed_with_progress(embeddings, prepared.texts)
+        embed_s = time.perf_counter() - started
     # The BM25 vectors beside them (DEC-20, S3-5): arithmetic on the texts, no model.
+    started = time.perf_counter()
     sparse = None if encoder is None else encoder.encode_documents(prepared.texts)
+    report.embed_s = embed_s + (time.perf_counter() - started)
     dimension = len(vectors[0]) if live is None else live.embedder.dimension
     manifest = Manifest(
         generation="",  # write_generation names it after the collection it creates
@@ -846,6 +904,7 @@ def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestRe
         store=STORE,
         documents=dict(sorted(documents.items())),
     )
+    started = time.perf_counter()
     published = write_generation(
         store,
         manifest,
@@ -859,12 +918,25 @@ def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestRe
             sparse=sparse,
         ),
     )
+    report.write_s = time.perf_counter() - started
     report.published = published.generation
+    report.points = sum(record.chunks for record in manifest.documents.values())
     logger.info(
-        "Published %s: %d documents, %d chunks.",
+        "Published %s: %s, %s.",
         published.generation,
-        len(manifest.documents),
-        sum(record.chunks for record in manifest.documents.values()),
+        _counted(len(manifest.documents), "document", "documents"),
+        _counted(report.points, "chunk", "chunks"),
+        extra={
+            "generation": published.generation,
+            "documents": len(manifest.documents),
+            "points": report.points,
+            "pages_loaded": report.documents,
+            "chunks_embedded": report.chunks,
+            "load_s": round(report.load_s, 3),
+            "embed_s": round(report.embed_s, 3),
+            "write_s": round(report.write_s, 3),
+            **{name: round(rate, 2) for name, rate in report.rates().items()},
+        },
     )
     try:
         recover(store)  # prune: the previous generation stays, older ones go
@@ -985,27 +1057,16 @@ def outcome(report: IngestReport) -> tuple[int, str | None]:
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point (``rag-ingest``). Returns the exit status; see the module docstring."""
     args = build_parser().parse_args(argv)  # --help and usage errors exit here, before any work
-
-    print("--- Starting Document Ingestion Engine ---")
-    # The progress log, printed plainly so the output reads as it always did. Attached for
-    # this run only, so repeated calls (the tests) never print a line twice.
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    level = logger.level
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-    # A corrupt PDF makes pypdf log its own warnings ("invalid pdf header", "EOF marker
-    # not found") through logging's last-resort handler, ahead of the clean error this run
-    # reports for that file (S2-8). Its errors still show.
-    pypdf = logging.getLogger("pypdf")
-    pypdf_level = pypdf.level
-    pypdf.setLevel(logging.ERROR)
+    # The progress is the log, on stderr: the message alone in a terminal, as it always
+    # read, JSON lines otherwise (S3-7). pypdf's own warnings stay quiet, for the process.
     try:
-        return _run(args)
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(level)
-        pypdf.setLevel(pypdf_level)
+        logs.configure_logging()
+    except logs.LogSettingsError as e:
+        print(f"Error: invalid log settings: {e}", file=sys.stderr)
+        return EXIT_CANNOT_START
+    # Flushed, so a run piped into tee keeps these lines in order with the log's.
+    print("--- Starting Document Ingestion Engine ---", flush=True)
+    return _run(args)
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -1015,7 +1076,7 @@ def _run(args: argparse.Namespace) -> int:
         store.check()  # Qdrant first: before the corpus is read or a model loads (DEC-19)
         # The CLI's own line, not the log: it names the configured folder in full, which
         # the log and the report (both returned over HTTP in S2-7) never do.
-        print(f"Loading documents from '{config.paths.data}'...")
+        print(f"Loading documents from '{config.paths.data}'...", flush=True)
         report = ingest(config, rebuild=args.rebuild, store=store)
     except (
         ConfigError,

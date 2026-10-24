@@ -111,6 +111,17 @@ def test_the_contexts_are_the_chunks_the_prompt_got(evals: Path) -> None:
         assert f"[{n}] (" in prompt and context in prompt
 
 
+def test_an_answer_records_its_providers_token_counts(evals: Path) -> None:
+    # S3-7: from Done, so tier 2's answers file has them for every run from now on.
+    llm = StreamingFakeChatModel(
+        usage={"input_tokens": 700, "output_tokens": 42, "total_tokens": 742}
+    )
+    pipeline = dataclasses.replace(build_query_pipeline(load_config(evals)), llm=llm)
+    item = load_golden(evals.parent / "eval" / "eval_dataset.jsonl")[0]
+    answered = asyncio.run(answer(pipeline, item))
+    assert (answered.input_tokens, answered.output_tokens) == (700, 42)
+
+
 def test_limit_needs_out(evals: Path, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc:
         generate(evals, "--limit", "1")

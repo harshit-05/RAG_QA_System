@@ -30,11 +30,20 @@ disconnect (uvicorn reports ASGI spec 2.3), and the request's teardown cancels F
 own producer task, whose cancel lands in the model's read and closes the stream to
 Ollama. The slot's teardown closes the stream as well, in case the cancel landed between
 events instead (:meth:`rag_qa.api.state.Slot.aclose`).
+
+**Logs and metrics** (NFR-10, DEC-22, S3-7). Every request's log lines carry its
+``request_id`` (:func:`bind_request`). The refusals count in ``rag_refusals_total``; an answer
+times its ``sources`` event, its first token and its end, counts its tokens, and logs one line
+when complete; how it ended counts in ``rag_answers_total``. The times run from the request's
+first dependency, not from the route's body, which FastAPI starts only once every dependency
+has resolved: the alias read before each answer counts, and Qdrant's retries of it (S3-7's
+second review). All of it synchronous: the cancel paths await nothing new.
 """
 
 import asyncio
 import logging
 import secrets
+import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import asdict
 from typing import Annotated, cast
@@ -45,7 +54,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from rag_qa import resilience
-from rag_qa.answering import AnswerEvent, Done, Sources, Token, stream_answer
+from rag_qa.answering import AnswerEvent, Done, Sources, Token, answered_line, stream_answer
 from rag_qa.api.jobs import IngestJob, JobRunningError
 from rag_qa.api.models import (
     BreakerHealth,
@@ -60,9 +69,19 @@ from rag_qa.api.models import (
     LlmHealth,
     QueryRequest,
 )
-from rag_qa.api.state import NO_INDEX_YET, REINGEST, STORE_DOWN, Serving, Slot, wait_s
+from rag_qa.api.state import (
+    NO_INDEX_YET,
+    REINGEST,
+    STORE_DOWN,
+    Serving,
+    Slot,
+    breaker_refusal,
+    wait_s,
+)
 from rag_qa.chain import IncompatibleIndexError, NoIndexError, QueryPipeline
 from rag_qa.components import FALLBACK_SERVICE, llm_reachable, raised_by_fallback
+from rag_qa.observability import logs, metrics
+from rag_qa.observability.genai import model_identity
 from rag_qa.resilience import OPEN, BreakerOpenError, CircuitBreaker
 from rag_qa.settings import ServerSettings, is_loopback
 from rag_qa.vectorstore import StoreError
@@ -86,6 +105,16 @@ def get_serving(request: Request) -> Serving:
 
 def get_settings(request: Request) -> ServerSettings:
     return cast(ServerSettings, request.app.state.settings)
+
+
+async def bind_request(request: Request) -> None:
+    """Give the request's log lines a ``request_id`` of their own (S3-7), and note when it
+    arrived, which an answer's times start from (``request.state.received_at``). The first of
+    the app's dependencies, and ``async``: FastAPI runs a plain function in a worker thread,
+    whose context the request never sees, while this runs in the request's own task, which the
+    SSE producer task copies."""
+    request.state.received_at = time.perf_counter()
+    logs.bind_request()
 
 
 def log_spec_version(request: Request) -> None:
@@ -180,6 +209,7 @@ def refuse_while_down(serving: Annotated[Serving, Depends(get_serving)]) -> None
     down = serving.unavailable()
     if down is not None:
         detail, retry_after = down
+        metrics.REFUSALS.labels(code="503", reason=metrics.DEPENDENCY_DOWN).inc()
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             detail,
@@ -196,6 +226,7 @@ async def take_slot(serving: Annotated[Serving, Depends(get_serving)]) -> AsyncI
     """
     slot = serving.slots.take()
     if slot is None:
+        metrics.REFUSALS.labels(code="503", reason=metrics.BUSY).inc()
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "busy: the server is answering as many questions as it can; ask again later",
@@ -212,6 +243,7 @@ async def served_pipeline(serving: Annotated[Serving, Depends(get_serving)]) -> 
     there is no index the config can use."""
     await serving.refresh()
     if serving.served.problem is not None:
+        metrics.REFUSALS.labels(code="503", reason=metrics.NO_INDEX).inc()
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, serving.served.problem)
     return serving.pipeline
 
@@ -282,7 +314,8 @@ def error_message(error: Exception) -> str:
 def answer_event(event: AnswerEvent) -> ServerSentEvent:
     """One answer event as SSE. The data is a plain dict: FastAPI writes it as JSON with
     every non-ASCII character escaped, so no character inside it can split a line. ``done``
-    names the model that answered (S3-6): its config reference."""
+    names the model that answered (S3-6): its config reference; and its token counts,
+    ``null`` when the provider reported none (S3-7)."""
     if isinstance(event, Sources):
         return ServerSentEvent(
             event="sources", data={"sources": [asdict(ref) for ref in event.sources]}
@@ -291,8 +324,32 @@ def answer_event(event: AnswerEvent) -> ServerSentEvent:
         return ServerSentEvent(event="token", data={"text": event.text})
     return ServerSentEvent(
         event="done",
-        data={"ttft_ms": event.ttft_ms, "total_ms": event.total_ms, "model": event.model},
+        data={
+            "ttft_ms": event.ttft_ms,
+            "total_ms": event.total_ms,
+            "model": event.model,
+            "input_tokens": event.input_tokens,
+            "output_tokens": event.output_tokens,
+        },
     )
+
+
+def answered(event: Done, pipeline: QueryPipeline, seconds: float) -> None:
+    """Record a complete answer: its time, its tokens under the model that gave them, and
+    one log line; and say so when the hosted fallback gave it, since then the question and
+    its chunks left this host (DEC-21)."""
+    metrics.ANSWER_SECONDS.observe(seconds)
+    fallback = event.model != pipeline.llm_ref and pipeline.fallback_llm is not None
+    model = pipeline.fallback_llm if fallback else pipeline.llm
+    metrics.observe_tokens(model_identity(model), event.input_tokens, event.output_tokens)
+    if fallback:
+        metrics.FALLBACK_ANSWERS.inc()
+        logger.warning(
+            "Answered by the hosted fallback %s: the question and its retrieved chunks left "
+            "this host",
+            event.model,
+        )
+    logger.info(answered_line(event), extra=asdict(event))
 
 
 @v1.post(
@@ -308,6 +365,7 @@ def answer_event(event: AnswerEvent) -> ServerSentEvent:
     },
 )
 async def query(
+    request: Request,
     _: Annotated[None, Depends(refuse_while_down)],
     slot: Annotated[Slot, Depends(take_slot, scope="request")],
     pipeline: Annotated[QueryPipeline, Depends(served_pipeline)],
@@ -315,20 +373,31 @@ async def query(
 ) -> AsyncIterator[ServerSentEvent]:
     """Answer a question as a stream: ``sources``, ``token``…, then ``done`` or ``error``.
     With ``sources``, only those corpus documents are searched. ``done`` names the model
-    that answered, which is the hosted fallback's when the language model could not."""
+    that answered, which is the hosted fallback's when the language model could not, and its
+    token counts."""
     answer = cast(
         AsyncGenerator[AnswerEvent, None],
         stream_answer(pipeline, body.question, sources=tuple(dict.fromkeys(body.sources))),
     )
     slot.hold(answer)
+    # From the request's arrival: this body starts only after the dependencies, the alias read
+    # in served_pipeline among them, and the client waited for those too.
+    received: float = request.state.received_at
+    first_token = True
+    # Cancelled unless it ends otherwise; the slot counts it at its one release, which every
+    # ending reaches, a drop between events included (Slot's docstring).
+    slot.outcome = metrics.CANCELLED
     try:
         async for event in answer:
-            if isinstance(event, Done) and event.model != pipeline.llm_ref:
-                logger.warning(
-                    "Answered by the hosted fallback %s: the question and its retrieved "
-                    "chunks left this host",
-                    event.model,
-                )
+            if isinstance(event, Sources):
+                metrics.SOURCES_SECONDS.observe(time.perf_counter() - received)
+            elif isinstance(event, Token):
+                if first_token:
+                    first_token = False
+                    metrics.TTFT_SECONDS.observe(time.perf_counter() - received)
+            else:
+                slot.outcome = metrics.ANSWERED
+                answered(event, pipeline, time.perf_counter() - received)
             yield answer_event(event)
     except asyncio.CancelledError:
         logger.info("Answer cancelled: its client disconnected")
@@ -336,7 +405,20 @@ async def query(
     # Deliberately broad: after the 200, an error event is the only way left to say the
     # answer failed. A stream that ends with neither done nor error was cut off.
     except Exception as e:
-        logger.exception("An answer failed after its stream began")
+        slot.outcome = metrics.FAILED
+        refusal = breaker_refusal(e)
+        if refusal is not None:
+            # An expected refusal, not a fault: one line, no traceback (S3-6's backlog line).
+            wait = wait_s(refusal.retry_after_s)
+            logger.warning(
+                "An answer was refused after its stream began: %s is not answering, and is "
+                "asked again in %d s",
+                refusal.service,
+                wait,
+                extra={"service": refusal.service, "retry_after_s": wait},
+            )
+        else:
+            logger.exception("An answer failed after its stream began")
         yield ServerSentEvent(
             event="error", data={"type": type(e).__name__, "message": error_message(e)}
         )

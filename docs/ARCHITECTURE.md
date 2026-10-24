@@ -2059,12 +2059,12 @@ NFR-4 and the whole of §2.4.
 | §11 repository hygiene | none (ISS-09: S0-1; history not rewritten, ADR-002) | Phase 0 | `tests/test_repo_hygiene.py` |
 | FR-3, hybrid retrieval and filters | dense only | S3-5: BM25 sparse vectors fused by RRF, and a `sources` filter, both measured by tier 1; S3-11b switches hybrid on if tier 1 earns it | S3-5's tier-1 table; a filtered query that cites one file, and a 422 for an unknown one |
 | NFR-1, retrieval under 300 ms at p95 | never measured | S3-7: `scripts/bench_retrieval.py` on 100k synthetic chunks, at k=20 | the p95, dense and hybrid, in README's "Capacity planning" |
-| NFR-2, time to first token | 2 s is out of reach on CPU (ADR-016) | revised by DEC-27; S3-7 measures (a), S3-11 and S3-11b report (b) | (a) the `sources` p95 over the golden questions, model idle; (b) the TTFT p95 here and on a T4 |
+| NFR-2, time to first token | 2 s is out of reach on CPU (ADR-016) | revised by DEC-27; S3-7 measures (a), and missed it; S3-11's stage 2 takes its levers; S3-11 and S3-11b report (b) | (a) the `sources` p95 over the golden questions, model idle; (b) the TTFT p95 here and on a T4 |
 | NFR-3, ingestion throughput | undocumented | S3-7: `rag-ingest` reports it | a `--rebuild` into a scratch collection; README's table |
 | NFR-4, incremental upsert | embedding is incremental (S2-6), but FAISS rewrites the index whole | S3-2: unchanged points copied, the changed documents' chunks upserted | a second `rag-ingest` embeds nothing; a one-file change embeds that file only |
 | NFR-5, a stateless query tier | jobs in memory, the index in process | S3-8: job records in SQLite, the alias resolved per request; S3-9: two replicas behind Caddy | S3-8's two-instance test; `--scale app=2` |
 | NFR-6, timeouts, retries, breakers | none | S3-6 | Ollama stopped: exit 2 within seconds, or a 503 with `Retry-After` before the first byte; the fallback answering when one is configured |
-| NFR-10, logs and GenAI spans | log lines and `ttft_ms` only | S3-7 | an answer's and an ingest's traces in Jaeger; JSON log lines |
+| NFR-10, logs and GenAI spans | log lines and `ttft_ms` only | S3-7 (logs, metrics), S3-7b (traces, alerts) | JSON log lines and the scrape (S3-7); an answer's and an ingest's traces in Jaeger, and `promtool test rules` (S3-7b) |
 | §7.1, a declared maximum file size | none | S3-4: `max_file_mb: 50` in `config.yaml` | a scratch file over the limit skipped and reported |
 | §7.2, chunking per document type | one splitter for every type | S3-4: per-extension splitters | a scratch `.md` file chunked by the markdown splitter, and re-embedded alone when that splitter changes |
 | §8.3, environment overlays | none | S3-9: `RAG_CONFIG_OVERLAY` | the overlay tests; the stack on `config.docker.yaml` |
@@ -2572,6 +2572,80 @@ ourselves, Prometheus metrics, and burn-rate alerts** (NFR-10).
 - **NFR-3.** `rag-ingest` reports pages per second, chunks embedded per second and points
   written per second, and the README keeps a table.
 
+_As built in S3-7 (2026-10-23), from its approved plan (the story's "Plan", D1–D12):_
+
+- **Split in two** (the maintainer's approval of the plan). S3-7 built the logs, the metrics,
+  the token counts, the benchmark and NFR-3's report. The traces, the FastAPI
+  instrumentation, the alert rules, Jaeger and the `deploy-config` job are S3-7b's, on the
+  design above. Only the spans touch DEC-14's cancel guarantee; this half adds no `await` to
+  the answer path.
+- **Logs** (`observability/logs.py`):
+  - **One root handler, on stderr,** looked up at each record. `RAG_LOG_FORMAT` is `json` or
+    `console`, and another value exits 2. Every log line goes to stderr: `rag-ingest`'s
+    progress moved there from stdout, a contract change. Results stay on stdout.
+  - **A traceback is plain text in every format** (`format_exc_info`, and `plain_traceback`
+    for the console). structlog's dictionary form and its console renderer, which uses rich
+    when it is installed, record each frame's local variables by default, which could log a
+    question or a key. The console path did, until S3-7's first review.
+  - **Levels:** the root at WARNING, `rag_qa` at INFO, and pypdf at ERROR; `rag-eval` logs
+    warnings only, which keeps the corpus scan's lines out of its tables. `rag-serve` gives
+    uvicorn `log_config=None, log_level="info"`.
+  - **Bound fields:** `request_id`, from an `async` first dependency (FastAPI runs a sync one
+    in a thread, whose context is lost), and `job_id`, in the ingest job's thread. The trace
+    ID comes in S3-7b, the key's name in S3-8.
+  - **One INFO line per complete answer,** from the route and from `rag-query`: the model,
+    the times and the token counts as fields, never a question's or an answer's text.
+- **Metrics** (`observability/metrics.py`), on a registry of their own with the `_created`
+  series off, and every label set started at 0:
+  - **the names in the list above,** plus `rag_answers_total{outcome}`,
+    `rag_fallback_answers_total`, `rag_refusals_total{code, reason}`,
+    `rag_ingest_runs_total{status}`, `rag_ingest_chunks_total`,
+    `rag_breaker_state{breaker, state}` and `rag_index_documents`; the last two are read at
+    scrape time;
+  - **the listener** is on the API's own host. The API's port, or one in use, exits 2;
+  - **an answer's outcome is counted once, when its slot is released.** A client dropped
+    between two events leaves the route's generator paused, and only the garbage collector
+    closes it, so a count in its `finally` was missed (the forced-window test);
+  - **an answer's times run from its first dependency,** `bind_request`, which notes when the
+    request arrived. FastAPI starts the route's body only once every dependency has resolved,
+    so timed from there, the alias read before each answer and Qdrant's retries of it went
+    unseen (second review: 1.5 s waited, 0.006 s recorded);
+  - **the token histogram** takes its name and labels from
+    opentelemetry-semantic-conventions 0.66b1, and its buckets from the convention's text
+    (semantic conventions 1.37.0), which the package does not carry. Its GenAI constants are
+    marked deprecated, moved to the GenAI conventions' own repository, which has no Python
+    package yet. Reading a member raises no warning; calling an enum does, so the code reads
+    members only.
+    `ollama` is a custom provider value, which the convention allows. `model_identity` lives
+    in `observability/genai.py` and maps a model by its class's package, so the package
+    still loads no model stack.
+- **Token counts.**
+  - **Read from the last chunk carrying `usage_metadata`.** ChatOllama puts it on its final,
+    empty chunk, which `stream_answer` used to skip.
+  - **langchain-openai 1.6.2 turns `stream_usage` off for a custom `base_url`,** so
+    `groq_fallback` sets `stream_usage: true`; one real call to Groq returned the counts.
+    The fallback's spec is not hashed.
+  - **Tier 2's `AnswerItem` gains both fields, left out of the dump while unset**
+    (`exclude_if`). So the committed answers keep their identity, and `rag-eval check` its
+    exit 0, with no re-run. A plain `None` default would have changed it, so a test pins the
+    committed file's identity to the committed scores.
+- **Ingest.** `IngestReport` gains `load_s`, `embed_s`, `write_s` and `points`. The summary
+  ends with the rates, and the "Published" line carries them as fields. The API's job report
+  carries them too, as its mirror test requires. In JSON mode the embedder shows no progress
+  bar; the model loader's own `Loading weights` bar still prints between JSON lines unless
+  `HF_HUB_DISABLE_PROGRESS_BARS=1` (first review).
+- **Measured** (README, "Capacity planning"; this laptop, 2026-10-23):
+  - **NFR-1 held:** at 100k points and k=20, a p95 of 29.7 ms dense and 38.0 ms hybrid.
+  - **NFR-2a missed, narrowly:** a p95 of 2.09 s, then 2.02 s on a second run. The rerank is
+    nearly all of it, and its levers (fewer candidates, a smaller cross-encoder) move hashed
+    inputs. The maintainer gave them to S3-11's stage 2 at S3-7's close-out (2026-10-25),
+    measured by tier 1 and this benchmark; S3-11b times what ships; and the amend session
+    (S3-12) sets DEC-27 (a) from that number only if it still misses.
+  - **NFR-3:** 16.2 pages/s loaded, 24.2 chunks/s embedded, 2,695 points/s written.
+- **The benchmark deletes only a collection it created** (found in its own run). Two runs
+  started seconds apart both passed the check for an existing collection. The second's
+  create then failed with a 409, and its cleanup deleted the first's collection mid-timing.
+
 **DEC-23 — The API beyond localhost: named, scoped keys, rate limits, a body-size limit,
 durable job records and a stateless query tier** (NFR-5; DEC-18's Phase 3 half).
 
@@ -3002,7 +3076,9 @@ hashed input, and S3-11b commits them.**
   server idle. It was about 0.8 s in S2-9. `rag_sources_seconds` watches it.
   - **Measured as a p95** (design review 1): one sample is not one, and the rerank alone
     takes a median of 1.4 s, up to 2 s (§2.1). S3-7 times the 25 golden questions with the
-    model idle, and S3-11b times them again if hybrid retrieval is switched on.
+    model idle, and S3-11b times them again on what ships. _As measured in S3-7:_ a p95 of
+    2.09 s, then 2.02 s, a miss. S3-11's stage 2 owns the rerank's levers (DEC-22's as-built
+    note).
 - **(b)** The time to first token is measured on every answer and reported per class of
   hardware: on this CPU, the p95 from the committed tier-2 run (S3-11b; about 155–170 s
   today); on a T4, the p95 measured in S3-11.
@@ -3041,8 +3117,8 @@ src/rag_qa/
 │                               that imports qdrant_client.
 ├── sparse.py        NEW  Bm25Encoder, SPARSE_VERSION; the standard library only (S3-5)
 ├── resilience.py    NEW  CircuitBreaker, retry policies (S3-6)
-├── observability/   NEW  logs.py (structlog), tracing.py (OpenTelemetry), metrics.py
-│                         (Prometheus) (S3-7)
+├── observability/   NEW  logs.py (structlog), metrics.py (Prometheus), genai.py (S3-7);
+│                         tracing.py (OpenTelemetry) (S3-7b)
 ├── backup.py        NEW  rag-backup (S3-10)
 ├── manifest.py      + version 2: chunk counts, the per-document splitter, the sparse record
 ├── chain.py         + check_index and open_retrieval over the store, the fallback llm, filters
@@ -3157,7 +3233,9 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
   retrieval half is `Runnable[RetrievalQuery, list[Document]]`, with no `str` form; tier 1
   passes `RetrievalQuery(item.question)`.
 - `Done(ttft_ms, total_ms, model, input_tokens, output_tokens)`. _As built in S3-6:_ `model`
-  is the config reference of the model that answered; S3-7 adds the token counts.
+  is the config reference of the model that answered; S3-7 adds the token counts. _As built
+  in S3-7:_ both default to `None`, which a provider reporting no usage leaves them; the
+  `done` event and tier 2's answers file carry them.
 
 **HTTP changes** (to §2.4's table):
 
@@ -3188,8 +3266,8 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
 | `RAG_QDRANT_URL`, `RAG_QDRANT_COLLECTION`, `RAG_QDRANT_API_KEY` | S3-2 | the store's address, the alias (a scratch index is another name), its key |
 | `RAG_FALLBACK_API_KEY` | S3-6 | the hosted fallback's key, whatever its provider (DEC-21's as-built note) |
 | `RAG_STATE_PATH` | S3-2 | replaces `RAG_VECTOR_STORE_PATH`, which is refused while set |
-| `RAG_LOG_FORMAT`; `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | S3-7 | logs; traces (the standard variables) |
-| `RAG_API_METRICS_PORT` | S3-7 | the metrics listener, off unless set |
+| `RAG_LOG_FORMAT`; `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME` | S3-7; S3-7b | logs, `json` or `console`, unset following whether stderr is a terminal; traces (the standard variables) |
+| `RAG_API_METRICS_PORT` | S3-7 | the metrics listener, off unless set, on the API's own host; the API's port, or one in use, exits 2 |
 | `RAG_API_KEYS_FILE`, `RAG_API_RATE_LIMIT`, `RAG_API_TRUSTED_PROXIES` | S3-8 | keys (in `var/`), limits, the proxy's own address, never a range (design review 2) |
 | `RAG_CONFIG_OVERLAY` | S3-9 | the overlay file |
 | `RAG_BACKUP_PATH` | S3-10 | overrides `paths.backups` |
@@ -3223,7 +3301,7 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
     parts unchanged.
 - **Cancellation, proven again at each new layer:**
   - with tracing on: the forced-cancel tests and the real-uvicorn drop, with an in-memory
-    span exporter showing every span ended and no context-detach error (S3-7);
+    span exporter showing every span ended and no context-detach error (S3-7b);
   - through the fallback's stream (S3-6);
   - with the body-limit middleware on (S3-8), since it wraps `receive` too (design review 2);
   - through the proxy, against real Ollama, by hand (S3-9).
@@ -3231,6 +3309,8 @@ class Embedded:  # as in Phase 2, plus the sparse vectors
   - only `vectorstore` imports `qdrant_client`;
   - no `langchain_community`, `faiss` or `langchain_classic` anywhere in `src` (S3-3);
   - `sparse` and `resilience` load no LangChain;
+  - `observability` loads no model stack: no LangChain, torch, sentence-transformers,
+    transformers or qdrant_client (S3-7);
   - `stream_answer` passes the model no callbacks and no config (a spy model).
 - **CI at the exit:** `check` (with the format gate), `eval-retrieval` (with the Qdrant
   service and the server tests), `deploy-config`, `container`, and the weekly schedule,

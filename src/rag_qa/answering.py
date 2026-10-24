@@ -46,6 +46,11 @@ as the first one's, in this same task, behind the same ``finally``: never throug
 ``.with_fallbacks()``, whose wrapper would put back the Runnable machinery this module
 avoids. :class:`Done` names the model that answered.
 
+**Token counts** (NFR-10, S3-7). :class:`Done` carries the provider's counts, from the last
+chunk that reports ``usage_metadata``. Ollama reports them on its final chunk, which has no
+text, so they are read before the empty-text skip. Reading a chunk awaits nothing, so the
+cancel path is unchanged.
+
 Dependency direction: ``answering → {chain, resilience}``. Imports no front end.
 """
 
@@ -60,6 +65,7 @@ from typing import cast
 from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessageChunk
+from langchain_core.messages.ai import UsageMetadata
 
 from rag_qa import resilience
 from rag_qa.chain import (
@@ -103,14 +109,32 @@ class Done:
     """The answer is complete. Times are from the question to the first token
     (``None`` when no token came) and to the end, in milliseconds. ``model`` is the config
     reference of the model that answered: ``pipeline.query.llm``'s, or the hosted
-    fallback's (S3-6)."""
+    fallback's (S3-6). The token counts are the provider's own (S3-7), ``None`` when it
+    reported none: the hosted fallback reports them only with ``stream_usage`` set."""
 
     ttft_ms: float | None
     total_ms: float
     model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 AnswerEvent = Sources | Token | Done
+
+
+def answered_line(done: Done) -> str:
+    """One line on a complete answer, for the logs (NFR-10, S3-7): the model that answered,
+    the times and the token counts. Never the question's text, nor the answer's."""
+    first = "no text" if done.ttft_ms is None else f"first token at {done.ttft_ms / 1000:.1f} s"
+    if done.input_tokens is None and done.output_tokens is None:
+        tokens = "no token counts reported"
+    else:
+        counts = [
+            f"{count:,} {kind}" if count is not None else f"no {kind} count"
+            for count, kind in ((done.input_tokens, "input"), (done.output_tokens, "output"))
+        ]
+        tokens = f"{counts[0]} and {counts[1]} tokens"
+    return f"Answered by {done.model} in {done.total_ms / 1000:.1f} s ({first}), {tokens}."
 
 
 def corpus_relative(source: str, corpus_root: Path) -> str:
@@ -232,8 +256,11 @@ async def stream_answer(
             # astream is an async generator; the cast exposes aclose(), which the
             # AsyncIterator annotation hides.
             stream = cast(AsyncGenerator[AIMessageChunk, None], model.llm.astream(messages))
+            usage: UsageMetadata | None = None  # this attempt's, from its provider
             try:
                 async for chunk in stream:
+                    if chunk.usage_metadata:
+                        usage = chunk.usage_metadata  # the last chunk that reports it wins
                     # What StrOutputParser yields for a chunk: its text blocks, joined.
                     # str(), because .text is a str subclass kept callable for compatibility.
                     text = str(chunk.text)
@@ -270,6 +297,12 @@ async def stream_answer(
                 with suppress(Exception):
                     await stream.aclose()
             tried.succeeded()  # an answer with no text at all; a no-op after a token
-            yield Done(ttft_ms=ttft_ms, total_ms=_ms_since(start), model=model.ref)
+            yield Done(
+                ttft_ms=ttft_ms,
+                total_ms=_ms_since(start),
+                model=model.ref,
+                input_tokens=None if usage is None else usage["input_tokens"],
+                output_tokens=None if usage is None else usage["output_tokens"],
+            )
             return
     raise failure

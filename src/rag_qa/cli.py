@@ -38,6 +38,10 @@ down at the start is a warning, not exit 2, and the fallback answers until Ollam
 "(answered by the hosted fallback, …)" follows each such answer, whose question and sources
 left this machine. Without one, a stopped Ollama stops the start, as before.
 
+**Its log (NFR-10, S3-7).** Each complete answer logs one line on stderr, after its sources:
+the model that answered, the times and the token counts, never the question or the answer
+(:func:`rag_qa.observability.logs.configure_logging`; JSON when stderr is not a terminal).
+
 ``rag-query`` exit codes: **0** the session ended normally; **2** it could not start
 (configuration problem, Qdrant unusable, no index yet, an index this config cannot use,
 the language model's server not answering, a model that would not load, Ctrl-C while
@@ -48,16 +52,26 @@ embedder (DEC-17): it says to re-run ``rag-ingest``, before loading any model.
 import argparse
 import asyncio
 import difflib
+import logging
 import readline  # noqa: F401  # for its side effect: input() gains line editing and history
 import sys
 from collections.abc import AsyncIterator, Callable, Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
 from rag_qa import resilience
-from rag_qa.answering import AnswerEvent, Done, SourceRef, Sources, Token, stream_answer
+from rag_qa.answering import (
+    AnswerEvent,
+    Done,
+    SourceRef,
+    Sources,
+    Token,
+    answered_line,
+    stream_answer,
+)
 from rag_qa.chain import (
     IncompatibleIndexError,
     NoIndexError,
@@ -68,10 +82,13 @@ from rag_qa.chain import (
 from rag_qa.components import OLLAMA_HINT, build_store, preflight, raised_by_fallback
 from rag_qa.config import ConfigError, load_config, resolve_config_path
 from rag_qa.manifest import Manifest
+from rag_qa.observability.logs import LogSettingsError, configure_logging
 from rag_qa.resilience import BreakerOpenError
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_CONFIG, ENV_FALLBACK_API_KEY
 from rag_qa.vectorstore import StoreError, StoreUnavailableError
+
+logger = logging.getLogger(__name__)
 
 GREEN, YELLOW, BLUE, RED, DIM, RESET = (
     "\033[92m",
@@ -142,7 +159,7 @@ async def render(events: AsyncIterator[AnswerEvent], *, fallback: str | None = N
     interrupted before any text arrives prints no empty header above its error. An answer
     that completes with no text at all still gets one. When the hosted fallback ``fallback``
     answered, a line under the answer says so (S3-6): its question and sources left this
-    machine.
+    machine. A complete answer then logs one line (S3-7).
     """
     sources: list[SourceRef] = []
     answering = False
@@ -162,6 +179,9 @@ async def render(events: AsyncIterator[AnswerEvent], *, fallback: str | None = N
     if fallback is not None and done is not None and done.model == fallback:
         print(f"{DIM}(answered by the hosted fallback, {fallback}){RESET}")
     print_sources(sources)
+    if done is not None:
+        sys.stdout.flush()  # the answer and its sources first, then the log's line on stderr
+        logger.info(answered_line(done), extra=asdict(done))
 
 
 def _connection_failed(error: Exception) -> bool:
@@ -449,6 +469,11 @@ def start(
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point (``rag-query``). Returns the exit status; see the module docstring."""
     args = build_parser().parse_args(argv)  # --help and usage errors exit here, before any work
+    try:
+        configure_logging()
+    except LogSettingsError as e:
+        print(f"Error: invalid log settings: {e}", file=sys.stderr)
+        return EXIT_CANNOT_START
 
     print("--- Initializing the Q&A system ---")
     try:

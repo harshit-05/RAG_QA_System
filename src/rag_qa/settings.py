@@ -4,15 +4,17 @@ The only reader of the ``RAG_*`` environment variables (ARCHITECTURE.md §1.2). 
 empty variable counts as unset, so ``RAG_DATA_PATH= rag-ingest`` means "use the config
 file's value", as it always has.
 
-Four groups: :class:`EnvSettings`, the overrides every command reads;
+Five groups: :class:`EnvSettings`, the overrides every command reads;
 :class:`StoreSettings`, the ``RAG_QDRANT_*`` ones the vector store reads (DEC-19);
-:class:`FallbackSettings`, the hosted fallback's key (DEC-21); and :class:`ServerSettings`,
-the ``RAG_API_*`` settings only ``rag-serve`` reads (DEC-18). ``config.yaml`` stays about
-the pipeline, and a secret never lives in it: a component key named like one is refused at
-load (:meth:`rag_qa.schema.Components.check_api_keys`).
+:class:`FallbackSettings`, the hosted fallback's key (DEC-21); :class:`LogSettings`, the log
+format every command reads (DEC-22); and :class:`ServerSettings`, the ``RAG_API_*`` settings
+only ``rag-serve`` reads (DEC-18). ``config.yaml`` stays about the pipeline, and a secret
+never lives in it: a component key named like one is refused at load
+(:meth:`rag_qa.schema.Components.check_api_keys`).
 """
 
 import ipaddress
+from typing import Literal
 
 from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -108,8 +110,25 @@ class FallbackSettings(BaseSettings):
     api_key: SecretStr | None = None
 
 
+#: The log format's variable (DEC-22, S3-7): ``RAG_LOG_FORMAT``.
+ENV_LOG_PREFIX = "RAG_LOG_"
+
+
+class LogSettings(BaseSettings):
+    """How every command formats its log lines (DEC-22, S3-7), from the environment only.
+
+    ``format`` is ``json`` or ``console``; unset, it is JSON when stderr is not a terminal
+    and console lines when it is (:func:`rag_qa.observability.logs.configure_logging`). Like
+    :class:`EnvSettings`, read on every use, never at import.
+    """
+
+    model_config = SettingsConfigDict(env_prefix=ENV_LOG_PREFIX, env_ignore_empty=True, frozen=True)
+
+    format: Literal["json", "console"] | None = None
+
+
 #: The prefix of the HTTP server's settings: ``RAG_API_TOKEN``, ``RAG_API_MAX_CONCURRENT``,
-#: ``RAG_API_HOST``, ``RAG_API_PORT``.
+#: ``RAG_API_HOST``, ``RAG_API_PORT``, ``RAG_API_METRICS_PORT``.
 ENV_API_PREFIX = "RAG_API_"
 
 
@@ -119,6 +138,8 @@ class ServerSettings(BaseSettings):
     ``token`` unset means no authentication, which ``rag-serve`` allows on a loopback host
     only. ``max_concurrent`` is how many answers stream at once; a CPU host generates one at
     a time. ``host`` and ``port`` are the defaults ``rag-serve --host/--port`` override.
+    ``metrics_port`` is where Prometheus scrapes the metrics, on the API's own host: a
+    listener of its own, off unless set (DEC-22, S3-7).
     """
 
     model_config = SettingsConfigDict(env_prefix=ENV_API_PREFIX, env_ignore_empty=True, frozen=True)
@@ -127,6 +148,7 @@ class ServerSettings(BaseSettings):
     max_concurrent: int = Field(default=1, ge=1)
     host: str = Field(default="127.0.0.1", min_length=1)
     port: int = Field(default=8000, ge=1, le=65535)
+    metrics_port: int | None = Field(default=None, ge=1, le=65535)
 
     @field_validator("token")
     @classmethod

@@ -53,6 +53,7 @@ from rag_qa.answering import (
     Done,
     Sources,
     Token,
+    answered_line,
     corpus_relative,
     source_refs,
     stream_answer,
@@ -137,6 +138,62 @@ def test_a_pipeline_without_an_index_raises_no_index_error() -> None:
     with pytest.raises(NoIndexError):
         asyncio.run(collect(stream_answer(pipeline, "q")))
     assert model.prompts == []
+
+
+# --- token counts (S3-7) -------------------------------------------------------------------
+
+
+def test_done_carries_the_token_counts_of_the_last_chunk_without_text() -> None:
+    # As ChatOllama reports them: on its final chunk, whose text is empty, so the empty-text
+    # skip must not drop them.
+    usage = {"input_tokens": 812, "output_tokens": 64, "total_tokens": 876}
+    model = StreamingFakeChatModel(usage=usage)
+    *_, done = asyncio.run(collect(stream_answer(fake_pipeline(model), "q")))
+    assert (done.input_tokens, done.output_tokens) == (812, 64)
+
+
+def test_without_usage_the_token_counts_are_none() -> None:
+    *_, done = asyncio.run(collect(stream_answer(fake_pipeline(StreamingFakeChatModel()), "q")))
+    assert (done.input_tokens, done.output_tokens) == (None, None)
+
+
+def test_the_counts_are_the_answering_attempts_own() -> None:
+    # A first attempt whose connection failed reported nothing; the fallback's counts are
+    # the answer's.
+    spare = StreamingFakeChatModel(
+        usage={"input_tokens": 5, "output_tokens": 7, "total_tokens": 12}
+    )
+    *_, done = asyncio.run(collect(stream_answer(two_models(Refusing(), spare), "q")))
+    assert (done.model, done.input_tokens, done.output_tokens) == (SPARE, 5, 7)
+
+
+@pytest.mark.parametrize(
+    ("done", "line"),
+    [
+        (
+            Done(
+                ttft_ms=148_300.0,
+                total_ms=159_100.0,
+                model="m",
+                input_tokens=1234,
+                output_tokens=98,
+            ),
+            "Answered by m in 159.1 s (first token at 148.3 s), 1,234 input and 98 output tokens.",
+        ),
+        (
+            Done(ttft_ms=None, total_ms=2.0, model="m"),
+            "Answered by m in 0.0 s (no text), no token counts reported.",
+        ),
+        (
+            Done(ttft_ms=1.0, total_ms=2.0, model="m", input_tokens=3),
+            "Answered by m in 0.0 s (first token at 0.0 s), 3 input and no output count tokens.",
+        ),
+    ],
+)
+def test_the_answer_line_names_the_model_the_times_and_the_counts_only(
+    done: Done, line: str
+) -> None:
+    assert answered_line(done) == line
 
 
 @pytest.mark.parametrize(

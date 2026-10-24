@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -22,29 +23,6 @@ from pydantic import ValidationError
 from rag_qa.api import server
 from rag_qa.components import OLLAMA_HINT
 from rag_qa.settings import ServerSettings, describe_settings_error, is_loopback
-
-real_configure_logging = server.configure_logging
-
-
-@pytest.fixture(autouse=True)
-def no_global_logging(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``rag-serve`` attaches a handler to the package logger for the process's life. In
-    a test session that handler would outlive the test's captured stderr."""
-    monkeypatch.setattr(server, "configure_logging", lambda: None)
-
-
-def test_logging_is_configured_once_however_often_main_runs() -> None:
-    package = logging.getLogger("rag_qa")
-    handlers, level = list(package.handlers), package.level
-    try:
-        real_configure_logging()
-        real_configure_logging()
-        added = [h for h in package.handlers if h not in handlers]
-        assert len(added) == 1
-        assert package.level == logging.INFO
-    finally:
-        package.handlers[:] = handlers
-        package.setLevel(level)
 
 
 @pytest.fixture
@@ -173,6 +151,69 @@ def test_with_ollama_up_it_runs_uvicorn_on_the_given_address(
     assert (config.host, config.port) == ("127.0.0.1", 8123)
     assert config.timeout_graceful_shutdown == server.GRACEFUL_SHUTDOWN_S
     assert fake_ollama.requests.count("/api/tags") == 2  # validate_model_on_init, then the ping
+    # uvicorn's lines go through our formatter (S3-7): no logging config of its own.
+    assert (config.log_config, config.log_level) == (None, "info")
+
+
+# --- the metrics listener (S3-7) ----------------------------------------------------------
+
+
+def test_with_a_metrics_port_the_metrics_are_served_while_uvicorn_runs_and_not_after(
+    make_config: MakeConfig, fake_ollama: FakeOllama, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    port = free_port()
+    monkeypatch.setenv("RAG_API_METRICS_PORT", str(port))
+    scraped: list[str] = []
+
+    def run(self: uvicorn.Server, sockets: Any = None) -> None:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as response:
+            scraped.append(response.read().decode())
+        self.started = True
+
+    monkeypatch.setattr(uvicorn.Server, "run", run)
+    path = ollama_config(make_config, fake_ollama.url)
+    assert server.main(["--config", str(path)]) == server.EXIT_OK
+    (body,) = scraped
+    assert "rag_answers_total" in body and "gen_ai_client_token_usage" in body
+    # Stopped with the server: nothing listens there any more.
+    with pytest.raises(ConnectionRefusedError):
+        socket.create_connection(("127.0.0.1", port), timeout=5).close()
+
+
+def test_a_metrics_port_in_use_stops_the_start(
+    capsys: pytest.CaptureFixture[str],
+    make_config: MakeConfig,
+    fake_ollama: FakeOllama,
+    monkeypatch: pytest.MonkeyPatch,
+    ran: list[uvicorn.Config],
+) -> None:
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        monkeypatch.setenv("RAG_API_METRICS_PORT", str(taken.getsockname()[1]))
+        path = ollama_config(make_config, fake_ollama.url)
+        assert server.main(["--config", str(path)]) == server.EXIT_CANNOT_START
+    assert "cannot serve the metrics on port" in capsys.readouterr().err
+    assert ran == []
+
+
+def test_the_api_s_own_port_as_the_metrics_port_is_refused_before_anything_starts(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, ran: list[uvicorn.Config]
+) -> None:
+    monkeypatch.setenv("RAG_API_METRICS_PORT", "8123")
+    assert server.main(["--port", "8123", "--config", "/nonexistent.yaml"]) == 2
+    assert "RAG_API_METRICS_PORT is 8123, the API's own port" in capsys.readouterr().err
+    assert ran == []
+
+
+def test_an_invalid_log_format_stops_the_start_naming_the_variable(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, ran: list[uvicorn.Config]
+) -> None:
+    monkeypatch.setenv("RAG_LOG_FORMAT", "yaml")
+    assert server.main([]) == server.EXIT_CANNOT_START
+    err = capsys.readouterr().err
+    assert "RAG_LOG_FORMAT: Input should be 'json' or 'console'" in err
+    assert ran == []
 
 
 def test_with_a_token_a_non_loopback_host_runs_and_warns_about_cleartext(

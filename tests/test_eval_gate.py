@@ -38,6 +38,7 @@ from rag_qa.evaluation.gate import (
     below_generation_floors,
     digest_drift,
     load_answers,
+    load_scores,
     load_thresholds,
     ollama_root,
     too_many_unscored,
@@ -484,6 +485,37 @@ def test_the_real_config_s_ingestion_part_is_the_committed_run_s() -> None:
     # of CI's check job, holds all six parts over the real corpus.
     recorded = load_answers(REPO_ROOT / "eval" / "runs" / "answers-latest.json").fingerprint
     assert fp.ingestion_part(load_config(REAL_CONFIG)) == recorded["ingestion"]
+
+
+def test_the_committed_answers_still_hash_as_the_committed_scores_recorded() -> None:
+    # The scores record the sha256 of the answers file's parsed content, and `check` calls
+    # the run stale when this code reads it otherwise. A field added to AnswerItem must be
+    # left out while unset: S3-7's token counts, dumped as null, would have hashed the
+    # committed file as 21601f51… and demanded a T4 re-score (S3-7's plan).
+    runs = REPO_ROOT / "eval" / "runs"
+    answers = load_answers(runs / "answers-latest.json")
+    scores = load_scores(runs / "generation-latest.json")
+    assert answers_identity(answers) == scores.answers
+    assert all(item.input_tokens is None for item in answers.items)  # written before S3-7
+
+
+def test_token_counts_are_written_when_known_and_left_out_when_not() -> None:
+    item = AnswerItem(
+        id="q",
+        question="Q?",
+        answerable=True,
+        answer="A.",
+        contexts=["c"],
+        sources=[],
+        ttft_ms=1.0,
+        total_ms=2.0,
+    )
+    assert "input_tokens" not in item.model_dump(mode="json")
+    assert "output_tokens" not in json.loads(item.model_dump_json())
+    counted = item.model_copy(update={"input_tokens": 900, "output_tokens": 120})
+    dumped = counted.model_dump(mode="json")
+    assert (dumped["input_tokens"], dumped["output_tokens"]) == (900, 120)
+    assert AnswerItem.model_validate_json(counted.model_dump_json()) == counted
 
 
 def test_s3_5_s_scratch_config_moves_ingestion_and_query(world: World) -> None:
