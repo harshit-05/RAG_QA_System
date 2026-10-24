@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In progress (plan approved 2026-10-23): on `feat/s3-7-observability`. The plan splits the story at design review 1's seam: the traces and the alerts are S3-7b. On Opus 5.5 at max effort (Deviation). |
+| **Status** | In progress (plan approved 2026-10-23): on `feat/s3-7-observability`. The plan splits the story at design review 1's seam: the traces and the alerts are S3-7b. On Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-24 as PR #25 (`71555f5` … `df6fd57`, CI green on `df6fd57`); the first review (2026-10-24) found one privacy defect, two flaky tests and six smaller things, fixed on the PR ("First review"). The close-out record (Discovered, Deviation, Verification record) is still to be written, after the maintainer's call on NFR-2a. |
 | **Closes** | NFR-10 (logs and metrics); NFR-1 (verified); NFR-2 (a), measured (DEC-27); NFR-3; DEC-22 (logs and metrics); backlog: the two plural slips in `rag-ingest`'s log (S3-4's "Published …: 1 documents" is the second of them), the API's ingest jobs printing pypdf's warnings, and the traceback an open breaker logs mid-stream (S3-6) |
 | **Depends on** | S3-6 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -165,6 +165,72 @@ departure from it goes under "Deviation from plan".
 | D10 | **Architecture:** `rag_qa.observability` loads no LangChain, torch, sentence-transformers, transformers or qdrant_client. |
 | D11 | **Docs:** README's Observability and Capacity planning, the `done` example, the variables; ARCHITECTURE.md's DEC-22 as-built note, §3.4, the gap table and §3.5 for the split. |
 | D12 | **Commits**, on `feat/s3-7-observability`: this record (with S3-6's merge and S3-7b's story); the dependencies; the feature (`feat(observability)!`); the benchmark; the docs; the close-out record. |
+
+## First review (2026-10-24, on `df6fd57`)
+
+Reviewed as the first reviewer. Everything below was reproduced against the PR's head in a
+scratch copy of `HEAD` (never in the repository); the live Qdrant was only read (tier 1). No
+blocker for the design or the cancel path; one privacy defect, two flaky tests and six
+smaller findings, all fixed on the PR.
+
+**Fixed (tests came with 1, 2, 3 and 7):**
+
+1. **`rag-serve`'s console log printed the question and the retrieved chunks after a failed
+   answer.** `ConsoleRenderer` formats `exc_info` with rich and `show_locals=True` when rich
+   is installed (it is, in the non-dev export), and the console path skipped
+   `format_exc_info`. A failing answer through the real route leaked in `console` with
+   `detailed=True` only (`rag-serve` in a terminal, or `RAG_LOG_FORMAT=console`: the
+   verification's own command). Now `exception_formatter=structlog.dev.plain_traceback`; a
+   test drives a failed answer through all four format/`detailed` combinations and greps
+   stderr for the question and the chunk text.
+2. **`test_one_document_of_one_chunk_is_logged_in_the_singular` was flaky:** `write_s > 0` on
+   a field logged as `round(x, 3)`; a 0.4 ms in-memory write is `0.0`. It failed in 4 of 6
+   warm runs. Now `>= 0`.
+3. **`test_an_ingest_job_moves_the_runs_and_the_chunks` was flaky:** it read
+   `rag_index_documents` as the job's status flipped, before the server's refresh. With the
+   refresh delayed by 50 ms it failed every time (`0.0 == 5`). It now waits for the gauge.
+4. **README's ingestion table** said the embed phase made "dense and keyword vectors". The
+   shipped config sets no sparse encoder: dense only.
+5. **The pypdf exception is eleven ignores,** not eight, in `ci.yml` since `df6fd57`. STATUS
+   caveat 37, the DEC-24 row, the backlog line, S3-9 (four places and its audit command) and
+   S3-11b now say eleven, and name 6.21.2 as the bump's floor. (S3-6's review fixed the same
+   drift for eight.) The three new reasons match their advisories (GHSA-gmh7-3g9r-mjh5,
+   GHSA-jr96-gvgh-j3r4, GHSA-6c7f-9265-g8fw, published 2026-10-23, fixed in 6.21.2).
+6. **`pydantic>=2.11` was too low:** `Field(exclude_if=…)` exists from 2.12 (checked at
+   v2.11.10 and v2.12.0). On 2.11.10 it is accepted with a deprecation warning and dumps
+   `null`, which would change the committed answers' identity. Now `>=2.12`; `uv lock` moves
+   the specifier line and no version (2.13.5).
+7. **Four guards survived mutation** across the whole suite: the `async` of `bind_request`
+   (a sync one loses `request_id`), the `job_id` binding, the rerank leaking into
+   `rag_retrieval_seconds`, and the progress bar in JSON mode. Four tests now fail with
+   each defect put back. Of 15 guards broken in all, the other 11 were already caught.
+8. **JSON lines are not the only stderr lines:** the model loader's `Loading weights` bar
+   still prints between them (`HF_HUB_DISABLE_PROGRESS_BARS=1` silences it). Documented in
+   the README and ARCHITECTURE; not set in code, since the variable is read when
+   huggingface_hub is imported.
+
+**Held:** `rag-eval check` exit 0; tier 1 re-run on `HEAD`, contexts IDENTICAL to S3-2's
+(`5a36e2f9…`); the lock (three packages added, filelock and setuptools bumped alone, pypdf
+6.19.0); the README's 13 metric names equal the registry's, every label set starts at zero;
+commit headers and trailers; CI green. After the fixes: 1490 passed, 18 skipped, 5 xfailed,
+coverage 98.36%; eight warm repeats of the files that flaked all green.
+
+**Open for the maintainer (not defects):**
+
+- **NFR-2a is missed twice** (p95 2.09 s, then 2.02 s, against under 2 s), and the benchmark
+  exits 1. ARCHITECTURE had said STATUS's backlog sends the rerank levers to S3-11; it did
+  not, and S3-11's levers do not include them. The text now calls it an open decision. Options:
+  accept "measured, not met" and add a backlog line; or add reranker candidates / a smaller
+  cross-encoder to S3-11's levers (both move hashed inputs, so tier 2 once, in S3-11b).
+- **Verification 87** (`git diff -U0 uv.lock | grep …` "nothing") shows the two advisory bumps
+  (filelock 4.0.0 → 4.2.4, setuptools 84.0.0 → 84.2.1, `1cc5c54`); record under Deviation.
+- **D7 said the API's job report is unchanged;** it gained `load_s`, `embed_s`, `write_s`
+  and `points` (additive; its mirror test requires them). Record under Deviation.
+
+**Nits left:** `bench_retrieval.py` exits 1 on a mid-run Qdrant error (the docs reserve 1 for
+a missed target) and leaks its scratch collection if the payload index fails right after
+creation; `opentelemetry-semantic-conventions>=0.66b1` has no cap while its constants are
+deprecated; `/metrics` carries no token (documented), so S3-9's compose must keep it internal.
 
 ## Discovered
 

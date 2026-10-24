@@ -589,6 +589,11 @@ as ours.
 
 - **Levels:** our own lines from INFO, other libraries' from WARNING, and pypdf's from ERROR
   (a broken PDF is reported once, by the run). `rag-eval` logs warnings only.
+- **No question, prompt or answer text, ever:** a traceback is plain text in every format,
+  without the variables of its frames.
+- **Not every stderr line is JSON.** The model loader's own `Loading weights` progress bar
+  still prints between JSON lines when a model loads; `HF_HUB_DISABLE_PROGRESS_BARS=1`
+  silences it. The embedding progress bar is off in JSON mode.
 
 ### Metrics
 
@@ -677,7 +682,7 @@ measuring this.
 | Phase | Work | Time | Rate |
 | --- | --- | --- | --- |
 | load | 3 PDFs, 561 pages, split into 1,708 chunks | 34.7 s | 16.2 pages/s |
-| embed | the 1,708 chunks' dense and keyword vectors | 70.7 s | 24.2 chunks/s |
+| embed | the 1,708 chunks' dense vectors (the shipped config sets no sparse encoder) | 70.7 s | 24.2 chunks/s |
 | write | 1,708 points into a new index version, then the alias switch | 0.63 s | 2,695 points/s |
 
 The embed time leaves out loading the model. Every run's summary ends with its own rates,

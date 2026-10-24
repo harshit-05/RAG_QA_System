@@ -2583,8 +2583,10 @@ _As built in S3-7 (2026-10-23), from its approved plan (the story's "Plan", D1â€
   - **One root handler, on stderr,** looked up at each record. `RAG_LOG_FORMAT` is `json` or
     `console`, and another value exits 2. Every log line goes to stderr: `rag-ingest`'s
     progress moved there from stdout, a contract change. Results stay on stdout.
-  - **A JSON traceback is text** (`format_exc_info`). structlog's dictionary form records
-    each frame's local variables by default, which could log a question or a key.
+  - **A traceback is plain text in every format** (`format_exc_info`, and `plain_traceback`
+    for the console). structlog's dictionary form and its console renderer, which uses rich
+    when it is installed, record each frame's local variables by default, which could log a
+    question or a key. The console path did, until S3-7's first review.
   - **Levels:** the root at WARNING, `rag_qa` at INFO, and pypdf at ERROR; `rag-eval` logs
     warnings only, which keeps the corpus scan's lines out of its tables. `rag-serve` gives
     uvicorn `log_config=None, log_level="info"`.
@@ -2624,12 +2626,14 @@ _As built in S3-7 (2026-10-23), from its approved plan (the story's "Plan", D1â€
 - **Ingest.** `IngestReport` gains `load_s`, `embed_s`, `write_s` and `points`. The summary
   ends with the rates, and the "Published" line carries them as fields. The API's job report
   carries them too, as its mirror test requires. In JSON mode the embedder shows no progress
-  bar.
+  bar; the model loader's own `Loading weights` bar still prints between JSON lines unless
+  `HF_HUB_DISABLE_PROGRESS_BARS=1` (first review).
 - **Measured** (README, "Capacity planning"; this laptop, 2026-10-23):
   - **NFR-1 held:** at 100k points and k=20, a p95 of 29.7 ms dense and 38.0 ms hybrid.
   - **NFR-2a missed, narrowly:** a p95 of 2.09 s, then 2.02 s on a second run. The rerank is
-    nearly all of it, and its levers move hashed inputs, so STATUS.md's backlog sends them to
-    S3-11, and the amend session (S3-12) to DEC-27 (a).
+    nearly all of it, and its levers (fewer candidates, a smaller cross-encoder) move hashed
+    inputs. None is among S3-11's levers, so the miss is **an open decision for the
+    maintainer** (S3-7's first review), and the amend session (S3-12) sets DEC-27 (a).
   - **NFR-3:** 16.2 pages/s loaded, 24.2 chunks/s embedded, 2,695 points/s written.
 - **The benchmark deletes only a collection it created** (found in its own run). Two runs
   started seconds apart both passed the check for an existing collection. The second's
