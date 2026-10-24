@@ -429,7 +429,9 @@ def test_one_document_of_one_chunk_is_logged_in_the_singular(
     # The same line carries NFR-3's numbers as fields, for the JSON log (S3-7).
     fields = line.__dict__
     assert (fields["documents"], fields["points"], fields["pages_loaded"]) == (1, 1, 1)
-    assert fields["chunks_embedded"] == 1 and fields["write_s"] > 0
+    assert (
+        fields["chunks_embedded"] == 1 and fields["write_s"] >= 0
+    )  # rounded to ms: a write can be 0.0
     assert {"pages_per_s", "chunks_per_s", "points_per_s"} <= fields.keys()
     assert report.points == 1 and report.load_s > 0 and report.embed_s > 0
 

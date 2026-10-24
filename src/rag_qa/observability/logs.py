@@ -19,8 +19,9 @@ ours and the libraries', comes out alike:
   request stays out. pypdf at ERROR for the whole process: a corrupt PDF's own warnings
   never print ahead of the clean error the run reports for it (S2-8), the API's ingest jobs'
   included (S3-7).
-- **Tracebacks are text** in the JSON lines too. structlog's dictionary form records every
-  frame's local variables by default, which could put a question or a key into the log.
+- **Tracebacks are plain text** in every format. structlog's dictionary form and its console
+  renderer (rich's, when rich is installed) record every frame's local variables by default,
+  which could put a question or a key into the log.
 
 No question, prompt or answer text is logged anywhere: the log goes wherever the operator
 sends it.
@@ -116,7 +117,15 @@ def _formatter(chosen: Format, *, detailed: bool) -> structlog.stdlib.ProcessorF
             structlog.processors.JSONRenderer(),
         ]
     elif detailed:
-        processors = [remove_meta, structlog.dev.ConsoleRenderer(colors=_is_terminal(sys.stderr))]
+        # plain_traceback: ConsoleRenderer's default, rich's, prints every frame's local
+        # variables when rich is installed, a question and its chunks among them.
+        processors = [
+            remove_meta,
+            structlog.dev.ConsoleRenderer(
+                colors=_is_terminal(sys.stderr),
+                exception_formatter=structlog.dev.plain_traceback,
+            ),
+        ]
     else:
         processors = [remove_meta, structlog.processors.format_exc_info, _message_only]
     return structlog.stdlib.ProcessorFormatter(

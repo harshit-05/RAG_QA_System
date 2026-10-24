@@ -5,9 +5,10 @@ The registry is the process's, so every test reads a metric before and after, an
 difference.
 """
 
+import json
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -15,7 +16,15 @@ from typing import Any
 
 import httpx
 import pytest
-from conftest import MakeConfig, StreamingFakeChatModel, fake_serving, sse_events, use_fakes
+from conftest import (
+    MakeConfig,
+    StreamingFakeChatModel,
+    StubCrossEncoder,
+    fake_serving,
+    sse_events,
+    use_fakes,
+    use_fakes_and_reranker,
+)
 from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 from langchain_core.runnables import RunnableLambda
@@ -25,9 +34,11 @@ from prometheus_client import generate_latest
 
 from rag_qa.api.app import create_app
 from rag_qa.api.state import Served, Serving
-from rag_qa.chain import RetrievalQuery
+from rag_qa.chain import RetrievalQuery, build_retrieve
+from rag_qa.components import build_embedder, build_reranker
 from rag_qa.config import load_config
-from rag_qa.observability import metrics
+from rag_qa.ingest import _embed_with_progress
+from rag_qa.observability import logs, metrics
 from rag_qa.observability.genai import ModelIdentity, model_identity
 from rag_qa.resilience import BreakerOpenError, CircuitBreaker
 from rag_qa.schema import RagConfig
@@ -321,12 +332,24 @@ def test_an_ingest_job_moves_the_runs_and_the_chunks(
     with TestClient(create_app(config, ServerSettings()), base_url="http://127.0.0.1") as client:
         started = client.post("/v1/ingest", json={"rebuild": False}).json()
         job = _wait(client, started["job_id"])
-        documents = value("rag_index_documents")
+        # The job ends, then the server reopens what it published: wait for that.
+        documents = _until(lambda: value("rag_index_documents") or None) or 0.0
     assert job["status"] == "succeeded"
     assert counts.moved("rag_ingest_runs_total", status="succeeded") == 1
     assert counts.moved("rag_ingest_chunks_total") == job["report"]["chunks"] > 0
     assert documents == 5  # read from what the server serves, once the job published
     assert value("rag_index_documents") == 0  # the lifespan stopped reporting it
+
+
+def _until(read: Callable[[], Any], seconds: float = 10) -> Any:
+    """``read()`` once it returns something other than ``None``, else ``None`` after ``seconds``."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        found = read()
+        if found is not None:
+            return found
+        time.sleep(0.02)
+    return None
 
 
 def _wait(client: TestClient, job_id: str) -> dict[str, Any]:
@@ -337,3 +360,105 @@ def _wait(client: TestClient, job_id: str) -> dict[str, Any]:
             return dict(job)
         time.sleep(0.02)
     raise AssertionError("the ingest job did not end")
+
+
+# --- review findings: what the first review's mutations left alive (S3-7) ----------------------
+
+
+def test_retrieval_and_rerank_are_timed_apart(
+    fake_rag: Path,
+    make_config: MakeConfig,
+    stub_cross_encoder: type[StubCrossEncoder],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # rag_retrieval_seconds is what NFR-1 bounds: the search alone. A slow reranker must land
+    # in rag_rerank_seconds and nowhere else.
+    def slow(self: StubCrossEncoder, inputs: list[tuple[str, str]], **kw: Any) -> Any:
+        time.sleep(0.2)
+        return [0.0] * len(inputs)
+
+    monkeypatch.setattr(stub_cross_encoder, "predict", slow)
+    config = load_config(make_config(use_fakes_and_reranker))
+    retrieve = build_retrieve(config, build_embedder(config), reranker=build_reranker(config))
+    counts = Counts(("rag_retrieval_seconds_sum", {}), ("rag_rerank_seconds_sum", {}))
+    retrieve.invoke(RetrievalQuery("Staff?"))
+    assert counts.moved("rag_rerank_seconds_sum") >= 0.2
+    assert counts.moved("rag_retrieval_seconds_sum") < 0.15
+
+
+QUESTION = "WHO-IS-THE-SECRET-EMPLOYEE-QUESTION"
+
+
+@pytest.mark.parametrize(
+    ("chosen", "detailed"),
+    [("console", True), ("console", False), ("json", True), ("json", False)],
+)
+def test_a_failed_answers_log_never_holds_the_question_or_the_chunks(
+    fake_config: RagConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    chosen: str,
+    detailed: bool,
+) -> None:
+    # rich's traceback prints every frame's locals, the question and the prompt among them:
+    # rag-serve's console lines (detailed) once did. The log goes wherever the operator sends it.
+    monkeypatch.setenv("RAG_LOG_FORMAT", chosen)
+    logs.configure_logging(detailed=detailed)
+    serving = fake_serving(fake_config, TimesOut())
+    with served(fake_config, serving) as client:
+        events = sse_events(client.post("/v1/query", json={"question": QUESTION}).text)
+    assert [name for name, _ in events] == ["sources", "error"]
+    err = capsys.readouterr().err
+    assert "An answer failed after its stream began" in err
+    assert "ReadTimeout" in err  # the traceback is there...
+    assert QUESTION not in err and "Station Kestrel" not in err  # ...without the locals
+
+
+def test_the_answer_line_carries_the_requests_id_in_json(
+    fake_config: RagConfig, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The first dependency must be async: FastAPI runs a plain one in a worker thread, and the
+    # request_id it binds there never reaches the request's own task (ARCHITECTURE.md §3.1).
+    monkeypatch.setenv("RAG_LOG_FORMAT", "json")
+    logs.configure_logging()
+    serving = fake_serving(fake_config, StreamingFakeChatModel(usage=USAGE))
+    with served(fake_config, serving) as client:
+        client.post("/v1/query", json={"question": "q"})
+    lines = [json.loads(x) for x in capsys.readouterr().err.splitlines() if x.startswith("{")]
+    (answered,) = [x for x in lines if x["event"].startswith("Answered by")]
+    assert len(answered["request_id"]) == 32
+
+
+def test_an_ingest_jobs_log_lines_carry_its_job_id(
+    make_config: MakeConfig,
+    sample_corpus: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv(ENV_DATA_PATH, str(sample_corpus))
+    monkeypatch.setenv("RAG_LOG_FORMAT", "json")
+    logs.configure_logging()
+    config = load_config(make_config(use_fakes))
+    with TestClient(create_app(config, ServerSettings()), base_url="http://127.0.0.1") as client:
+        started = client.post("/v1/ingest", json={"rebuild": False}).json()
+        _wait(client, started["job_id"])
+    lines = [json.loads(x) for x in capsys.readouterr().err.splitlines() if x.startswith("{")]
+    (published,) = [x for x in lines if x["event"].startswith("Published ")]
+    assert published["job_id"] == started["job_id"]
+
+
+@pytest.mark.parametrize(("chosen", "bar"), [("json", False), ("console", True)])
+def test_the_embedding_progress_bar_is_off_in_json_logs(
+    monkeypatch: pytest.MonkeyPatch, chosen: str, bar: bool
+) -> None:
+    class Embedder:
+        show_progress = False
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return [[0.0] for _ in texts]
+
+    monkeypatch.setenv("RAG_LOG_FORMAT", chosen)
+    logs.configure_logging()
+    embedder = Embedder()
+    _embed_with_progress(embedder, ["a"])  # type: ignore[arg-type]
+    assert embedder.show_progress is bar
