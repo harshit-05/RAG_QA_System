@@ -20,7 +20,7 @@ dependencies = [
     "pypdf>=6",
     "docx2txt>=0.9",
     "pyyaml>=6",
-    "pydantic>=2.11",
+    "pydantic>=2.12",   # Field(exclude_if=...): S3-7's answers file keeps its identity
     "pydantic-settings>=2.10",
     "fastapi>=0.135",
     "uvicorn>=0.32.1",
