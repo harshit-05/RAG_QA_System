@@ -17,6 +17,7 @@ from conftest import (
     FAKE_ANSWER,
     MISTRAL_DIGEST,
     REAL_CONFIG,
+    FakeCollector,
     FakeOllama,
     MakeConfig,
     StreamingFakeChatModel,
@@ -31,6 +32,7 @@ from rag_qa.evaluation.cli import EXIT_CANNOT_RUN, EXIT_OK, main
 from rag_qa.evaluation.dataset import load_golden
 from rag_qa.evaluation.gate import Generator, load_answers
 from rag_qa.evaluation.generation import answer, generator_record
+from rag_qa.observability import tracing
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_DATA_PATH, ENV_QDRANT_COLLECTION
 
@@ -120,6 +122,21 @@ def test_an_answer_records_its_providers_token_counts(evals: Path) -> None:
     item = load_golden(evals.parent / "eval" / "eval_dataset.jsonl")[0]
     answered = asyncio.run(answer(pipeline, item))
     assert (answered.input_tokens, answered.output_tokens) == (700, 42)
+
+
+def test_generate_traces_nothing_with_an_endpoint_left_in_the_shell(
+    evals: Path, fake_collector: FakeCollector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # S3-7b: rag-eval never turns tracing on, and the shared code (retrieval, the answer
+    # stream) gets a no-op tracer unless a command did, so an endpoint exported for a
+    # rag-serve run cannot trace a tier-2 run.
+    installed: list[Any] = []
+    monkeypatch.setattr(tracing, "install", installed.append)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", fake_collector.url)
+    assert generate(evals) == EXIT_OK
+    assert installed == []
+    assert not tracing.enabled()
+    assert fake_collector.requests == []
 
 
 def test_limit_needs_out(evals: Path, capsys: pytest.CaptureFixture[str]) -> None:

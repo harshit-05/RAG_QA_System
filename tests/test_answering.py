@@ -29,17 +29,17 @@ import json
 import socket
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from operator import itemgetter
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import ollama
 import pytest
-from conftest import StreamingFakeChatModel, openai_error
+from conftest import StreamingFakeChatModel, Traced, openai_error
 from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessageChunk, BaseMessage
@@ -48,6 +48,10 @@ from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrough
 from langchain_ollama import ChatOllama
+from opentelemetry.semconv._incubating.attributes import gen_ai_attributes as gen_ai
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
+from opentelemetry.semconv.attributes.server_attributes import SERVER_ADDRESS, SERVER_PORT
+from opentelemetry.trace import SpanKind, StatusCode
 
 from rag_qa.answering import (
     Done,
@@ -60,6 +64,8 @@ from rag_qa.answering import (
 )
 from rag_qa.chain import NoIndexError, QueryPipeline, build_query_pipeline, format_docs
 from rag_qa.config import load_config
+from rag_qa.observability import genai, tracing
+from rag_qa.observability.genai import model_identity
 from rag_qa.resilience import (
     FALLBACK_ATTEMPTS,
     LLM_ATTEMPTS,
@@ -294,6 +300,7 @@ async def closed_when_cancelled(
     return model.closed
 
 
+@pytest.mark.usefixtures("either_way")  # and with tracing on: every span ends (S3-7b)
 @pytest.mark.parametrize("moment", MOMENTS)
 def test_cancel_closes_the_stream_before_the_consumer_returns(moment: str) -> None:
     settings, ready = MOMENTS[moment]
@@ -366,6 +373,7 @@ async def closed_on_return(events: AsyncIterator[Any], model: CancelsAtAChunk) -
 TOKENS = [f"t{i} " for i in range(6)]
 
 
+@pytest.mark.usefixtures("either_way")
 @pytest.mark.parametrize("at", [0, 1, 3, 5])
 def test_a_cancel_while_a_chunk_is_processed_closes_the_stream_before_returning(at: int) -> None:
     model = CancelsAtAChunk(tokens=TOKENS, at=at)
@@ -390,6 +398,7 @@ def test_negative_control_the_same_cancel_under_a_sequence_leaves_the_stream_ope
     assert asyncio.run(closed_on_return(sequence_shape(fake_pipeline(model), "q"), model))
 
 
+@pytest.mark.usefixtures("either_way")
 def test_a_consumer_that_stops_early_closes_the_stream_while_the_loop_runs() -> None:
     # The other ending: the consumer stops at a yield and closes the generator, instead
     # of being cancelled inside the model's read. Not immediate: langchain-core 1.6.3
@@ -660,6 +669,7 @@ def test_a_fallback_that_refuses_too_is_the_answer_s_error() -> None:
     assert pipeline.fallback_breaker._failed == 1
 
 
+@pytest.mark.usefixtures("either_way")
 def test_a_cancelled_probe_frees_the_probe() -> None:
     now = [1000.0]
     breaker = opened("Ollama", clock=lambda: now[0])
@@ -691,6 +701,7 @@ def test_the_fallback_streams_in_the_consuming_task() -> None:
     assert seen == [consumer]
 
 
+@pytest.mark.usefixtures("either_way")
 @pytest.mark.parametrize("at", [0, 1, 3, 5])
 def test_a_cancel_while_a_fallback_chunk_is_processed_closes_it_before_returning(at: int) -> None:
     primary = Refusing()
@@ -703,12 +714,14 @@ def test_a_cancel_while_a_fallback_chunk_is_processed_closes_it_before_returning
     assert primary.log == ["start", "closed"] * LLM_ATTEMPTS
 
 
+@pytest.mark.usefixtures("either_way")
 def test_a_cancel_during_the_fallback_s_prefill_closes_it_before_returning() -> None:
     spare = StreamingFakeChatModel(prefill_s=5.0)
     events = stream_answer(two_models(Refusing(), spare), "q")
     assert asyncio.run(closed_when_cancelled(events, spare, MOMENTS["prefill"][1]))
 
 
+@pytest.mark.usefixtures("either_way")
 def test_a_cancel_during_the_back_off_starts_no_other_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -722,6 +735,7 @@ def test_a_cancel_during_the_back_off_starts_no_other_attempt(
     assert spare.log == []
 
 
+@pytest.mark.usefixtures("either_way")
 def test_a_cancel_as_the_fallback_starts_closes_its_stream_before_returning() -> None:
     # The switch between the two models has no await of its own: the first place a cancel
     # can land is the fallback's own read, which closes as any model's does.
@@ -750,12 +764,149 @@ def test_a_cancel_as_the_fallback_starts_closes_its_stream_before_returning() ->
     assert spare.log == ["start", "closed"]
 
 
+@pytest.mark.usefixtures("either_way")
 def test_a_cancel_after_the_fallback_s_first_token_judges_nothing_twice() -> None:
     breaker = CircuitBreaker("the hosted fallback")
     spare = CancelsAtAChunk(tokens=TOKENS, at=2)
     pipeline = two_models(Refusing(), spare, fallback_breaker=breaker)
     assert asyncio.run(closed_on_return(stream_answer(pipeline, "q"), spare))
     assert breaker._failed == 0  # its first token said it answered; the cancel adds nothing
+
+
+# --- the chat spans (S3-7b, DEC-22) -----------------------------------------------------------
+
+
+class OllamaLike(StreamingFakeChatModel):
+    """A fake with ChatOllama's request settings, which a chat span reads."""
+
+    model: str = "mistral"
+    temperature: float = 0.0
+    num_predict: int = 512
+    base_url: str = "http://ollama.internal:11434"
+
+
+def answered_under(parent: str, pipeline: QueryPipeline) -> list[Any]:
+    """The answer's events, streamed under a span called ``parent``, as the API's server span
+    or ``rag-query``'s question is its parent."""
+    with tracing.span(parent):
+        return asyncio.run(collect(stream_answer(pipeline, "q")))
+
+
+def test_an_attempt_is_a_chat_span_with_the_conventions_attributes(traced: Traced) -> None:
+    model = OllamaLike(usage={"input_tokens": 41, "output_tokens": 3, "total_tokens": 44})
+    answered_under("request", fake_pipeline(model))
+    (chat,) = traced.children(traced.one("request"))
+    assert chat.name == "chat mistral"
+    assert chat.kind is SpanKind.CLIENT
+    attributes = dict(chat.attributes or {})
+    first_chunk = attributes.pop(gen_ai.GEN_AI_RESPONSE_TIME_TO_FIRST_CHUNK)
+    assert isinstance(first_chunk, float) and first_chunk > 0
+    assert attributes == {
+        gen_ai.GEN_AI_OPERATION_NAME: gen_ai.GenAiOperationNameValues.CHAT.value,
+        gen_ai.GEN_AI_PROVIDER_NAME: model_identity(model).provider,
+        gen_ai.GEN_AI_REQUEST_MODEL: "mistral",
+        gen_ai.GEN_AI_REQUEST_TEMPERATURE: 0.0,
+        gen_ai.GEN_AI_REQUEST_MAX_TOKENS: 512,
+        SERVER_ADDRESS: "ollama.internal",
+        SERVER_PORT: 11434,
+        gen_ai.GEN_AI_USAGE_INPUT_TOKENS: 41,
+        gen_ai.GEN_AI_USAGE_OUTPUT_TOKENS: 3,
+        genai.MODEL_REF: "llm",
+        genai.ATTEMPT: 1,
+        genai.FALLBACK: False,
+    }
+    assert [event.name for event in chat.events] == [genai.FIRST_TOKEN]
+    assert chat.status.status_code is StatusCode.UNSET
+
+
+def test_a_refused_model_is_its_failed_attempts_then_the_fallback_s_span(traced: Traced) -> None:
+    answered_under("request", two_models(Refusing(), StreamingFakeChatModel(tokens=["Spare."])))
+    *attempts, fallback = traced.children(traced.one("request"))
+    assert [span.attributes[genai.ATTEMPT] for span in attempts] == list(range(1, LLM_ATTEMPTS + 1))
+    for span in attempts:
+        assert span.attributes[genai.MODEL_REF] == PRIMARY
+        assert span.attributes[genai.FALLBACK] is False
+        assert span.status.status_code is StatusCode.ERROR
+        assert span.attributes[ERROR_TYPE] == "ConnectError"
+    assert fallback.attributes[genai.MODEL_REF] == SPARE
+    assert fallback.attributes[genai.FALLBACK] is True
+    assert fallback.attributes[genai.FALLBACK_REASON] == genai.CONNECTION_FAILED
+    assert fallback.status.status_code is StatusCode.UNSET
+
+
+def test_an_open_breaker_sends_nothing_so_only_the_fallback_has_a_span(traced: Traced) -> None:
+    pipeline = two_models(Refusing(), StreamingFakeChatModel(), llm_breaker=opened("Ollama"))
+    answered_under("request", pipeline)
+    (fallback,) = traced.children(traced.one("request"))
+    assert fallback.attributes[genai.FALLBACK_REASON] == genai.BREAKER_OPEN
+
+
+def test_a_failure_s_span_names_its_class_never_its_message(traced: Traced) -> None:
+    secret = "the question's own words"
+    with pytest.raises(ollama.ResponseError):
+        answered_under(
+            "request", two_models(Refusing(error=ollama.ResponseError(secret, 500)), None)
+        )
+    (chat,) = traced.children(traced.one("request"))
+    assert chat.attributes[ERROR_TYPE] == "ResponseError"
+    assert chat.status.status_code is StatusCode.ERROR
+    assert not chat.status.description
+    assert list(chat.events) == []  # no exception event: its message may carry text
+    assert secret not in traced.text()
+
+
+def test_a_cancel_marks_the_span_and_leaves_its_status_unset(traced: Traced) -> None:
+    model = CancelsAtAChunk(tokens=TOKENS, at=1)
+    with tracing.span("request"):
+        assert asyncio.run(closed_on_return(stream_answer(fake_pipeline(model), "q"), model))
+    (chat,) = traced.children(traced.one("request"))
+    assert [event.name for event in chat.events] == [genai.FIRST_TOKEN, tracing.CANCELLED]
+    assert chat.attributes[tracing.CANCELLED] is True
+    assert chat.status.status_code is StatusCode.UNSET
+
+
+def test_a_stream_another_task_closes_ends_its_span_in_that_task(traced: Traced) -> None:
+    # The forced window in miniature (S2-7's spike): the consumer leaves the stream paused at a
+    # yield, and the slot's teardown, another task, closes it. The span was never current, so
+    # ending it there detaches nothing; the fixture fails on any "Failed to detach context".
+    model = StreamingFakeChatModel(tokens=[f"t{i} " for i in range(40)], gap_s=0.01)
+
+    async def run() -> None:
+        events = cast(AsyncGenerator[Any, None], stream_answer(fake_pipeline(model), "q"))
+
+        async def to_the_first_token() -> None:
+            async for event in events:
+                if isinstance(event, Token):
+                    return  # paused at its yield, as a producer cancelled between events leaves it
+
+        async def close() -> None:
+            await events.aclose()
+
+        await asyncio.create_task(to_the_first_token())
+        await asyncio.create_task(close())
+
+    with tracing.span("request"):
+        asyncio.run(run())
+    (chat,) = traced.children(traced.one("request"))
+    assert tracing.CANCELLED in [event.name for event in chat.events]
+    assert model.closed
+
+
+@pytest.mark.usefixtures("either_way")
+def test_the_model_is_streamed_with_no_config_and_no_callbacks() -> None:
+    # DEC-22: no LangChain callback handler, a tracing one included. One that suspends in
+    # on_llm_new_token would put an await between the model's read and our yield.
+    calls: list[tuple[Any, Any, dict[str, Any]]] = []
+
+    class Spy(StreamingFakeChatModel):
+        def astream(  # type: ignore[override]
+            self, input: Any, config: Any = None, *, stop: Any = None, **kwargs: Any
+        ) -> Any:
+            calls.append((config, stop, kwargs))
+            return super().astream(input, config, stop=stop, **kwargs)
+
+    asyncio.run(collect(stream_answer(fake_pipeline(Spy()), "q")))
+    assert calls == [(None, None, {})]
 
 
 # --- the real ChatOllama, refused, refusing and dropped (S3-6) ------------------------------

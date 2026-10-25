@@ -1,13 +1,15 @@
 """Environment overrides, read through pydantic-settings.
 
-The only reader of the ``RAG_*`` environment variables (ARCHITECTURE.md §1.2). An
+The only reader of the ``RAG_*`` environment variables (ARCHITECTURE.md §1.2), and of the
+two ``OTEL_*`` ones our code reads itself; the OpenTelemetry SDK reads its others. An
 empty variable counts as unset, so ``RAG_DATA_PATH= rag-ingest`` means "use the config
 file's value", as it always has.
 
-Five groups: :class:`EnvSettings`, the overrides every command reads;
+Six groups: :class:`EnvSettings`, the overrides every command reads;
 :class:`StoreSettings`, the ``RAG_QDRANT_*`` ones the vector store reads (DEC-19);
 :class:`FallbackSettings`, the hosted fallback's key (DEC-21); :class:`LogSettings`, the log
-format every command reads (DEC-22); and :class:`ServerSettings`, the ``RAG_API_*`` settings
+format every command reads (DEC-22); :class:`TraceSettings`, whether and as what a command
+sends its traces (DEC-22, S3-7b); and :class:`ServerSettings`, the ``RAG_API_*`` settings
 only ``rag-serve`` reads (DEC-18). ``config.yaml`` stays about the pipeline, and a secret
 never lives in it: a component key named like one is refused at load
 (:meth:`rag_qa.schema.Components.check_api_keys`).
@@ -16,7 +18,7 @@ never lives in it: a component key named like one is refused at load
 import ipaddress
 from typing import Literal
 
-from pydantic import Field, SecretStr, ValidationError, field_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from rag_qa.schema import collection_problem
@@ -125,6 +127,30 @@ class LogSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix=ENV_LOG_PREFIX, env_ignore_empty=True, frozen=True)
 
     format: Literal["json", "console"] | None = None
+
+
+#: The OpenTelemetry variables our code reads (DEC-22, S3-7b): ``OTEL_EXPORTER_OTLP_ENDPOINT``
+#: and ``OTEL_SERVICE_NAME``.
+ENV_OTEL_PREFIX = "OTEL_"
+
+
+class TraceSettings(BaseSettings):
+    """Whether, and as what, a command sends its traces (DEC-22, S3-7b), from the environment
+    only.
+
+    ``exporter_otlp_endpoint`` is the collector's base address, an http(s) URL; the exporter
+    adds ``/v1/traces``. Unset, nothing is traced (:func:`rag_qa.observability.tracing.configure`).
+    ``service_name`` names the service; unset, it is the command's own. The SDK reads the other
+    ``OTEL_*`` variables itself, the timeout (in seconds, in Python) and the headers among them.
+    Like :class:`EnvSettings`, read on every use, never at import.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix=ENV_OTEL_PREFIX, env_ignore_empty=True, frozen=True
+    )
+
+    exporter_otlp_endpoint: AnyHttpUrl | None = None
+    service_name: str | None = None
 
 
 #: The prefix of the HTTP server's settings: ``RAG_API_TOKEN``, ``RAG_API_MAX_CONCURRENT``,

@@ -25,6 +25,7 @@ from conftest import (
     FakeOllama,
     MakeConfig,
     StreamingFakeChatModel,
+    Traced,
     openai_error,
     use_fakes,
     use_fakes_and_reranker,
@@ -35,14 +36,17 @@ from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
 from langchain_ollama import ChatOllama
+from opentelemetry.trace import StatusCode
 from pydantic import Field
 from qdrant_client import QdrantClient
 
 from rag_qa import cli, vectorstore
 from rag_qa.answering import Done, Sources, Token
-from rag_qa.chain import QueryPipeline, RetrievalQuery
+from rag_qa.chain import QueryPipeline, RetrievalQuery, build_query_pipeline
 from rag_qa.cli import EXIT_CANNOT_START, EXIT_OK, HF_CACHE_HINT, describe_failure, repl
 from rag_qa.components import OLLAMA_HINT
+from rag_qa.config import load_config
+from rag_qa.observability import tracing
 from rag_qa.resilience import BreakerOpenError, mark_fallback
 from rag_qa.vectorstore import QDRANT_HINT, StoreError, StoreUnavailableError
 
@@ -369,6 +373,43 @@ def test_an_error_while_the_clients_close_still_exits_cleanly(
     assert "could not close the model's connections cleanly: RuntimeError" in (
         capsys.readouterr().out
     )
+
+
+# --- the traces: a question is a trace of its own (S3-7b) ---------------------------------
+
+
+def test_a_question_is_a_rag_query_trace_with_its_retrieval_and_answer_beneath(
+    fake_rag: Path, traced: Traced, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    # The real retrieval half: LangChain's executor carries the question's context into
+    # its thread, so the retrieval's span is the question's child as the answer's is.
+    model = ScriptedModel(script=["answer"])
+    monkeypatch.setattr("rag_qa.chain.build_llm", lambda config, **kw: model)
+    pipeline = build_query_pipeline(load_config(fake_rag))
+    assert repl(pipeline, scripted("How many staff?")) == EXIT_OK
+    question = traced.one(tracing.QUERY)
+    assert question.parent is None  # a trace of its own
+    assert question.attributes[tracing.SOURCES] == 0
+    retrieve, chat = traced.children(question)
+    assert retrieve.name == tracing.RETRIEVE
+    assert chat.name == "chat ScriptedModel"
+    assert [s.name for s in traced.children(retrieve)] == [
+        tracing.EMBED_QUERY,
+        tracing.VECTOR_SEARCH,
+    ]
+    assert "How many staff?" not in traced.text()
+
+
+def test_a_ctrl_c_marks_its_question_and_its_attempt_cancelled(traced: Traced, capsys: Any) -> None:
+    require_default_sigint_handler()
+    model = ScriptedModel(script=[CTRL_C, "next answer"])
+    assert repl(fake_pipeline(model), scripted("slow question", "next")) == EXIT_OK
+    first, second = traced.spans(tracing.QUERY)  # in the order they ended
+    assert first.attributes[tracing.CANCELLED] is True
+    assert first.status.status_code is StatusCode.UNSET
+    (attempt,) = traced.children(first)
+    assert attempt.attributes[tracing.CANCELLED] is True
+    assert tracing.CANCELLED not in (second.attributes or {})
 
 
 # --- main(): startup ----------------------------------------------------------------

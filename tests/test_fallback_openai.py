@@ -18,7 +18,14 @@ from typing import Any
 
 import httpx
 import pytest
-from conftest import MakeConfig, StreamingFakeChatModel, fake_serving, sse_events, use_fakes
+from conftest import (
+    MakeConfig,
+    StreamingFakeChatModel,
+    Traced,
+    fake_serving,
+    sse_events,
+    use_fakes,
+)
 
 pytest.importorskip("langchain_openai", reason="the fallback extra is not installed")
 
@@ -28,6 +35,8 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
+from opentelemetry.semconv._incubating.attributes import gen_ai_attributes as gen_ai
+from opentelemetry.semconv.attributes.server_attributes import SERVER_ADDRESS, SERVER_PORT
 
 from rag_qa import resilience
 from rag_qa.answering import Done, Token, stream_answer
@@ -36,6 +45,7 @@ from rag_qa.chain import QueryPipeline
 from rag_qa.cli import describe_failure
 from rag_qa.components import aclose_llm, build_fallback_llm
 from rag_qa.config import load_config
+from rag_qa.observability import genai, tracing
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ServerSettings
 
@@ -159,6 +169,41 @@ def test_the_fallback_is_built_with_its_key_no_retries_and_its_timeout_phases(
     assert spare.request_timeout == openai.Timeout(connect=5, read=60, write=30, pool=30)  # type: ignore[attr-defined]
     assert spare.openai_api_key.get_secret_value() == KEY  # type: ignore[attr-defined]
     asyncio.run(aclose_llm(spare))
+
+
+def test_the_fallback_s_chat_span_names_its_api_its_host_and_its_limits(
+    config: RagConfig, provider: Provider, traced: Traced
+) -> None:
+    # S3-7b, S3-7's plan: the provider is the API's flavour, "openai", and server.address
+    # names the host that serves it, as the convention's note allows.
+    with tracing.span("request"):
+        run(through_the_fallback(build_fallback_llm(config)))
+    *_, spare = traced.children(traced.one("request"))
+    assert spare.name == "chat openai/gpt-oss-120b"
+    attributes = dict(spare.attributes or {})
+    assert {name: attributes[name] for name in WANTED} == {
+        gen_ai.GEN_AI_PROVIDER_NAME: gen_ai.GenAiProviderNameValues.OPENAI.value,
+        gen_ai.GEN_AI_REQUEST_MODEL: "openai/gpt-oss-120b",
+        gen_ai.GEN_AI_REQUEST_TEMPERATURE: 0.0,
+        gen_ai.GEN_AI_REQUEST_MAX_TOKENS: 1024,  # max_completion_tokens
+        SERVER_ADDRESS: "api.groq.com",
+        SERVER_PORT: 443,
+        genai.FALLBACK: True,
+        genai.FALLBACK_REASON: genai.CONNECTION_FAILED,
+    }
+    assert KEY not in traced.text()
+
+
+WANTED = (
+    gen_ai.GEN_AI_PROVIDER_NAME,
+    gen_ai.GEN_AI_REQUEST_MODEL,
+    gen_ai.GEN_AI_REQUEST_TEMPERATURE,
+    gen_ai.GEN_AI_REQUEST_MAX_TOKENS,
+    SERVER_ADDRESS,
+    SERVER_PORT,
+    genai.FALLBACK,
+    genai.FALLBACK_REASON,
+)
 
 
 def test_the_fallback_streams_the_answer_and_sends_what_the_entry_says(

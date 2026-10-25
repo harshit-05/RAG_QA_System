@@ -20,6 +20,11 @@ window is real: without that close, the stream stays open.
 
 Only the real daemon shows that Ollama itself stops; that is the story's manual step
 (caveat 21).
+
+**With tracing on too** (S3-7b, DEC-22): every drop runs twice, the second time with the
+contrib instrumentation wrapping the app and the spans recorded. The same 1 s holds, every
+span that started ends, and no context fails to detach: the ASGI wrapper did not break
+DEC-18's cancel.
 """
 
 import gc
@@ -35,15 +40,16 @@ import httpx
 import pytest
 import uvicorn
 from anyio.streams.memory import MemoryObjectSendStream
-from conftest import StreamingFakeChatModel, fake_serving, sse_events
+from conftest import StreamingFakeChatModel, Traced, fake_serving, sse_events
 from fastapi import FastAPI
 from langchain_core.documents import Document
 from langchain_core.runnables import RunnableLambda
+from opentelemetry.trace import SpanKind, StatusCode
 
 from rag_qa.api.app import create_app
 from rag_qa.api.state import Serving, Slot
 from rag_qa.chain import RetrievalQuery
-from rag_qa.observability import metrics
+from rag_qa.observability import metrics, tracing
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ServerSettings
 
@@ -124,6 +130,7 @@ def within(seconds: float, condition: Callable[[], bool]) -> bool:
 # --- the drops --------------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("either_way")
 def test_a_drop_while_the_model_reads_the_prompt_closes_its_stream(
     start_server: Start, fake_config: RagConfig
 ) -> None:
@@ -142,6 +149,7 @@ def test_a_drop_while_the_model_reads_the_prompt_closes_its_stream(
     assert within(CLOSE_WITHIN_S, lambda: serving.slots.in_use == 0)
 
 
+@pytest.mark.usefixtures("either_way")
 def test_a_drop_mid_stream_closes_the_models_stream(
     start_server: Start, fake_config: RagConfig
 ) -> None:
@@ -156,6 +164,26 @@ def test_a_drop_mid_stream_closes_the_models_stream(
     assert within(CLOSE_WITHIN_S, lambda: serving.slots.in_use == 0)
     # Counted once, as cancelled (S3-7): the metrics' observation awaits nothing.
     assert within(CLOSE_WITHIN_S, lambda: answers("cancelled") == cancelled + 1)
+
+
+def test_a_dropped_answer_s_spans_end_its_chat_cancelled_its_server_span_unset(
+    start_server: Start, fake_config: RagConfig, traced: Traced
+) -> None:
+    # S3-7b: the client's choice to leave is no error, on either span.
+    model = StreamingFakeChatModel(tokens=[f"t{i} " for i in range(400)], gap_s=0.01)
+    sock = ask(serve(start_server, fake_config, fake_serving(fake_config, model)))
+    read_until(sock, b"event: token", count=3)
+    sock.close()
+    assert within(CLOSE_WITHIN_S, lambda: model.closed), "generation ran on after the drop"
+    assert within(CLOSE_WITHIN_S, lambda: len(traced.spans("POST /v1/query")) == 1)
+    server = traced.one("POST /v1/query")
+    assert server.kind is SpanKind.SERVER
+    assert server.status.status_code is StatusCode.UNSET
+    assert within(CLOSE_WITHIN_S, lambda: bool(traced.children(server)))
+    (chat,) = traced.children(server)
+    assert chat.name == "chat StreamingFakeChatModel"
+    assert chat.attributes[tracing.CANCELLED] is True
+    assert chat.status.status_code is StatusCode.UNSET
 
 
 class Refused(StreamingFakeChatModel):
@@ -184,6 +212,7 @@ def through_the_fallback(config: RagConfig, spare: StreamingFakeChatModel) -> Se
     ],
     ids=["during-its-prefill", "mid-stream"],
 )
+@pytest.mark.usefixtures("either_way")
 def test_a_drop_while_the_fallback_answers_closes_its_stream(
     start_server: Start, fake_config: RagConfig, spare: StreamingFakeChatModel, sent: bytes
 ) -> None:
@@ -199,6 +228,7 @@ def test_a_drop_while_the_fallback_answers_closes_its_stream(
     assert within(CLOSE_WITHIN_S, lambda: serving.slots.in_use == 0)
 
 
+@pytest.mark.usefixtures("either_way")
 def test_a_drop_before_the_first_event_frees_the_slot_and_the_next_retrieval_waits(
     start_server: Start, fake_config: RagConfig
 ) -> None:
@@ -312,6 +342,7 @@ def drop_while_an_event_waits(
     return model, serving
 
 
+@pytest.mark.usefixtures("either_way")
 def test_a_drop_while_an_event_waits_to_be_sent_still_closes_the_stream(
     start_server: Start,
     fake_config: RagConfig,

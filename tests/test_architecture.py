@@ -27,7 +27,9 @@
 * DEC-20 (S3-5): ``rag_qa.sparse``, the BM25 encoder, imports the standard library only, on
   the parsed imports, and loads no LangChain.
 * DEC-22 (S3-7): ``rag_qa.observability`` loads no model stack, no LangChain and no store
-  client, in a fresh interpreter: any module may import it.
+  client, in a fresh interpreter: any module may import it. And with tracing off (S3-7b), no
+  command loads the OTLP exporter or any instrumentation, nor sets a global tracer provider,
+  and ``tracing`` imports no SDK.
 """
 
 import ast
@@ -96,6 +98,7 @@ def test_the_config_layer_loads_no_langchain(module: str) -> None:
         "rag_qa.observability.logs",
         "rag_qa.observability.metrics",
         "rag_qa.observability.genai",
+        "rag_qa.observability.tracing",
     ],
 )
 def test_observability_loads_no_model_stack(module: str) -> None:
@@ -112,6 +115,45 @@ def test_observability_loads_no_model_stack(module: str) -> None:
     }
     loaded = modules_loaded_by(module)
     assert sorted(m for m in loaded if m.split(".")[0] in stack) == []
+
+
+COMMANDS = ["rag_qa.cli", "rag_qa.ingest", "rag_qa.api.server", "rag_qa.evaluation.cli"]
+
+
+@pytest.mark.parametrize("module", COMMANDS)
+def test_with_tracing_off_no_command_loads_the_exporter_or_any_instrumentation(module: str) -> None:
+    # DEC-22, S3-7b: with OTEL_EXPORTER_OTLP_ENDPOINT unset there is no instrumentation at
+    # all, so the disconnect path is the one S2-7 proved. The exporter and the FastAPI
+    # instrumentation are imported only once a command turns tracing on. (The SDK's tracer
+    # module is loaded regardless: langsmith 0.12, which langchain-core imports, takes its
+    # TracerProvider as a type whenever the SDK is installed, and configures nothing.)
+    loaded = modules_loaded_by(module)
+    held = [
+        m
+        for m in loaded
+        if m.startswith(("opentelemetry.exporter", "opentelemetry.instrumentation"))
+    ]
+    assert held == []
+
+
+@pytest.mark.parametrize("module", COMMANDS)
+def test_with_tracing_off_no_command_sets_a_global_tracer_provider(module: str) -> None:
+    # A global provider would switch FastAPI 0.143's own telemetry on (create_app's flags
+    # stop it anyway) and every library's instrumentation with it: none is ever set.
+    probe = (
+        f"import {module}; from opentelemetry import trace; "
+        "print(type(trace.get_tracer_provider()).__name__)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=120, check=False
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.strip().splitlines()[-1] == "ProxyTracerProvider"
+
+
+def test_the_tracing_module_imports_no_sdk_until_tracing_is_on() -> None:
+    loaded = modules_loaded_by("rag_qa.observability.tracing")
+    assert [m for m in loaded if m.startswith("opentelemetry.sdk")] == []
 
 
 @pytest.mark.parametrize("module", ["rag_qa.evaluation.gate", "rag_qa.evaluation.cli"])

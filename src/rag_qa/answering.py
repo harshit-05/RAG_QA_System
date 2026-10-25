@@ -51,7 +51,24 @@ chunk that reports ``usage_metadata``. Ollama reports them on its final chunk, w
 text, so they are read before the empty-text skip. Reading a chunk awaits nothing, so the
 cancel path is unchanged.
 
-Dependency direction: ``answering → {chain, resilience}``. Imports no front end.
+**Spans** (NFR-10, DEC-22, S3-7b). While a command has tracing on, each attempt at a model is
+a ``chat {model}`` span, with the GenAI conventions' attributes
+(:mod:`rag_qa.observability.genai`), under the context the answer began in: the API's
+server span, or ``rag-query``'s ``rag.query``. The retrieval's spans are the executor
+thread's. No span is ever made current here: a context attached before a ``yield`` and
+detached after it may be detached in another task, the slot's teardown's, where it fails.
+So each one has that explicit parent, and ends in a ``finally`` of its own, which a cancel
+inside the stream's close cannot skip. A cancel marks it ``rag.cancelled``; a failure, its
+class name.
+
+**No LangChain callback handler, ever:** neither a tracing integration's nor our own. The
+model is streamed with no config and no callbacks. A handler that suspends in
+``on_llm_new_token`` puts an await between the model's read and our ``yield``, where a
+cancel can land outside the read and leave the stream open: DEC-14's window, reopened.
+``tests/test_answering.py`` holds the call to that (a spy model).
+
+Dependency direction: ``answering → {chain, resilience, observability}``. Imports no front
+end.
 """
 
 import asyncio
@@ -66,6 +83,8 @@ from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessageChunk
 from langchain_core.messages.ai import UsageMetadata
+from opentelemetry.context import Context
+from opentelemetry.trace import Span, SpanKind
 
 from rag_qa import resilience
 from rag_qa.chain import (
@@ -76,6 +95,7 @@ from rag_qa.chain import (
     format_docs,
     page_label,
 )
+from rag_qa.observability import genai, tracing
 from rag_qa.resilience import Attempt, BreakerOpenError, CircuitBreaker
 
 
@@ -199,6 +219,21 @@ def _models(pipeline: QueryPipeline) -> list[_Model]:
     return models
 
 
+def _chat_span(model: _Model, attempt: int, parent: Context | None, reason: str | None) -> Span:
+    """The span of one attempt at ``model``, under ``parent`` and never current (the module
+    docstring). ``reason`` is why the hosted fallback was asked, which its span carries."""
+    if not tracing.enabled():
+        return tracing.NO_SPAN
+    identity = genai.model_identity(model.llm)
+    attributes = genai.chat_attributes(model.llm, identity)
+    attributes[genai.MODEL_REF] = model.ref
+    attributes[genai.ATTEMPT] = attempt
+    attributes[genai.FALLBACK] = model.fallback
+    if model.fallback and reason is not None:
+        attributes[genai.FALLBACK_REASON] = reason
+    return tracing.start(genai.chat_span_name(identity), parent, attributes, kind=SpanKind.CLIENT)
+
+
 def _judge(tried: Attempt, verdict: str | None) -> None:
     """Record what an attempt that failed before its first token says about its service."""
     if verdict in resilience.FAILED:
@@ -229,6 +264,9 @@ async def stream_answer(
     if pipeline.retrieve is None:
         raise NoIndexError("no index yet: ingest the corpus first")
     start = time.perf_counter()
+    # The context the answer began in, read once, before any yield: every attempt's span is
+    # its child, never current (the module docstring). None while tracing is off.
+    parent = tracing.current()
 
     # Retrieval is awaited, not streamed. It runs in an executor thread that a cancel
     # cannot stop: the awaiting task returns at once and the thread finishes on its own
@@ -244,6 +282,7 @@ async def stream_answer(
     # runs, so the model gets the same messages, as test_chain checks.
     messages = pipeline.prompt.format_messages(context=format_docs(docs), question=question)
     failure: Exception = RuntimeError("no model was asked")
+    reason: str | None = None  # why the next model is asked: the hosted fallback's span says
     for model in _models(pipeline):
         for attempt in range(1, model.attempts + 1):
             if attempt > 1:  # after a failed connection: the same model, once more
@@ -252,50 +291,66 @@ async def stream_answer(
                 tried = model.breaker.allow()
             except BreakerOpenError as e:
                 failure = e
+                reason = genai.BREAKER_OPEN  # nothing was sent, so no span of its own
                 break  # this model is out for now: the next one, if there is one
-            # astream is an async generator; the cast exposes aclose(), which the
-            # AsyncIterator annotation hides.
-            stream = cast(AsyncGenerator[AIMessageChunk, None], model.llm.astream(messages))
+            span = _chat_span(model, attempt, parent, reason)
+            asked = time.perf_counter()  # what the span's time to first chunk counts from
             usage: UsageMetadata | None = None  # this attempt's, from its provider
             try:
-                async for chunk in stream:
-                    if chunk.usage_metadata:
-                        usage = chunk.usage_metadata  # the last chunk that reports it wins
-                    # What StrOutputParser yields for a chunk: its text blocks, joined.
-                    # str(), because .text is a str subclass kept callable for compatibility.
-                    text = str(chunk.text)
-                    if not text:
-                        continue
-                    if ttft_ms is None:
-                        ttft_ms = _ms_since(start)
-                        tried.succeeded()  # the first token: the service answered
-                    yield Token(text)
-            except Exception as e:
-                if model.fallback:  # its HTTP errors look like Ollama's: say whose they are
-                    resilience.mark_fallback(e)
-                if ttft_ms is not None:
-                    raise  # after the first token: never repeated, never routed
-                verdict = resilience.classify(e)
-                _judge(tried, verdict)
-                if verdict != resilience.CONNECTION:
-                    raise  # a timeout or an error answer: no retry, no fallback (DEC-21)
-                failure = e
-                continue  # the same model once more, or the next one
-            except BaseException:
-                tried.abandoned()  # a cancel: nothing learned about the service
-                raise
+                # astream is an async generator; the cast exposes aclose(), which the
+                # AsyncIterator annotation hides.
+                stream = cast(AsyncGenerator[AIMessageChunk, None], model.llm.astream(messages))
+                try:
+                    async for chunk in stream:
+                        if chunk.usage_metadata:
+                            usage = chunk.usage_metadata  # the last chunk that reports it wins
+                        # What StrOutputParser yields for a chunk: its text blocks, joined.
+                        # str(), because .text is a str subclass kept callable for compatibility.
+                        text = str(chunk.text)
+                        if not text:
+                            continue
+                        if ttft_ms is None:
+                            ttft_ms = _ms_since(start)
+                            tried.succeeded()  # the first token: the service answered
+                            genai.record_first_token(span, time.perf_counter() - asked)
+                        yield Token(text)
+                except Exception as e:
+                    tracing.failed(span, e)
+                    if model.fallback:  # its HTTP errors look like Ollama's: say whose they are
+                        resilience.mark_fallback(e)
+                    if ttft_ms is not None:
+                        raise  # after the first token: never repeated, never routed
+                    verdict = resilience.classify(e)
+                    _judge(tried, verdict)
+                    if verdict != resilience.CONNECTION:
+                        raise  # a timeout or an error answer: no retry, no fallback (DEC-21)
+                    failure = e
+                    reason = genai.CONNECTION_FAILED
+                    continue  # the same model once more, or the next one
+                except BaseException:
+                    tried.abandoned()  # a cancel: nothing learned about the service
+                    tracing.cancelled(span)
+                    raise
+                finally:
+                    # A cancel lands inside the model's own read and unwinds every frame down
+                    # to the HTTP response before it reaches us: that is the path that stops
+                    # generation at once (the CLI's Ctrl-C, Starlette's disconnect). This
+                    # aclose() covers the other ending, a consumer that stops at a `yield`. It
+                    # closes the chat model's own generator; langchain-core 1.6.3 iterates the
+                    # provider's generator with `async for` and never closes it, so the loop's
+                    # finalizer closes that one a loop iteration or two later.
+                    # A failure to close must not replace the error that ended the stream (the
+                    # model's own, say). BaseException, so a cancel, still gets through.
+                    with suppress(Exception):
+                        await stream.aclose()
             finally:
-                # A cancel lands inside the model's own read and unwinds every frame down
-                # to the HTTP response before it reaches us: that is the path that stops
-                # generation at once (the CLI's Ctrl-C, Starlette's disconnect). This
-                # aclose() covers the other ending, a consumer that stops at a `yield`. It
-                # closes the chat model's own generator; langchain-core 1.6.3 iterates the
-                # provider's generator with `async for` and never closes it, so the loop's
-                # finalizer closes that one a loop iteration or two later.
-                # A failure to close must not replace the error that ended the stream (the
-                # model's own, say). BaseException, so a cancel, still gets through.
-                with suppress(Exception):
-                    await stream.aclose()
+                # Its own finally: a second cancel inside the close above still ends it.
+                genai.record_usage(
+                    span,
+                    None if usage is None else usage["input_tokens"],
+                    None if usage is None else usage["output_tokens"],
+                )
+                span.end()
             tried.succeeded()  # an answer with no text at all; a no-op after a token
             yield Done(
                 ttft_ms=ttft_ms,

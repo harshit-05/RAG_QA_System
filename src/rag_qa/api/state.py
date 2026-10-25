@@ -41,6 +41,8 @@ reopen.
 """
 
 import asyncio
+import contextvars
+import functools
 import inspect
 import logging
 import math
@@ -205,6 +207,11 @@ def serialized(
     was cancelled. The next retrieval therefore waits for an orphaned one rather than
     overlapping it. A waiting retrieval whose own request is cancelled before it gets the
     lock does no work at all.
+
+    **The thread runs in a copy of the request's context** (S3-7b). ``run_in_executor``
+    carries no context variables, unlike LangChain's own executor helper on ``rag-query``'s
+    path. With the copy, the retrieval's spans are the request's server span's children,
+    and its log lines carry the request's ``request_id``.
     """
 
     def run(asked: RetrievalQuery, abandoned: threading.Event | None = None) -> list[Document]:
@@ -215,8 +222,9 @@ def serialized(
 
     async def arun(asked: RetrievalQuery) -> list[Document]:
         abandoned = threading.Event()
+        in_context = functools.partial(contextvars.copy_context().run, run, asked, abandoned)
         try:
-            return await asyncio.get_running_loop().run_in_executor(None, run, asked, abandoned)
+            return await asyncio.get_running_loop().run_in_executor(None, in_context)
         except asyncio.CancelledError:
             abandoned.set()
             raise

@@ -13,8 +13,10 @@ import sys
 from typing import Any
 
 import pytest
+from conftest import Traced
+from opentelemetry import trace
 
-from rag_qa.observability import logs
+from rag_qa.observability import logs, tracing
 
 
 def json_lines(text: str) -> list[dict[str, Any]]:
@@ -180,6 +182,30 @@ def test_each_request_starts_its_own_context(
     assert (one["request_id"], one["job_id"]) == (first, "j1")
     assert two["request_id"] == second != first
     assert "job_id" not in two  # nothing is left from before
+
+
+def test_a_line_logged_under_a_span_carries_its_trace_and_span_ids(
+    as_json: None, traced: Traced, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # S3-7b: what joins a log line to its trace.
+    with tracing.span("rag.test"):
+        logging.getLogger("rag_qa.api").info("inside")
+    logging.getLogger("rag_qa.api").info("outside")
+    inside, outside = json_lines(capsys.readouterr().err)
+    span = traced.one("rag.test")
+    assert span.context is not None
+    assert inside["trace_id"] == trace.format_trace_id(span.context.trace_id)
+    assert inside["span_id"] == trace.format_span_id(span.context.span_id)
+    assert "trace_id" not in outside and "span_id" not in outside
+
+
+def test_with_tracing_off_no_line_carries_trace_ids(
+    as_json: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with tracing.span("rag.test"):
+        logging.getLogger("rag_qa.api").info("inside")
+    (line,) = json_lines(capsys.readouterr().err)
+    assert "trace_id" not in line and "span_id" not in line
 
 
 def test_the_handler_writes_to_stderr_as_it_is_now(

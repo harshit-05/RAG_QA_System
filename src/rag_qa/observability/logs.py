@@ -14,7 +14,8 @@ ours and the libraries', comes out alike:
 - **Every log goes to stderr.** The commands print their results to stdout.
 - **Fields:** a record's ``extra=`` keys become fields, and so do the context variables bound
   with :func:`bind` and :func:`bind_request`: a request's ID in the API, a job's ID in its
-  ingest thread. S3-7b adds the trace and span IDs, S3-8 the API key's name.
+  ingest thread. While tracing is on, a line logged under a span carries its ``trace_id`` and
+  ``span_id`` too, which join it to its trace (S3-7b). S3-8 adds the API key's name.
 - **Levels:** our ``rag_qa`` loggers at INFO, every other at WARNING, so httpx's line per
   request stays out. pypdf at ERROR for the whole process: a corrupt PDF's own warnings
   never print ahead of the clean error the run reports for it (S2-8), the API's ingest jobs'
@@ -26,8 +27,8 @@ ours and the libraries', comes out alike:
 No question, prompt or answer text is logged anywhere: the log goes wherever the operator
 sends it.
 
-Loads no model stack (``tests/test_architecture.py``): structlog, the standard library and
-:mod:`rag_qa.settings`.
+Loads no model stack (``tests/test_architecture.py``): structlog, the standard library, the
+OpenTelemetry API and :mod:`rag_qa.settings`.
 """
 
 import logging
@@ -36,6 +37,7 @@ import uuid
 from typing import Any, Final, Literal, TextIO
 
 import structlog
+from opentelemetry import trace
 from pydantic import ValidationError
 from structlog.typing import EventDict, Processor, WrappedLogger
 
@@ -91,6 +93,16 @@ def _without_formatter_leftovers(_: WrappedLogger, __: str, event_dict: EventDic
     return event_dict
 
 
+def _trace_ids(_: WrappedLogger, __: str, event_dict: EventDict) -> EventDict:
+    """The trace and the span a record was logged under, when one is current (S3-7b): what
+    joins a log line to its trace. Nothing while tracing is off, when no span ever is."""
+    context = trace.get_current_span().get_span_context()
+    if context.is_valid:
+        event_dict["trace_id"] = trace.format_trace_id(context.trace_id)
+        event_dict["span_id"] = trace.format_span_id(context.span_id)
+    return event_dict
+
+
 def _message_only(_: WrappedLogger, __: str, event_dict: EventDict) -> str:
     """The CLIs' console line: the message, and a traceback under it when there is one."""
     message = str(event_dict.get("event", ""))
@@ -102,6 +114,7 @@ def _formatter(chosen: Format, *, detailed: bool) -> structlog.stdlib.ProcessorF
     """The formatter of every record, for ``chosen``: see the module docstring."""
     foreign_pre_chain: list[Processor] = [
         structlog.contextvars.merge_contextvars,
+        _trace_ids,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.ExtraAdder(),

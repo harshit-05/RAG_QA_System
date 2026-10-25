@@ -86,6 +86,8 @@ from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.retrievers import BaseRetriever
+from opentelemetry.semconv.attributes.db_attributes import DB_COLLECTION_NAME, DB_SYSTEM_NAME
+from opentelemetry.trace import SpanKind
 from pydantic import ConfigDict, SecretStr
 from qdrant_client import QdrantClient, models
 from qdrant_client.common.client_exceptions import ResourceExhaustedResponse
@@ -93,6 +95,7 @@ from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedR
 
 from rag_qa import resilience
 from rag_qa.manifest import Manifest, ManifestError, manifest_payload, parse_manifest
+from rag_qa.observability import tracing
 from rag_qa.resilience import BreakerOpenError, CircuitBreaker, DeadlineError
 from rag_qa.schema import SEARCH_TYPES, collection_problem
 from rag_qa.settings import StoreSettings
@@ -909,6 +912,10 @@ class QdrantRetriever(BaseRetriever):
     **Sources:** ``invoke(question, sources=[...])`` limits every search to those corpus
     documents. LangChain hands a retriever's extra keyword arguments to
     :meth:`_get_relevant_documents` once its signature names them.
+
+    **Spans** while tracing is on (S3-7b): ``rag.embed_query``, then ``rag.vector_search``,
+    which holds every request a search makes to Qdrant (both branches and their fusion when
+    hybrid), with the generation it searched and the mode.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -928,17 +935,27 @@ class QdrantRetriever(BaseRetriever):
         run_manager: CallbackManagerForRetrieverRun,
         sources: Sequence[str] = (),
     ) -> list[Document]:
-        vector = self.embeddings.embed_query(query)
-        if self.sparse is None or self.prefetch is None or self.rrf_k is None:
-            found = search(self.store, self.generation, vector, self.k, sources=sources)
-        else:
-            lists = [search(self.store, self.generation, vector, self.prefetch, sources=sources)]
-            lexical = self.sparse.encode_query(query)
-            if lexical.indices:
-                lists.append(
-                    search(self.store, self.generation, lexical, self.prefetch, sources=sources)
-                )
-            found = fuse(lists, rrf_k=self.rrf_k, limit=self.k)
+        with tracing.span(tracing.EMBED_QUERY):
+            vector = self.embeddings.embed_query(query)
+        dense = self.sparse is None or self.prefetch is None or self.rrf_k is None
+        searched = {
+            DB_SYSTEM_NAME: tracing.QDRANT,
+            DB_COLLECTION_NAME: self.generation,
+            tracing.MODE: "dense" if dense else "hybrid",
+        }
+        with tracing.span(tracing.VECTOR_SEARCH, searched, kind=SpanKind.CLIENT):
+            if self.sparse is None or self.prefetch is None or self.rrf_k is None:
+                found = search(self.store, self.generation, vector, self.k, sources=sources)
+            else:
+                lists = [
+                    search(self.store, self.generation, vector, self.prefetch, sources=sources)
+                ]
+                lexical = self.sparse.encode_query(query)
+                if lexical.indices:
+                    lists.append(
+                        search(self.store, self.generation, lexical, self.prefetch, sources=sources)
+                    )
+                found = fuse(lists, rrf_k=self.rrf_k, limit=self.k)
         docs = []
         for point in found:
             payload = point.payload or {}
