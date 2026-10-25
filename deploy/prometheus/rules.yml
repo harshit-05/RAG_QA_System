@@ -202,12 +202,22 @@ groups:
   # --- the causes -------------------------------------------------------------------------
   - name: rag-causes
     rules:
-      # A breaker not closed, open or half-open, for 5 minutes (DEC-21): the max keeps one
-      # that flips between the two pending. Every breaker pages, but the model's while a
-      # hosted fallback answers in its place: the rule below.
+      # A breaker whose probes keep failing, for 5 minutes (DEC-21): not closed, and open
+      # within each of the last 4 minutes. A breaker is open for 30 s, then half-open until a
+      # question probes it: the max over the two keeps one that flips between them pending.
+      # Half-open alone is not enough. After an outage, an idle server's model breaker stays
+      # half-open until the next question, which it lets through, and readiness never probes
+      # it (Qdrant's it does), so the dependency may be back for hours (second review). The
+      # 4 minutes stay under the 5 of `for`, so the one opening that began the outage never
+      # pages alone. Every breaker pages, but the model's while a hosted fallback answers in
+      # its place: the rule below.
       - alert: RagBreakerOpen
         expr: |
-          (max by (job, instance, breaker) (rag_breaker_state{state!="closed"}) == 1)
+          (
+            (max by (job, instance, breaker) (rag_breaker_state{state!="closed"}) == 1)
+            and on (job, instance, breaker)
+            (max by (job, instance, breaker) (max_over_time(rag_breaker_state{state="open"}[4m])) == 1)
+          )
           unless on (job, instance, breaker)
           (max by (job, instance, breaker) (rag_breaker_state{breaker="llm"}) and on (job, instance) max by (job, instance) (rag_breaker_state{breaker="fallback"}))
         for: 5m
@@ -217,10 +227,13 @@ groups:
           summary: "{{ $labels.instance }}: the {{ $labels.breaker }} breaker has been open for 5 minutes"
           description: The questions that need it are refused with 503 and Retry-After; /v1/health names the dependency, and the server log says why.
       # The model's breaker while the hosted fallback answers: answers still come, from the
-      # fallback, and every question and its chunks leave this host (DEC-21).
+      # fallback, and every question and its chunks leave this host (DEC-21). The same test
+      # of failing probes as above.
       - alert: RagBreakerOpen
         expr: |
           (max by (job, instance, breaker) (rag_breaker_state{breaker="llm", state!="closed"}) == 1)
+          and on (job, instance, breaker)
+          (max by (job, instance, breaker) (max_over_time(rag_breaker_state{breaker="llm", state="open"}[4m])) == 1)
           and on (job, instance)
           max by (job, instance) (rag_breaker_state{breaker="fallback"})
         for: 5m
