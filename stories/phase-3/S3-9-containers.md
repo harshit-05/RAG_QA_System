@@ -92,6 +92,14 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     - **SSE and bodies:** `flush_interval -1`, and `request_body max_size 64KB`.
   - **Profile `observability`:** Jaeger 2.22.0, Prometheus v3.15.0 (scraping the app's
     metrics port on the internal network) and Alertmanager v0.34.1, with S3-7b's files.
+    - **The app's environment for them** (S3-7b's close-out): `RAG_API_METRICS_PORT=9464`,
+      the port `deploy/prometheus/prometheus.yml` discovers the `app` replicas on, and
+      `OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318`. Tracing keys on that generic
+      variable: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` alone turns nothing on, and set beside it
+      the spans go there while the start-up line names the generic one (S3-7b's second
+      review). The Deployment section says so.
+    - **Checking the traces:** Jaeger 2.22's query API is `/api/v3/` (`/api/v3/services`,
+      `/api/v3/traces?query.service_name=…`); the older `/api/services` answers 404.
     The metrics port carries no token (S3-7), so it is never published. `rag-serve` binds
     it where the API listens, `0.0.0.0` in the container, so only a published port would
     expose it beyond the internal network.

@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Built and reviewed, awaiting its close-out record: PR #26 on `feat/s3-7b-traces-alerts`, `845133b` … `0a11270`, CI green on `0815ac1` and on `0a11270` (run 40216686158). Plan approved 2026-10-25 (below, "Plan"); on Opus 5.5 at max effort (Deviation). The first review (2026-10-25) found one false claim (a span's exception text), six gaps in what the tests would catch and two smaller things, fixed on the PR ("First review"). The second (2026-10-26, on `0a11270`) found an alert that paged a healthy idle server, fixed on the PR, and a check that gated no merge, for the maintainer ("Second review"). |
+| **Status** | Done 2026-10-26 (PR #26, awaiting its merge). Plan approved 2026-10-25 (below, "Plan"); on Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-25 (`845133b` … `0815ac1`). The first review (2026-10-25, on `0815ac1`) found one false claim (a span's exception text), six gaps in what the tests would catch and two smaller things; the second (2026-10-26, on `0a11270`) found an alert that paged a healthy idle server, and a check that gated no merge, for the maintainer. The fixes are on the PR (`cc11d55` … `98ddc6e`). CI is green on `98ddc6e` (run 40235082842: `check`, `eval-retrieval`, `deploy-config`). The maintainer adds `deploy-config` to `main`'s ruleset after the merge. |
 | **Closes** | NFR-10 (traces); DEC-22 (traces and alerts); DEC-24's `deploy-config` job |
 | **Depends on** | S3-7 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -55,9 +55,10 @@ plan, which split this half off (design review 1's seam).
   - **No prompt or answer text** in any span, and **no LangChain callback handler**
     anywhere (`answering.py` says why).
 - **Alerts:** `deploy/prometheus/rules.yml`, plus `rules.test.yml` for `promtool`.
-  - **What they cover:** availability (5xx on `/v1/query`, and answers that end in an `error`
-    event), NFR-1 (retrieval p95), NFR-2a (`sources`) and NFR-2b (TTFT), multi-window burn rates
-    as in the SRE workbook; plus a breaker open for more than 5 minutes, a failed ingest, a
+  - **What they cover:** availability (the 503 refusals of `/v1/query`, and answers that end
+    in an `error` event; no metric counts an unexpected 500, the second review), NFR-1
+    (retrieval p95), NFR-2a (`sources`) and NFR-2b (TTFT), multi-window burn rates as in the
+    SRE workbook; plus a breaker open for more than 5 minutes, a failed ingest, a
     scrape target down, and no target at all (`absent(up)`, the plan's D9).
   - **`deploy/prometheus/prometheus.yml`** and **`deploy/alertmanager/alertmanager.yml`:**
     a null receiver, with an email example commented.
@@ -159,12 +160,43 @@ curl -s 127.0.0.1:6333/collections | jq -r '.result.collections[].name' | grep '
 PROMETHEUS=prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
 ALERTMANAGER=prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a
 docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool "$PROMETHEUS" check config /p/prometheus.yml
-docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool "$PROMETHEUS" test rules /p/rules.test.yml
+docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool "$PROMETHEUS" test rules /p/rules.test.yml /p/rules.causes.test.yml
 docker run --rm -v "$PWD/deploy/alertmanager:/a:ro" --entrypoint amtool "$ALERTMANAGER" check-config /a/alertmanager.yml
 
 docker stop jaeger
 gh pr checks
 ```
+
+## Verification record (2026-10-25 and 2026-10-26)
+
+Rows 1 and 4–7, 15–17 and the audit were run again on 2026-10-26 on `98ddc6e`, the PR's head
+after both reviews; their first runs, on 2026-10-25 before the commits, gave the same results
+with the suite then at 1578 tests (98.46%). Rows 2, 9–13 and 18 ran in the maintainer's
+terminal on 2026-10-25, on the tree committed as `845133b` … `0815ac1`, each logged with
+`tee -i` under `~/dev/rag-s3-7b/`, where Jaeger's two exports and their span trees are kept
+(`jaeger-rag-serve.json`, `jaeger-rag-ingest.json`, `traces.txt`).
+
+| # | Command | Result |
+| --- | --- | --- |
+| 1 | `uv run rag-eval check` | exit 0: the six parts `ok`, every floor met; "The committed run matches this checkout" |
+| 2 | `RAG_LOG_FORMAT=console uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-7b/contexts.json` | 0.950 (19 of 20) / 0.796 / 0.858, every floor met; 25 questions' contexts written |
+| 3 | `diff ~/dev/rag-s3-2/contexts-qdrant.json ~/dev/rag-s3-7b/contexts.json` | IDENTICAL; both `5a36e2f9d00bbdaf49edaf07b8ba6af6f0e2ed52a5cf4c2e16c39aa66a074cbc`. The first review ran it again on `0815ac1`; since then only `scrub.py`, the export path of `tracing.py` and `deploy/` changed, and `rag-eval` never traces |
+| 4 | `HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q` | 1591 passed, 18 skipped, 5 xfailed; coverage 98.47%; `HF_HOME` stayed empty |
+| 5 | `uv run ruff check && uv run ruff format --check && uv run mypy` | all checks passed; 77 files formatted; no issues in 38 source files |
+| 6 | `RAG_TEST_QDRANT_URL=http://127.0.0.1:6333 uv run pytest -m qdrant_server -q` | 11 passed (the fallback module's skip is the 1 skipped); the live collections unchanged: `rag_qa`'s two, the alias on `…7f20891e` |
+| 7 | the lock against `main`: `git diff -U0 main -- uv.lock \| grep -E '^-(name\|version) = '` | nothing: 13 packages added, none removed or moved. Added: `opentelemetry-sdk`, `-exporter-otlp-proto-http`, `-exporter-otlp-proto-common` and `-proto` 1.45.1; `-instrumentation`, `-instrumentation-asgi`, `-instrumentation-fastapi`, `-util-http`, `-exporter-http-transport` and `-exporter-otlp-common` 0.66b1; asgiref 3.13.0, googleapis-common-protos 1.76.0, wrapt 2.5.1. pypdf 6.19.0; `uv lock --check` resolves 194. CI's Audit command, run locally on 2026-10-26: "No known vulnerabilities found, 11 ignored" |
+| 8 | `uv sync --extra fallback`, the fallback and tracing tests, then `uv sync` (2026-10-25) | the new test of a real `ChatOpenAI`'s chat span passed (`openai`, `openai/gpt-oss-120b`, temperature 0.0, max tokens 1024, `api.groq.com`:443, `rag.fallback` true, `connection_failed`). One older test failed, on `main`'s tree too: a stale assertion (Discovered). The environment back to CI's |
+| 9 | Jaeger 2.22.0 by digest (the story's `docker run`) | up; its query API answers at `/api/v3/`, not `/api/services` (Discovered) |
+| 10 | `RAG_LOG_FORMAT=console OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 RAG_API_METRICS_PORT=9464 uv run rag-serve 2>&1 \| tee -i …/serve.log`, one answer, then one dropped after three tokens | `Sending traces to http://127.0.0.1:4318 over OTLP/HTTP, as service rag-serve.`; each request's lines carry `request_id`, `trace_id` and `span_id`. The answer: 164.6 s, first token at 158.3 s, 1,515 input and 33 output tokens. The drop: "Answer cancelled: its client disconnected". A clean shutdown, no exporter warning; `grep -c 'Failed to detach'` 0 in all three logs |
+| 11 | `curl -s 127.0.0.1:9464/metrics \| grep -E '^(rag_answers_total\|rag_ttft_seconds_count)'` (before Ctrl-C) | `rag_answers_total` answered 1, cancelled 1, failed 0; `rag_ttft_seconds_count` 2 |
+| 12 | Jaeger's `/api/v3/traces?query.service_name=rag-serve…` | services `rag-serve`, `rag-ingest`, `jaeger`. Each answer one trace of six spans: `POST /v1/query` (SERVER, the contrib scope, status unset) → `rag.retrieve` (`rag.chunks` 5) → `rag.embed_query`, `rag.vector_search` (CLIENT; `qdrant`, the generation, `dense`) and `rag.rerank` (20 → 5); and `chat mistral` (CLIENT; `ollama`, `mistral`, temperature 0, max tokens 512, `time_to_first_chunk` 157.3 s, usage 1515/33, attempt 1, not the fallback; event `rag.first_token`). The dropped answer's chat span: `rag.cancelled`, its event at 165.1 s after the first token's at 164.3 s, no usage; its server span unset. No question or answer text anywhere; no `server.address` on the Ollama span (Discovered). The span's first token counts from the attempt's request, and the `done` event's from the request's arrival (S3-7's second review), so the event's is about a second later: the retrieval |
+| 13 | `RAG_LOG_FORMAT=console OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 RAG_QDRANT_COLLECTION=s3_7b_scratch uv run rag-ingest --rebuild …`, its trace, then the scratch delete | `rag.ingest` (104.1 s; a full rebuild; 3 files, 561 pages, 1,708 chunks and points, 3 added) with `scan` 24 ms, `prepare` 32.0 s, `embed` 64.4 s, `publish` 0.6 s: each the summary's throughput line ("17.5 pages/s loaded, 26.5 chunks/s embedded, 2,850 points/s written"). The delete: `{"result":true}`; the scratch alias went with its collection; `rag_qa`'s two generations and alias unchanged; `var/` holds `ingest.lock` only |
+| 14 | the six commits' split, in a throwaway index, and `main`'s code over the new lock (a scratch tree) | the six cover all 37 paths, `.claude/` left out; `main`'s suite over the new lock: 1490 passed, 20 skipped (the hygiene test outside a checkout), 5 xfailed; ruff and mypy clean on it |
+| 15 | `promtool check config` (the pinned image) | SUCCESS: 1 rule file, 41 rules |
+| 16 | `promtool test rules /p/rules.test.yml /p/rules.causes.test.yml` | SUCCESS, both files, 24 s |
+| 17 | `amtool check-config` (the pinned image) | SUCCESS: global config, route, 0 inhibit rules, 1 receiver, 0 templates |
+| 18 | `docker stop jaeger` | stopped by the maintainer after the traces were read |
+| 19 | `gh pr checks` | green on `0815ac1`, on `0a11270` (run 40216686158) and on `98ddc6e` (run 40235082842): `check` 4m5s, `deploy-config` 27s, `eval-retrieval` 2m32s |
 
 ## Review notes for the human
 
@@ -221,7 +253,7 @@ instrumentation from uv's cache, read in place):
 
 ## Discovered
 
-(The implementation's items are filled at close-out; this one is the first review's.)
+The first item is the first review's; the rest are the implementation's (2026-10-25).
 
 - **The contrib server span records an unhandled exception's message and stacktrace,** which
   the story's own rule forbids ("`error.type` to the class name only", "no prompt or answer
@@ -250,6 +282,45 @@ instrumentation from uv's cache, read in place):
     collector (no byte of the message, the stacktrace or a host path in the protobuf), and unit
     tests that the rest of a span, its drop counts included, is untouched. Five mutants, each
     caught.
+
+- **FastAPI 0.143 has OpenTelemetry of its own** (the plan's first finding, D4; ARCHITECTURE's
+  DEC-22 note). Off in `create_app` by explicit flags. A FastAPI release that changes its
+  defaults, or how it detects the contrib middleware, fails the test of one server span per
+  request with a global provider set.
+- **Python reads `OTEL_EXPORTER_OTLP_TIMEOUT` in seconds** (exporter 1.45.1, `float(raw)`,
+  default 10), where the specification says milliseconds: a value written for the
+  specification, 10000, means about 2.8 hours. The README says seconds.
+- **Two pieces the design cited were missing:** `answering.py`'s reason for no LangChain
+  callback handler, and ARCHITECTURE §3.5's spy-model test. Both are in (D8).
+- **The server span's HTTP attributes are the old names,** `http.method`, `http.url`,
+  `net.peer.ip` (seen in Jaeger): the contrib default unless
+  `OTEL_SEMCONV_STABILITY_OPT_IN=http`. The README says so.
+- **langsmith 0.12, through langchain-core, imports the SDK's `TracerProvider`** in every
+  command once the SDK is installed, as a type (about 20 ms; it configures nothing). So the
+  architecture tests hold out the exporter, the instrumentation and a global provider, and
+  check that `tracing.py` imports no SDK at module level (Deviation).
+- **pytest's `caplog.text` in a fixture's teardown holds the teardown's records only.** The
+  `traced` fixture's first "Failed to detach context" check read it there and saw nothing
+  of the test itself: a mutant that makes the chat span current across the stream's yields
+  passed it. It reads `caplog.get_records()` for each phase now, and that mutant fails the
+  forced window's tests.
+- **Ollama's chat spans carry no `server.address` or `server.port`.** `mistral_ollama` names
+  no `base_url`, so the ollama client takes `OLLAMA_HOST` or its default, kept in a private
+  attribute, and `chat_attributes` reads only a URL the entry names. A `base_url` in
+  `config.yaml` would move the fingerprint, so it stays so. The fallback's span has
+  `api.groq.com`:443 (a test).
+- **Jaeger 2.22 serves its query API at `/api/v3/`** (`/api/v3/services`;
+  `/api/v3/traces?query.service_name=…&query.start_time_min=…&query.start_time_max=…`, in
+  OTLP JSON). The plan's `/api/services` answers 404. S3-9's checks read it there.
+- **Two of the thirteen new packages were days old when locked:** asgiref 3.13.0 (uploaded
+  2026-10-23) and googleapis-common-protos 1.76.0 (2026-10-22), both transitive. DEC-24's age
+  rule is for the pinned images and binaries; nothing applies one to the lock. The audit
+  finds nothing.
+- **A stale assertion in `tests/test_fallback_openai.py`:**
+  `test_the_fallback_streams_the_answer_and_sends_what_the_entry_says` asserts that no
+  `stream_options` is sent, and `groq_fallback`'s `stream_usage: true` (S3-7) sends one. It
+  fails with the `fallback` extra installed, on `main` too; CI installs no extra and skips
+  the file. Out of scope: a backlog line.
 
 ## First review (2026-10-25, on `0815ac1`)
 
@@ -380,4 +451,24 @@ For the maintainer:
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **The model:** Opus 5.5 at max effort, in place of Fable, which is unavailable (CLAUDE.md).
+- **The architecture tests guard the exporter and the instrumentation, not the SDK** (D2: "the
+  SDK is imported only when tracing is on"). langsmith imports it in every command
+  (Discovered); our code still imports it only in `configure()`, and a test says so.
+- **No `end()` helper** (D3): the answer stream ends each chat span with the span's own `end()`,
+  in a `finally` of its own.
+- **The answer's and the ingest's span tests are in `test_tracing.py`;** the plan's file list
+  named `test_api.py` and `test_ingest.py`, which did not change.
+- **The alert-rule tests run at a 5-minute evaluation interval** (D9 named none). At 1 minute,
+  `rules.test.yml` took 3 min 56 s; at 5, with 1-minute samples only where a 5-minute window is
+  read and the slow scenarios compressed to about a day, 22 s. The first review found what a
+  5-minute interval cannot tell apart (`for: 1m` against `5m`) and added
+  `rules.causes.test.yml`, at 1 minute, and a pytest over the 28 recording rules.
+- **A scrubbing exporter, `observability/scrub.py`,** which the plan did not have: the contrib
+  spans record an exception's message (the first review; the maintainer chose to scrub at the
+  exporter).
+- **`RagBreakerOpen` also needs the breaker opened within the last 4 minutes** (the second
+  review), where S3-7's plan settled `state!="closed"` for 5 minutes: a half-open breaker on
+  an idle server paged.
+- **`deploy-config` joins `main`'s ruleset at this story's merge,** not at S3-9 (DEC-24): the
+  maintainer, at the second review.
