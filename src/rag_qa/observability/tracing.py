@@ -8,9 +8,16 @@ provider of our own then batches the spans and sends them over OTLP/HTTP to that
 ``/v1/traces``; the exporter reads the SDK's other variables itself, the timeout among them
 (``OTEL_EXPORTER_OTLP_TIMEOUT``, in seconds in Python, not the spec's milliseconds). A dead
 collector costs at most that timeout at exit, with the exporter's warnings in the log. Off,
-every helper below does nothing at all: no span, no context touched, and the SDK is never
-imported. ``rag-eval`` never calls it: its record is its files, and an endpoint left in the
+every helper below does nothing at all: no span, no context touched, and our code imports
+neither the exporter nor the instrumentation. (langsmith, which langchain-core imports, takes
+the SDK's ``TracerProvider`` as a type whenever the SDK is installed, and configures nothing.)
+``rag-eval`` never calls it: its record is its files, and an endpoint left in the
 shell must not trace a tier-2 run.
+
+**Scrubbed on the way out** (:mod:`rag_qa.observability.scrub`). The collector is not this
+host, so every span leaves with its exception events cut to the class name and no status
+description: the contrib server span records an unhandled exception's message and stacktrace
+itself, and has no switch to stop. The full traceback is in the log, on this host.
 
 **Never the global provider.** The shared code, retrieval and the answer stream, gets a no-op
 tracer unless a command turned tracing on here, whatever the environment holds. And FastAPI
@@ -33,7 +40,8 @@ API turns it off besides, :func:`rag_qa.api.app.create_app`).
 class name, never its message, which may carry a path or a document's text (:func:`failed`). A
 cancel adds the event and the attribute ``rag.cancelled``, and leaves the status unset: the
 client's choice, not an error (:func:`cancelled`). No question, prompt, chunk or answer text
-goes into any span.
+goes into any span, and no exception's message or stacktrace leaves the host in one, whichever
+instrumentation recorded it.
 
 Loads no model stack (``tests/test_architecture.py``): the OpenTelemetry API, and the SDK only
 once tracing is on.
@@ -146,12 +154,15 @@ def configure(service: str) -> bool:
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from opentelemetry.semconv.attributes.service_attributes import SERVICE_NAME, SERVICE_VERSION
 
+    from rag_qa.observability.scrub import ScrubbingExporter
+
     name = settings.service_name or service
     provider = TracerProvider(
         resource=Resource.create({SERVICE_NAME: name, SERVICE_VERSION: __version__})
     )
     # The exporter reads its endpoint, its timeout and its headers from the SDK's variables.
-    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    # Scrubbed, since the collector is not this host: no span leaves it with exception text.
+    provider.add_span_processor(BatchSpanProcessor(ScrubbingExporter(OTLPSpanExporter())))
     install(provider)
     global _owned
     _owned = True

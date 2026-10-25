@@ -11,6 +11,9 @@
   the health probes, and none from FastAPI's own telemetry, even with a global provider set;
   an answer's retrieval and chat spans beneath its server span; no question, chunk, answer or
   host path in any span.
+- **What leaves the host.** An unhandled exception's server span reaches the exporter as its
+  class name alone: contrib records the message and the stacktrace itself, and the scrubbing
+  exporter drops them (first review).
 - **Ingest.** A run is a span with its four steps and its counts, and an API job's run is in
   the trace of the request that started it.
 
@@ -52,11 +55,13 @@ from langchain_core.documents import Document
 from langchain_core.runnables import RunnableLambda
 from opentelemetry import context as otel_context
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import Event, ReadableSpan, SpanLimits, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.semconv.attributes.db_attributes import DB_COLLECTION_NAME, DB_SYSTEM_NAME
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.attributes.service_attributes import SERVICE_NAME, SERVICE_VERSION
-from opentelemetry.trace import SpanKind, StatusCode
+from opentelemetry.trace import SpanKind, Status, StatusCode
 from qdrant_client import QdrantClient
 
 from rag_qa import __version__, cli, ingest
@@ -66,6 +71,7 @@ from rag_qa.api.state import serialized
 from rag_qa.chain import RetrievalQuery, _rerank_attributes
 from rag_qa.config import load_config
 from rag_qa.observability import genai, tracing
+from rag_qa.observability.scrub import ScrubbingExporter, scrubbed
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_DATA_PATH, ServerSettings
 
@@ -481,3 +487,186 @@ def test_an_ingest_job_s_run_is_in_the_trace_of_its_request(
     assert run.parent is not None and request.context is not None
     assert run.parent.span_id == request.context.span_id
     assert run.context is not None and run.context.trace_id == request.context.trace_id
+
+
+# --- what leaves the host: no exception text in any span (first review) ------------------------
+
+SECRET = "WHO-IS-THE-SECRET-EMPLOYEE-QUESTION"
+
+
+def scrubbing_provider() -> tuple[TracerProvider, InMemorySpanExporter]:
+    """A provider whose spans reach an in-memory exporter through the same wrapper
+    :func:`tracing.configure` puts in front of the OTLP one."""
+    memory = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(ScrubbingExporter(memory)))
+    return provider, memory
+
+
+def everything(span: ReadableSpan) -> str:
+    """All a span would say to a collector: its JSON form holds name, attributes, events and
+    status (description included)."""
+    return span.to_json()
+
+
+def raising_app(config: RagConfig, message: str) -> TestClient:
+    app = create_app(
+        config, ServerSettings(), serving=fake_serving(config, StreamingFakeChatModel())
+    )
+
+    @app.get("/boom")
+    def boom() -> None:
+        raise RuntimeError(message)
+
+    return TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False)
+
+
+def test_negative_control_the_server_span_records_an_unhandled_exception_s_message(
+    fake_config: RagConfig,
+) -> None:
+    # Why the wrapper exists: contrib's server span records the exception itself, message and
+    # stacktrace (and its FastAPI wrapper writes "Type: message" into the status, which the 500
+    # response's own status then replaces). Nothing here scrubs it.
+    memory = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(memory))
+    tracing.install(provider)
+    with raising_app(fake_config, f"failed on {SECRET}") as client:
+        assert client.get("/boom").status_code == 500
+    (server_span,) = memory.get_finished_spans()
+    (exception,) = [e for e in server_span.events if e.name == "exception"]
+    assert SECRET in str(dict(exception.attributes or {}))
+    assert "Traceback" in str(dict(exception.attributes or {}))
+
+
+def test_an_unhandled_exception_leaves_the_server_span_as_its_class_name_alone(
+    fake_config: RagConfig,
+) -> None:
+    provider, memory = scrubbing_provider()
+    tracing.install(provider)
+    with raising_app(fake_config, f"failed on {SECRET}, in /home/someone/corpus/secret.pdf") as c:
+        assert c.get("/boom").status_code == 500
+    (server_span,) = memory.get_finished_spans()
+    assert server_span.kind is SpanKind.SERVER
+    assert server_span.status.status_code is StatusCode.ERROR  # still an error...
+    assert server_span.status.description is None  # ...without its text
+    (exception,) = [e for e in server_span.events if e.name == "exception"]
+    assert dict(exception.attributes or {}) == {"exception.type": "RuntimeError"}
+    text = everything(server_span)
+    assert SECRET not in text and "/home/someone" not in text and "Traceback" not in text
+
+
+def test_the_collector_is_sent_the_class_name_alone_through_configure(
+    fake_config: RagConfig, fake_collector: FakeCollector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The real path end to end: configure() builds the provider, the batch processor sends
+    # protobuf to the collector. Not a byte of the message, nor of the stacktrace, is in it.
+    monkeypatch.setenv(ENDPOINT, fake_collector.url)
+    assert tracing.configure("rag-test")
+    with raising_app(fake_config, f"failed on {SECRET}") as client:
+        assert client.get("/boom").status_code == 500
+    tracing.shutdown()
+    bodies = b"".join(body for _, _, body in fake_collector.requests)
+    assert b"RuntimeError" in bodies  # the type is there
+    assert SECRET.encode() not in bodies and b"Traceback" not in bodies
+    assert b"site-packages" not in bodies  # no host path from a stacktrace
+
+
+def span_with(events: list[Event], status: Status | None = None, **attributes: Any) -> ReadableSpan:
+    # Room for two events and one attribute: the oldest event and the second attribute are
+    # dropped, so the span has drop counts to keep.
+    provider = TracerProvider(
+        span_limits=SpanLimits(max_events=2, max_attributes=1, max_event_attributes=128)
+    )
+    span = provider.get_tracer("t").start_span("op", attributes=attributes or None)
+    for event in events:
+        span.add_event(event.name, event.attributes, event.timestamp)
+    span.set_status(status or Status(StatusCode.UNSET))
+    span.end()
+    assert isinstance(span, ReadableSpan)
+    return span
+
+
+def test_a_span_without_exception_text_reaches_the_exporter_untouched() -> None:
+    span = span_with([Event("rag.first_token", {})], Status(StatusCode.ERROR))
+    assert scrubbed(span) is span
+
+
+def test_only_exception_events_and_the_status_description_are_rewritten() -> None:
+    detail = {
+        "exception.type": "ValueError",
+        "exception.message": "private",
+        "exception.stacktrace": "Traceback ... private",
+        "exception.escaped": "False",
+    }
+    span = span_with(
+        [
+            Event("dropped", {}, 1),
+            Event("rag.first_token", {"k": "v"}, 5),
+            Event("exception", detail, 7),
+        ],
+        Status(StatusCode.ERROR, "ValueError: private"),
+        **{"rag.chunks": 3, "rag.dropped": 4},
+    )
+    assert (span.dropped_events, span.dropped_attributes) == (1, 1)  # the premise
+    clean = scrubbed(span)
+    assert clean is not span
+    first, exception = clean.events
+    assert (first.name, dict(first.attributes or {}), first.timestamp) == (
+        "rag.first_token",
+        {"k": "v"},
+        5,
+    )
+    assert (exception.name, dict(exception.attributes or {}), exception.timestamp) == (
+        "exception",
+        {"exception.type": "ValueError"},
+        7,
+    )
+    assert clean.status.status_code is StatusCode.ERROR and clean.status.description is None
+    # Everything else is the span's own, drop counts included.
+    assert (clean.name, clean.context, clean.parent, clean.kind) == (
+        span.name,
+        span.context,
+        span.parent,
+        span.kind,
+    )
+    assert (clean.start_time, clean.end_time) == (span.start_time, span.end_time)
+    assert dict(clean.attributes or {}) == dict(span.attributes or {})
+    assert (clean.dropped_attributes, clean.dropped_events, clean.dropped_links) == (
+        span.dropped_attributes,
+        span.dropped_events,
+        span.dropped_links,
+    )
+    assert "private" not in everything(clean)
+
+
+def test_an_exception_event_with_no_type_keeps_none() -> None:
+    span = span_with([Event("exception", {"exception.message": "private"})])
+    (event,) = scrubbed(span).events
+    assert dict(event.attributes or {}) == {}
+
+
+def test_the_exporter_passes_shutdown_and_flush_to_the_real_one() -> None:
+    memory = InMemorySpanExporter()
+    exporter = ScrubbingExporter(memory)
+    assert exporter.force_flush() is True
+    exporter.shutdown()
+    assert memory._stopped  # InMemorySpanExporter's own flag
+
+
+def test_the_api_flushes_its_spans_when_its_lifespan_ends_without_main_s_finally(
+    fake_config: RagConfig, fake_collector: FakeCollector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A SIGTERM ends rag-serve once uvicorn has shut down, before any finally of main runs
+    # (server.py), so the lifespan's flush is the only thing that sends the last spans. The
+    # batch processor would wait 5 s on its own; shutdown() is never called here.
+    monkeypatch.setenv(ENDPOINT, fake_collector.url)
+    assert tracing.configure("rag-test")
+    serving = fake_serving(fake_config, StreamingFakeChatModel())
+    with TestClient(
+        create_app(fake_config, ServerSettings(), serving=serving), base_url="http://127.0.0.1"
+    ) as client:
+        assert client.post("/v1/query", json={"question": "q"}).status_code == 200
+        assert fake_collector.requests == []  # nothing sent yet: the processor is waiting
+    sent = [name for _, _, names in exported(fake_collector) for name in names]
+    assert "POST /v1/query" in sent and "chat StreamingFakeChatModel" in sent

@@ -132,6 +132,7 @@ def test_with_tracing_off_no_command_loads_the_exporter_or_any_instrumentation(m
         m
         for m in loaded
         if m.startswith(("opentelemetry.exporter", "opentelemetry.instrumentation"))
+        or m == "rag_qa.observability.scrub"  # the exporter's wrapper, imported with it
     ]
     assert held == []
 
