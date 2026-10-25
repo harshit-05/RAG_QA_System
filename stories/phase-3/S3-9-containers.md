@@ -108,7 +108,12 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
   status 143, which stays. Check, and record here:
   - the status with and without the init;
   - that the lifespan's shutdown lines appear in `docker compose logs`;
-  - that a second SIGTERM does not force a stop.
+  - that a second SIGTERM does not force a stop;
+  - **the shutdown with a dead trace collector** (S3-7b's first review): `GRACEFUL_SHUTDOWN_S` is
+    5, and the lifespan's span flush then waits up to `OTEL_EXPORTER_OTLP_TIMEOUT` (10 s;
+    measured 6.3 s against a closed port, 10.0 s against one that never answers), so a
+    `docker stop`'s default 10 s can SIGKILL `rag-serve` (137, not 143) and lose the flush.
+    Set `stop_grace_period` in compose (30 s), and check it with a dead `OTEL_EXPORTER_OTLP_ENDPOINT`.
 - **The `eval` extra's `langchain` bump** (moved from S3-11; maintainer, design review 1):
   `uv lock --upgrade-package langchain`, and nothing else. Checked in a scratch copy on
   2026-10-15, it moves exactly five packages:

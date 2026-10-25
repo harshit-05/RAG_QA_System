@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In progress. Plan approved 2026-10-25 (below, "Plan"); on Opus 5.5 at max effort (Deviation). |
+| **Status** | Built and reviewed, awaiting its close-out record: PR #26 on `feat/s3-7b-traces-alerts`, `845133b` … `0815ac1`, CI green on `0815ac1`. Plan approved 2026-10-25 (below, "Plan"); on Opus 5.5 at max effort (Deviation). The first review (2026-10-25) found one false claim (a span's exception text), six gaps in what the tests would catch and two smaller things, fixed on the PR ("First review"). |
 | **Closes** | NFR-10 (traces); DEC-22 (traces and alerts); DEC-24's `deploy-config` job |
 | **Depends on** | S3-7 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -221,7 +221,86 @@ instrumentation from uv's cache, read in place):
 
 ## Discovered
 
-(Filled during implementation.)
+(The implementation's items are filled at close-out; this one is the first review's.)
+
+- **The contrib server span records an unhandled exception's message and stacktrace,** which
+  the story's own rule forbids ("`error.type` to the class name only", "no prompt or answer
+  text in any span"). Found by a probe: a route raising `RuntimeError(f"…{question}")` put the
+  question, and a stacktrace with absolute host paths, in the span's `exception` event.
+  - **Where it comes from:** `FastAPIInstrumentor`'s wrapper (`instrumentation/fastapi/__init__.py`
+    :361-364) records the exception and writes `"Type: message"` into the status description,
+    and the ASGI middleware records it again (`instrumentation/asgi/__init__.py:673`). No
+    switch turns either off, and an instrumentation added later may do the same.
+  - **Why it matters:** a trace goes to a collector that is not this host (`OTEL_EXPORTER_OTLP_ENDPOINT`
+    is any URL, authenticated with `OTEL_EXPORTER_OTLP_HEADERS`); the log stays on it, and keeps
+    the full traceback. DEC-18 keeps host paths off HTTP, and S3-6 found that pydantic's error
+    text repeats config values. "No path today" is not protection against the exception nobody
+    planned for.
+  - **The decision (maintainer, 2026-10-25):** scrub at the exporter, not narrow the claim.
+    `rag_qa/observability/scrub.py`'s `ScrubbingExporter` wraps the OTLP exporter in
+    `configure()`: each `exception` event keeps `exception.type` and loses the rest, and the
+    status keeps its code and loses its description. It covers every span. Not
+    `SpanLimits(max_event_attributes=0)`, which also drops `exception.type`, and any attribute
+    an event gains later.
+  - **A correction found while building it:** the status description is also written (by the
+    FastAPI wrapper), but in the probe the 500 response's own status replaced it, so the event
+    was the leak. The scrub covers the description for the cases where nothing replaces it.
+  - **Tests:** a negative control (the unwrapped exporter shows the message), the same route
+    through a provider that builds the wrapper, the real `configure()` path into a fake
+    collector (no byte of the message, the stacktrace or a host path in the protobuf), and unit
+    tests that the rest of a span, its drop counts included, is untouched. Five mutants, each
+    caught.
+
+## First review (2026-10-25, on `0815ac1`)
+
+Reviewed as the first reviewer, against the PR's head, in scratch copies of it (never in the
+repository). The live Qdrant was read, tier 1 only; the running Jaeger was not touched. No
+blocker; DEC-14's cancel guarantee holds with tracing on. One false claim, six gaps in what the
+tests would catch, two smaller things, all fixed on the PR.
+
+**Fixed:**
+
+1. **The server span's exception text** (Discovered): scrubbed at the exporter.
+2. **The alert-rule tests missed 6 of 19 mutations of `rules.yml`.** All 13 others (every
+   threshold, label and `le`) were caught. The survivors: a fast-burn pair's short window
+   (5 m → 30 m on NFR-1), a slow-burn pair's short window (6 h → 2 h on first token), the 5 m
+   and 1 h recording rules (the SLI test read the 30 m one only), `for: 1m` for `5m` on
+   `RagBreakerOpen` and `RagTargetDown` (a 5-minute evaluation interval cannot tell them
+   apart), and `up == 0` without `{job="rag"}`. Now: the three latency fast-burn scenarios
+   check quiet five minutes after the burn (the 30 m and 1 h windows still burn, the 5 m one
+   is clean); the four slow-burn scenarios check that the 3 d and 6 h pair alone fires at 27 h;
+   `rules.causes.test.yml` evaluates every minute (quiet at 4 minutes, firing at 5); an
+   `up{job="other"}` series; and a pytest holds the 28 recording rules to one expression per
+   SLI across the seven windows. All 19 mutations are now caught (promtool or the pytest).
+3. **Nothing tested the API lifespan's span flush,** the only thing that sends the last spans
+   on a SIGTERM. A test serves a request into a batch processor aimed at the fake collector,
+   exits the lifespan without `shutdown()`, and finds the spans there; without the flush it
+   fails.
+4. **`tracing.py` said the SDK "is never imported" with tracing off.** langsmith imports its
+   `TracerProvider` as a type whenever the SDK is installed (ARCHITECTURE.md and a test
+   comment already said so). The docstring now says what our code imports.
+5. **S3-9's note:** with a dead collector, `rag-serve`'s shutdown waits up to the exporter's 10 s
+   after `GRACEFUL_SHUTDOWN_S` (5 s); measured 6.3 s against a closed port and 10.0 s against
+   one that never answers. A `docker stop`'s default 10 s can SIGKILL it and lose the flush.
+   S3-9's "Signals" item now says to set `stop_grace_period` and check it.
+6. **Nits:** the README says `http.url` includes the query string; `pyproject.toml`'s comment
+   says `telemetry=` exists from FastAPI 0.142.0 (0.143.0 is what the story checked).
+
+**Held:** the gates on `0815ac1` (1578 passed, coverage 98.46%; `rag-eval check` exit 0; tier 1
+IDENTICAL to S3-2's, `5a36e2f9…`; CI green); the lock (13 packages added, none moved, pypdf
+6.19.0); the image pins (digests equal DEC-24's and Quay's; releases 19 to 38 days old); 16 of
+18 mutations of the tracing code caught, the other two an equivalent mutant (the chat span's
+explicit parent equals the current context) and item 3; a normal answer's spans hold no
+question, chunk, token or header; the README's claims about `OTEL_EXPORTER_OTLP_TIMEOUT`
+(seconds), `OTEL_SEMCONV_STABILITY_OPT_IN=http` and the burn-rate percentages.
+
+**After the fixes:** 1591 passed, 18 skipped, 5 xfailed, coverage 98.47%; ruff, mypy and
+`uv lock --check` clean (the lock unchanged); `rag-eval check` exit 0; `promtool check config`,
+both `promtool test rules` files and `amtool check-config` pass from the pinned images; the new
+tracing and rule tests passed ten repeats in a row.
+
+**For the close-out:** the Verification record, Discovered and Deviation are still the
+implementer's to write.
 
 ## Deviation from plan
 

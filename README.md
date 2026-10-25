@@ -655,7 +655,10 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 uv run rag-serve
 - **A cancelled answer** (its client left, or Ctrl-C) is marked `rag.cancelled`, with its
   status unset: the client's choice is no error. A failure is status ERROR with `error.type`,
   the exception's class name, never its message.
-- **No span holds a question, a prompt, a chunk or an answer.** No LangChain callback handler
+- **No span holds a question, a prompt, a chunk or an answer,** nor an exception's message or
+  stacktrace. The collector is not this host, so spans are scrubbed on the way out: an
+  unhandled exception's server span carries an `exception` event with the class name only, and
+  the full traceback is in `rag-serve`'s log, on this host. No LangChain callback handler
   is used either: one that waits in the token callback would let a cancel miss the model's
   stream.
 - **The settings are the SDK's own:** `OTEL_SERVICE_NAME` (default: the command's name),
@@ -667,8 +670,9 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 uv run rag-serve
 - **`rag-eval` is never traced,** whatever the shell holds: its record is its files.
 - **The server span's HTTP attributes** are the FastAPI instrumentation's defaults, the older
   names (`http.method`, `http.url`); `OTEL_SEMCONV_STABILITY_OPT_IN=http` switches it to the
-  stable ones. FastAPI's own OpenTelemetry support is turned off, so a request has one server
-  span, never two.
+  stable ones. `http.url` includes the query string; the API reads none, so a client should
+  not put a secret in one. FastAPI's own OpenTelemetry support is turned off, so a request has
+  one server span, never two.
 
 ### Alerts
 
@@ -694,11 +698,12 @@ DNS on port 9464 (`RAG_API_METRICS_PORT`); for a Prometheus run by hand, its com
 static line for `127.0.0.1:9464`. `deploy/alertmanager/alertmanager.yml` sends every alert to a
 receiver that sends nothing, until an operator names one; an email one is there, commented
 out. CI's `deploy-config` job checks both files and runs the rules' tests, each alert firing
-and staying quiet at each window, with the tools from the pinned images:
+and staying quiet at each window (a second file evaluates every minute, to test the five
+minutes the cause alerts wait), with the tools from the pinned images:
 
 ```bash
 PROMETHEUS=prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
-docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool "$PROMETHEUS" test rules /p/rules.test.yml
+docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool "$PROMETHEUS" test rules /p/rules.test.yml /p/rules.causes.test.yml
 ```
 
 ## Capacity planning

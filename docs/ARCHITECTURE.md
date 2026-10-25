@@ -2655,6 +2655,16 @@ _As built in S3-7b (2026-10-25), from its approved plan (the story's "Plan", D1�
   shared code, retrieval and the answer stream, gets no-op spans otherwise, whatever the
   environment holds. Flushed in the API's lifespan (a SIGTERM ends `rag-serve` before `main`'s
   `finally`), shut down at each command's end. A malformed endpoint exits 2.
+- **Scrubbed at the exporter** (`observability/scrub.py`, S3-7b's first review). Our own spans
+  record a failure as its class name (`error.type`), but the contrib server span records an
+  unhandled exception itself, message and stacktrace, in two places (its FastAPI wrapper and its
+  ASGI middleware), and its FastAPI wrapper writes `"Type: message"` into the status
+  description. It has no switch to stop. Traces leave this host and logs do not, and DEC-18
+  keeps host paths off HTTP, so `ScrubbingExporter` wraps the OTLP one: each `exception` event
+  keeps `exception.type` alone, and the status keeps its code and loses its description. It
+  covers every span, an instrumentation added later included. `SpanLimits(max_event_attributes=0)`
+  would also drop `exception.type`, and any attribute an event gains. In the probe the 500
+  response's status replaced the description; the scrub covers the cases it does not.
 - **The spans**, as designed above: `rag.retrieve` in `open_retrieval`'s half, its children in
   `QdrantRetriever` and `_bound`; one `chat {model}` per attempt in `stream_answer`, started
   after the breaker allows it, with an explicit parent and never current, ended in a nested
@@ -2684,6 +2694,10 @@ _As built in S3-7b (2026-10-25), from its approved plan (the story's "Plan", D1�
   fallback answers), `RagIngestFailed`, `RagTargetDown`, and `RagTargetMissing`: compose's
   replicas are found by DNS, so an exited one leaves the targets and its `up` disappears. The
   tests run with a 5-minute evaluation interval, about 20 s; at one minute they took four.
+- **The rules' tests** are two files: `rules.test.yml` evaluates every 5 minutes, and
+  `rules.causes.test.yml` every minute, since at 5 minutes `for: 1m` and `for: 5m` behave the
+  same. A pytest holds the 28 recording rules to one expression per SLI across the seven
+  windows.
 - **The `deploy-config` job** runs `promtool check config`, `promtool test rules` and `amtool
   check-config`, from the images DEC-24 pins.
 
@@ -3180,7 +3194,7 @@ src/rag_qa/
 ├── config.py        + the overlay merge (S3-9)
 └── schema.py        + vector_stores, sparse_encoders, pipeline.vector_store, splitters,
                        max_file_mb, fallback_llm, paths.state and backups, retriever modes
-deploy/              NEW  Caddyfile; prometheus/{prometheus.yml, rules.yml, rules.test.yml};
+deploy/              NEW  Caddyfile; prometheus/{prometheus.yml, rules.yml, rules.test.yml, rules.causes.test.yml};
                           alertmanager/alertmanager.yml
 Dockerfile, .dockerignore, config.docker.yaml   NEW (S3-9)
 compose.yaml         NEW (S3-2, with qdrant only; the rest in S3-9)

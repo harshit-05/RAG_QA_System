@@ -12,6 +12,28 @@ the contrib instrumentation. `rag-query` opens a `rag.query` span per question, 
 is not traced. Prometheus finds the app's replicas by DNS, and `deploy-config` checks
 Alertmanager's file too.
 
+**S3-7b is built and reviewed, awaiting the close-out** (PR #26, 2026-10-25; CI green on
+`0815ac1`). **First review (2026-10-25): no blocker; 1 false claim, 6 test gaps and 2 smaller
+things, fixed on the PR.** Detail in the story ("First review").
+
+- **Fixed: a span could carry an exception's message and stacktrace.** The contrib server span
+  records an unhandled exception itself, and no switch stops it. The maintainer chose to scrub
+  at the exporter: `ScrubbingExporter` keeps `exception.type` alone and drops the status
+  description, for every span. The README's claim is now true; the full traceback stays in the
+  log, on this host.
+- **Fixed: the alert-rule tests missed 6 of 19 mutations** (short windows, recording rules at
+  the windows the SLI test did not read, `for:` durations at a 5-minute interval, an `up`
+  without its job). All 19 are caught now: more scenario checks, a 1-minute file for the
+  causes, and a pytest over the 28 recording rules.
+- **Fixed:** a test that the API's lifespan flushes (a SIGTERM's only way to send the last
+  spans); the `tracing.py` docstring's "SDK never imported"; two nits.
+- **For S3-9:** a dead collector holds `rag-serve`'s shutdown up to 10 s after its 5 s grace,
+  so compose needs `stop_grace_period`; the story's "Signals" item says so.
+- **Held:** `rag-eval check` exit 0, tier 1 IDENTICAL, the lock, the image pins, 16 of 18
+  tracing mutants caught (the other two: an equivalent mutant, and the lifespan flush, now
+  tested).
+- **After the fixes:** 1591 passed, coverage 98.47%; both rule-test files and `amtool` pass.
+
 **S3-7 is merged** (2026-10-25, PR #25, merge commit `8afdc25`). CI was green on the PR's last
 head, `0a9a724`, the close-out record (run 40132623431), and is green on `main` after the
 merge: CI run 40133314495 (check and eval-retrieval) and Dependency Graph run 40133319793. The
