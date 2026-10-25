@@ -274,9 +274,10 @@ jobs:
       - name: Check Prometheus's config and its rules
         run: docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool "$PROMETHEUS" check config /p/prometheus.yml
 
-      # About 20 s: promtool evaluates every rule at each step of each scenario.
+      # About 30 s: promtool evaluates every rule at each step of each scenario. The causes'
+      # file evaluates every minute, over short scenarios, to tell `for: 5m` from `for: 1m`.
       - name: Test the alert rules
-        run: docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool "$PROMETHEUS" test rules /p/rules.test.yml
+        run: docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool "$PROMETHEUS" test rules /p/rules.test.yml /p/rules.causes.test.yml
 
       - name: Check Alertmanager's config
         run: docker run --rm -v "$PWD/deploy/alertmanager:/a:ro" --entrypoint amtool "$ALERTMANAGER" check-config /a/alertmanager.yml

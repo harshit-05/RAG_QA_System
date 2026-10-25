@@ -1,0 +1,82 @@
+# Unit tests of the cause alerts' `for:` (NFR-10, DEC-22, S3-7b), run by CI's deploy-config job
+# beside rules.test.yml:
+#     promtool test rules rules.causes.test.yml
+#
+# rules.test.yml evaluates every 5 minutes to stay fast, and at that interval `for: 1m` and
+# `for: 5m` behave the same: an alert is pending at one evaluation and firing at the next. Here
+# the rules are evaluated every minute, over short scenarios only, so an alert that waited
+# 4 minutes is shown quiet, and one that waited 5 is shown firing. (First review.)
+#
+# Each series is down or open from its fourth sample (minute 3), the first evaluation that sees
+# it, so a `for: 5m` alert fires at minute 8 and not before.
+
+rule_files:
+  - rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: a breaker not closed waits 5 minutes before it pages, not less
+    interval: 1m
+    input_series:
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="qdrant",state="closed"}'
+        values: '1x2 0x20'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="qdrant",state="open"}'
+        values: '0x2 1x20'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="qdrant",state="half-open"}'
+        values: '0x22'
+    alert_rule_test:
+      - eval_time: 7m # not closed for 4 minutes
+        alertname: RagBreakerOpen
+        exp_alerts: []
+      - eval_time: 8m # for 5
+        alertname: RagBreakerOpen
+        exp_alerts:
+          - exp_labels: { job: rag, instance: "app:9464", breaker: qdrant, severity: page }
+            exp_annotations:
+              summary: "app:9464: the qdrant breaker has been open for 5 minutes"
+              description: The questions that need it are refused with 503 and Retry-After; /v1/health names the dependency, and the server log says why.
+
+  - name: the model's breaker with a hosted fallback waits 5 minutes before its ticket
+    interval: 1m
+    input_series:
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="llm",state="closed"}'
+        values: '1x2 0x20'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="llm",state="open"}'
+        values: '0x2 1x20'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="llm",state="half-open"}'
+        values: '0x22'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="fallback",state="closed"}'
+        values: '1x22'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="fallback",state="open"}'
+        values: '0x22'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="fallback",state="half-open"}'
+        values: '0x22'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: RagBreakerOpen
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: RagBreakerOpen
+        exp_alerts:
+          - exp_labels: { job: rag, instance: "app:9464", breaker: llm, severity: ticket }
+            exp_annotations:
+              summary: "app:9464: the llm breaker has been open for 5 minutes"
+              description: Answers come from the hosted fallback and leave the host, the questions and their retrieved chunks with them, until Ollama answers again.
+
+  - name: a replica that does not answer its scrape waits 5 minutes before it pages
+    interval: 1m
+    input_series:
+      - series: 'up{job="rag",instance="app:9464"}'
+        values: '1x2 0x20'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: RagTargetDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: RagTargetDown
+        exp_alerts:
+          - exp_labels: { job: rag, instance: "app:9464", severity: page }
+            exp_annotations:
+              summary: "app:9464: the metrics port has not answered for 5 minutes"
+              description: rag-serve runs but does not answer, or it serves no metrics (RAG_API_METRICS_PORT).

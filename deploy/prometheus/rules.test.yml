@@ -154,6 +154,11 @@ tests:
             exp_annotations: &availability_slow
               summary: The API is spending its availability budget
               description: 503 refusals and failed answers burn 99% availability at 3 times its budget over 1 d, or at its budget over 3 d.
+      - eval_time: 27h # the 2 h window is clean, the 6 h one is not: the 3 d and 6 h pair alone holds
+        alertname: RagAvailabilitySlowBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: ticket }
+            exp_annotations: *availability_slow
       - eval_time: 31h # seven hours after: the 2 h and the 6 h windows are clean
         alertname: RagAvailabilitySlowBurn
         exp_alerts: []
@@ -210,6 +215,9 @@ tests:
             exp_annotations: &retrieval_fast
               summary: Retrieval is spending its latency budget fast (NFR-1)
               description: Retrievals over 0.3 s burn NFR-1's 95% at 14.4 times its budget over 1 h, or 6 times over 6 h.
+      - eval_time: 475m # five minutes after: the 5 m window is clean while the 30 m and 1 h ones still burn
+        alertname: RagRetrievalLatencyFastBurn
+        exp_alerts: []
       - eval_time: 480m # ten minutes after: the 5 m window is clean, and 14% of 6 h is under 30%
         alertname: RagRetrievalLatencyFastBurn
         exp_alerts: []
@@ -249,6 +257,11 @@ tests:
             exp_annotations: &retrieval_slow
               summary: Retrieval is spending its latency budget (NFR-1)
               description: Retrievals over 0.3 s burn NFR-1's 95% at 3 times its budget over 1 d, or at its budget over 3 d.
+      - eval_time: 27h # the 2 h window is clean, the 6 h one is not: the 3 d and 6 h pair alone holds
+        alertname: RagRetrievalLatencySlowBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: ticket }
+            exp_annotations: *retrieval_slow
       - eval_time: 31h # the 2 h and the 6 h windows are clean
         alertname: RagRetrievalLatencySlowBurn
         exp_alerts: []
@@ -301,6 +314,9 @@ tests:
             exp_annotations: &sources_fast
               summary: The sources event is spending its latency budget fast (NFR-2a)
               description: Sources events over 2 s burn NFR-2a's 95% at 14.4 times its budget over 1 h, or 6 times over 6 h.
+      - eval_time: 475m # five minutes after: the 5 m window is clean while the 30 m and 1 h ones still burn
+        alertname: RagSourcesLatencyFastBurn
+        exp_alerts: []
       - eval_time: 480m
         alertname: RagSourcesLatencyFastBurn
         exp_alerts: []
@@ -340,6 +356,11 @@ tests:
             exp_annotations: &sources_slow
               summary: The sources event is spending its latency budget (NFR-2a)
               description: Sources events over 2 s burn NFR-2a's 95% at 3 times its budget over 1 d, or at its budget over 3 d.
+      - eval_time: 27h # the 2 h window is clean, the 6 h one is not: the 3 d and 6 h pair alone holds
+        alertname: RagSourcesLatencySlowBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: ticket }
+            exp_annotations: *sources_slow
       - eval_time: 31h
         alertname: RagSourcesLatencySlowBurn
         exp_alerts: []
@@ -392,6 +413,9 @@ tests:
             exp_annotations: &ttft_fast
               summary: The first token is spending its latency budget fast (NFR-2b)
               description: First tokens over 300 s burn NFR-2b's 95% at 14.4 times its budget over 1 h, or 6 times over 6 h.
+      - eval_time: 475m # five minutes after: the 5 m window is clean while the 30 m and 1 h ones still burn
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts: []
       - eval_time: 480m
         alertname: RagFirstTokenLatencyFastBurn
         exp_alerts: []
@@ -431,6 +455,11 @@ tests:
             exp_annotations: &ttft_slow
               summary: The first token is spending its latency budget (NFR-2b)
               description: First tokens over 300 s burn NFR-2b's 95% at 3 times its budget over 1 d, or at its budget over 3 d.
+      - eval_time: 27h # the 2 h window is clean, the 6 h one is not: the 3 d and 6 h pair alone holds
+        alertname: RagFirstTokenLatencySlowBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: ticket }
+            exp_annotations: *ttft_slow
       - eval_time: 31h
         alertname: RagFirstTokenLatencySlowBurn
         exp_alerts: []
@@ -587,6 +616,9 @@ tests:
     input_series:
       - series: 'up{job="rag",instance="app:9464"}'
         values: '1x4 0x10 1x5'
+      # Another job's target, down all along (Prometheus's own, say): no page of ours.
+      - series: 'up{job="other",instance="elsewhere:9090"}'
+        values: '0x20'
     alert_rule_test:
       - eval_time: 5m # down, first seen: pending
         alertname: RagTargetDown

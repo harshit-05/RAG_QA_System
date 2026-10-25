@@ -21,6 +21,9 @@ from rag_qa.observability import metrics
 DEPLOY = Path(__file__).resolve().parent.parent / "deploy"
 RULES = DEPLOY / "prometheus" / "rules.yml"
 TESTS = DEPLOY / "prometheus" / "rules.test.yml"
+#: The cause alerts' `for:` boundaries, evaluated every minute (the first review).
+CAUSE_TESTS = DEPLOY / "prometheus" / "rules.causes.test.yml"
+TEST_FILES = (TESTS, CAUSE_TESTS)
 PROMETHEUS = DEPLOY / "prometheus" / "prometheus.yml"
 ALERTMANAGER = DEPLOY / "alertmanager" / "alertmanager.yml"
 
@@ -61,11 +64,12 @@ def selectors() -> list[tuple[str, str, str]]:
         for rule in rules()
         for name, labels in SELECTOR.findall(rule["expr"])
     ]
-    for test in load(TESTS)["tests"]:
-        for series in test.get("input_series", []):
-            found += [
-                ("rules.test.yml", n, labels) for n, labels in SELECTOR.findall(series["series"])
-            ]
+    for path in TEST_FILES:
+        for test in load(path)["tests"]:
+            for series in test.get("input_series", []):
+                found += [
+                    (path.name, n, labels) for n, labels in SELECTOR.findall(series["series"])
+                ]
     return found
 
 
@@ -110,13 +114,14 @@ def test_each_latency_slo_reads_its_objective_s_bucket(histogram: str, objective
 def alert_cases() -> dict[str, tuple[bool, bool]]:
     """For each alert the tests name: whether one test fires it and one keeps it quiet."""
     cases: dict[str, tuple[bool, bool]] = {}
-    for test in load(TESTS)["tests"]:
-        for case in test.get("alert_rule_test", []):
-            fires, quiet = cases.get(case["alertname"], (False, False))
-            cases[case["alertname"]] = (
-                fires or bool(case["exp_alerts"]),
-                quiet or not case["exp_alerts"],
-            )
+    for path in TEST_FILES:
+        for test in load(path)["tests"]:
+            for case in test.get("alert_rule_test", []):
+                fires, quiet = cases.get(case["alertname"], (False, False))
+                cases[case["alertname"]] = (
+                    fires or bool(case["exp_alerts"]),
+                    quiet or not case["exp_alerts"],
+                )
     return cases
 
 
@@ -133,8 +138,43 @@ def test_the_files_agree_on_the_job_the_rule_files_and_the_receiver() -> None:
     prometheus = load(PROMETHEUS)
     (job,) = prometheus["scrape_configs"]
     assert job["job_name"] == "rag"
-    assert prometheus["rule_files"] == ["rules.yml"] == load(TESTS)["rule_files"]
+    assert prometheus["rule_files"] == ["rules.yml"]
+    for path in TEST_FILES:
+        assert load(path)["rule_files"] == ["rules.yml"]
     assert {'up{job="rag"}'} <= {f"{name}{labels}" for _, name, labels in selectors()}
     alertmanager = load(ALERTMANAGER)
     assert alertmanager["route"]["receiver"] == "null"
     assert [receiver["name"] for receiver in alertmanager["receivers"]] == ["null"]
+
+
+#: The windows every SLI is recorded over: the burn-rate alerts' pairs read them by name.
+WINDOWS = ("5m", "30m", "1h", "2h", "6h", "1d", "3d")
+RECORDED = re.compile(r"^(rag:[a-z0-9_]+:ratio_rate)(\d+[mhd])$")
+
+
+def test_each_sli_is_recorded_alike_over_all_seven_windows() -> None:
+    # 28 recording rules are written out by hand, one expression per window. A window or a
+    # selector that differs in one of them reads a different SLI there, and the alerts that
+    # use that window go wrong while promtool's tests, which read a few windows, still pass (the
+    # first review changed the 5 m and the 1 h ones and neither test file noticed).
+    families: dict[str, dict[str, str]] = {}
+    for rule in rules():
+        match = RECORDED.match(rule.get("record", ""))
+        if match is None:
+            continue
+        family, window = match.groups()
+        # Normalise the window out of the expression: "[5m]" and the name's own window.
+        families.setdefault(family, {})[window] = re.sub(
+            r"\[\d+[mhd]\]", "[W]", rule["expr"]
+        ).strip()
+    assert len(families) == 4
+    for family, by_window in families.items():
+        assert tuple(sorted(by_window, key=WINDOWS.index)) == WINDOWS, family
+        assert len(set(by_window.values())) == 1, f"{family}: the windows' expressions differ"
+        # And the window in the expression is the one in the name.
+    for rule in rules():
+        match = RECORDED.match(rule.get("record", ""))
+        if match is not None:
+            assert set(re.findall(r"\[(\d+[mhd])\]", rule["expr"])) == {match.group(2)}, rule[
+                "record"
+            ]
