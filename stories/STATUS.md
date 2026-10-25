@@ -5,12 +5,23 @@
 
 ## Now
 
-**Next action: once CI is green on the close-out record, merge PR #25 with a merge commit;
-then S3-7b,** plan-first, on `feat/s3-7b-traces-alerts`. The PR body and the merge message
-name every breaking change. `f11f694`'s `BREAKING-CHANGE:` trailer names `rag-ingest`'s
-progress only, but every command's log is now JSON when stderr is not a terminal.
+**Next action: S3-7b, on `feat/s3-7b-traces-alerts`.** Its plan was approved on 2026-10-25
+and is in the story ("Plan"). It checked the settled design against the libraries as
+installed. FastAPI 0.143 ships OpenTelemetry of its own, so the API turns that off and keeps
+the contrib instrumentation. `rag-query` opens a `rag.query` span per question, and `rag-eval`
+is not traced. Prometheus finds the app's replicas by DNS, and `deploy-config` checks
+Alertmanager's file too.
 
-**S3-7 is done (2026-10-25, PR #25).** Detail in the story.
+**S3-7 is merged** (2026-10-25, PR #25, merge commit `8afdc25`). CI was green on the PR's last
+head, `0a9a724`, the close-out record (run 40132623431), and is green on `main` after the
+merge: CI run 40133314495 (check and eval-retrieval) and Dependency Graph run 40133319793. The
+merge message names every breaking change, the JSON logs off a terminal included. The live
+index is unchanged: the `rag_qa` alias names `rag_qa--gen-20261019T153834837765Z-7f20891e`,
+and S3-2's parity baseline is still `~/dev/rag-s3-2/contexts-qdrant.json` (sha256
+`5a36e2f9…a074cbc`). pypdf stays at 6.19.0 under the audit exception (caveat 37, eleven
+ignores), so S3-7b adds its dependencies without `--upgrade`.
+
+**S3-7 was done before its merge (2026-10-25).** Detail in the story.
 
 - **What it built:** every command logs through one structlog formatter on stderr, and
   `rag-serve` serves 13 Prometheus metrics on `RAG_API_METRICS_PORT`. The `done` event,
@@ -1614,8 +1625,8 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | [S3-4](phase-3/S3-4-ingestion-config.md) | Per-loader splitters and a maximum file size | SRS §7.2, §7.1 | S3-2 | Done 2026-10-21 (PR #22, merged 2026-10-21) |
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Done 2026-10-22 (PR #23, merged 2026-10-22) |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Done 2026-10-23 (PR #24, merged 2026-10-23) |
-| [S3-7](phase-3/S3-7-observability.md) | Structured logs, metrics and the capacity benchmarks | NFR-10 (logs, metrics), NFR-1, NFR-2 (a), NFR-3, DEC-22 (logs, metrics) | S3-6 | Done 2026-10-25 (PR #25) |
-| [S3-7b](phase-3/S3-7b-traces-alerts.md) | Traces and alerts | NFR-10 (traces), DEC-22 (traces, alerts) | S3-7 | Todo |
+| [S3-7](phase-3/S3-7-observability.md) | Structured logs, metrics and the capacity benchmarks | NFR-10 (logs, metrics), NFR-1, NFR-2 (a), NFR-3, DEC-22 (logs, metrics) | S3-6 | Done 2026-10-25 (PR #25, merged 2026-10-25) |
+| [S3-7b](phase-3/S3-7b-traces-alerts.md) | Traces and alerts | NFR-10 (traces), DEC-22 (traces, alerts) | S3-7 | In progress (plan approved 2026-10-25) |
 | [S3-8](phase-3/S3-8-api-hardening.md) | API keys, rate limits and a stateless query tier | NFR-5, DEC-23 | S3-7b | Todo |
 | [S3-9](phase-3/S3-9-containers.md) | Containers, compose, TLS and CI scanning | §11 (CI, containers, config), §8.3, §9 LLM05, DEC-24 | S3-8 | Todo |
 | [S3-10](phase-3/S3-10-backup-restore.md) | Backup and restore | §11 (backup and DR), DEC-25 | S3-9 | Todo |
