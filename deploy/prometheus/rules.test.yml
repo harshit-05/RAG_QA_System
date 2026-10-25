@@ -1,0 +1,631 @@
+# Unit tests of rules.yml (NFR-10, DEC-22, S3-7b), run by CI's deploy-config job:
+#     promtool test rules rules.test.yml
+#
+# Each burn-rate alert fires through each pair of windows it can fire through alone, and stays
+# quiet for a burst its long window does not confirm, and after a burn its short window has
+# seen end. A slow alert's two pairs cannot be told apart at a steady burn, since a day over 3%
+# puts three days over 1%: its first pair is shown firing with the second, the second alone.
+# The cause alerts are pending at first, and fire 5 minutes later.
+#
+# Reading the series: "0+10x420" is 421 samples, 0, 10, ... 4200, one per interval; a segment
+# that follows starts at the next value, so a counter never stalls for a sample between two
+# phases. The latency series give a histogram's count and its bucket at the objective: what
+# the bucket does not count is slow. The availability series give the answers by outcome and
+# the 503 refusals; cancelled answers count on neither side.
+#
+# The rules are evaluated every 5 minutes, so alerts change state only then, and every eval
+# time is a multiple of 5 minutes: promtool evaluates all 41 rules at every step, and at one
+# minute this file took four minutes. Only the scenarios that read the 5 m window sample every
+# minute. A window longer than a scenario's history is the ratio over the history there is,
+# as in Prometheus, so the slow scenarios need a day or so of samples, not three.
+#
+# A whole-number le is written as Prometheus 3 stores it: "2.0", "300.0".
+
+rule_files:
+  - rules.yml
+
+evaluation_interval: 5m
+
+tests:
+  # --- the SLIs' arithmetic ---------------------------------------------------------------
+  - name: each SLI counts what its objective names, and nothing else
+    interval: 1m
+    input_series:
+      # Availability: 2 answered, 1 failed and 1 refused (503) a minute: half are bad. The
+      # cancelled answers and the 429s (S3-8) count on neither side.
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="answered"}'
+        values: '0+2x120'
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="failed"}'
+        values: '0+1x120'
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="cancelled"}'
+        values: '0+4x120'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="503",reason="busy"}'
+        values: '0+1x120'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="429",reason="rate_limited"}'
+        values: '0+3x120'
+      # Latency: 4 a minute, 3 at or under the objective: a quarter are slow. The bucket beside
+      # it is never read.
+      - series: 'rag_retrieval_seconds_count{job="rag",instance="app:9464"}'
+        values: '0+4x120'
+      - series: 'rag_retrieval_seconds_bucket{job="rag",instance="app:9464",le="0.3"}'
+        values: '0+3x120'
+      - series: 'rag_retrieval_seconds_bucket{job="rag",instance="app:9464",le="0.5"}'
+        values: '0+4x120'
+      - series: 'rag_sources_seconds_count{job="rag",instance="app:9464"}'
+        values: '0+4x120'
+      - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="2.0"}'
+        values: '0+3x120'
+      - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="3.0"}'
+        values: '0+4x120'
+      - series: 'rag_ttft_seconds_count{job="rag",instance="app:9464"}'
+        values: '0+4x120'
+      - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
+        values: '0+3x120'
+      - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="450.0"}'
+        values: '0+4x120'
+    promql_expr_test:
+      - expr: rag:availability_errors:ratio_rate30m
+        eval_time: 60m
+        exp_samples:
+          - labels: 'rag:availability_errors:ratio_rate30m{job="rag"}'
+            value: 0.5
+      - expr: rag:retrieval_slow:ratio_rate30m
+        eval_time: 60m
+        exp_samples:
+          - labels: 'rag:retrieval_slow:ratio_rate30m{job="rag"}'
+            value: 0.25
+      - expr: rag:sources_slow:ratio_rate30m
+        eval_time: 60m
+        exp_samples:
+          - labels: 'rag:sources_slow:ratio_rate30m{job="rag"}'
+            value: 0.25
+      - expr: rag:ttft_slow:ratio_rate30m
+        eval_time: 60m
+        exp_samples:
+          - labels: 'rag:ttft_slow:ratio_rate30m{job="rag"}'
+            value: 0.25
+
+  # --- availability: 99% over 30 days -----------------------------------------------------
+  - name: availability, fast burn through 1 h and 5 m - a 15-minute outage after 7 good hours
+    interval: 1m
+    input_series:
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="answered"}'
+        values: '0+10x420 4200+0x14 4210+10x40'
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="failed"}'
+        values: '0x420 10+10x14 150+0x40'
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="cancelled"}'
+        values: '0+2x476'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="503",reason="busy"}'
+        values: '0x476'
+    alert_rule_test:
+      - eval_time: 420m # steady
+        alertname: RagAvailabilityFastBurn
+        exp_alerts: []
+      - eval_time: 425m # five minutes in: the 5 m window, but 8% of the hour
+        alertname: RagAvailabilityFastBurn
+        exp_alerts: []
+      - eval_time: 435m # the whole outage: 25% of the hour
+        alertname: RagAvailabilityFastBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: page }
+            exp_annotations: &availability_fast
+              summary: The API is spending its availability budget fast
+              description: 503 refusals and failed answers burn 99% availability at 14.4 times its budget over 1 h, or 6 times over 6 h.
+      - eval_time: 445m # ten minutes after: the hour still burns, the 5 m window no longer
+        alertname: RagAvailabilityFastBurn
+        exp_alerts: []
+
+  - name: availability, fast burn through 6 h and 30 m - 10% failing for 7 hours
+    interval: 5m
+    input_series:
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="answered"}'
+        values: '0+50x84 4245+45x83 8030+50x12'
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="failed"}'
+        values: '0x84 5+5x83 420+0x12'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="503",reason="busy"}'
+        values: '0x181'
+    alert_rule_test:
+      - eval_time: 600m # three hours in: 5% of the six, under 6%; and 10% is under 14.4%
+        alertname: RagAvailabilityFastBurn
+        exp_alerts: []
+      - eval_time: 820m # six hours and more: 10% of the six
+        alertname: RagAvailabilityFastBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: page }
+            exp_annotations: *availability_fast
+      - eval_time: 875m # 35 minutes after: the 30 m window is clean
+        alertname: RagAvailabilityFastBurn
+        exp_alerts: []
+
+  - name: availability, slow burn through 1 d and 2 h - 4% failing for a day
+    interval: 5m
+    input_series:
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="answered"}'
+        values: '0+96x288 27748+100x96'
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="failed"}'
+        values: '0+4x288 1152+0x96'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="503",reason="busy"}'
+        values: '0x385'
+    alert_rule_test:
+      - eval_time: 24h # a day of 4%: over 3% of the day, and so of three
+        alertname: RagAvailabilitySlowBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: ticket }
+            exp_annotations: &availability_slow
+              summary: The API is spending its availability budget
+              description: 503 refusals and failed answers burn 99% availability at 3 times its budget over 1 d, or at its budget over 3 d.
+      - eval_time: 31h # seven hours after: the 2 h and the 6 h windows are clean
+        alertname: RagAvailabilitySlowBurn
+        exp_alerts: []
+
+  - name: availability, slow burn through 3 d and 6 h alone - 1.5% failing steadily
+    interval: 5m
+    input_series:
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="answered"}'
+        values: '0+197x288'
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="failed"}'
+        values: '0+3x288'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="503",reason="busy"}'
+        values: '0x288'
+    alert_rule_test:
+      - eval_time: 24h # 1.5% is under 3% of the day, over 1% of the three days
+        alertname: RagAvailabilitySlowBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: ticket }
+            exp_annotations: *availability_slow
+
+  - name: availability, a 2-hour burst of 5% after a good day stays quiet
+    interval: 5m
+    input_series:
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="answered"}'
+        values: '0+100x288 28895+95x23 31180+100x24'
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="failed"}'
+        values: '0x288 5+5x23 120+0x24'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="503",reason="busy"}'
+        values: '0x337'
+    alert_rule_test:
+      - eval_time: 26h # 5% of 2 h and 1.7% of 6 h, but 0.4% of the day and of three
+        alertname: RagAvailabilitySlowBurn
+        exp_alerts: []
+      - eval_time: 26h # nor fast: 1.7% of 6 h is under 6%, 5% of the hour under 14.4%
+        alertname: RagAvailabilityFastBurn
+        exp_alerts: []
+
+  # --- NFR-1: 95% of retrievals under 0.3 s -----------------------------------------------
+  - name: NFR-1, fast burn through 1 h and 5 m - every retrieval slow for 50 minutes
+    interval: 1m
+    input_series:
+      - series: 'rag_retrieval_seconds_count{job="rag",instance="app:9464"}'
+        values: &fast1_count '0+10x512'
+      - series: 'rag_retrieval_seconds_bucket{job="rag",instance="app:9464",le="0.3"}'
+        values: &fast1_bucket '0+10x420 4200+0x49 4210+10x41'
+    alert_rule_test:
+      - eval_time: 450m # 30 minutes in: 50% of the hour, under 72%
+        alertname: RagRetrievalLatencyFastBurn
+        exp_alerts: []
+      - eval_time: 470m # 50 minutes in: 83% of the hour
+        alertname: RagRetrievalLatencyFastBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: page }
+            exp_annotations: &retrieval_fast
+              summary: Retrieval is spending its latency budget fast (NFR-1)
+              description: Retrievals over 0.3 s burn NFR-1's 95% at 14.4 times its budget over 1 h, or 6 times over 6 h.
+      - eval_time: 480m # ten minutes after: the 5 m window is clean, and 14% of 6 h is under 30%
+        alertname: RagRetrievalLatencyFastBurn
+        exp_alerts: []
+
+  - name: NFR-1, fast burn through 6 h and 30 m - 40% of retrievals slow for 7 hours
+    interval: 5m
+    input_series:
+      - series: 'rag_retrieval_seconds_count{job="rag",instance="app:9464"}'
+        values: &fast2_count '0+50x181'
+      - series: 'rag_retrieval_seconds_bucket{job="rag",instance="app:9464",le="0.3"}'
+        values: &fast2_bucket '0+50x84 4230+30x83 6770+50x12'
+    alert_rule_test:
+      - eval_time: 600m # three hours in: 20% of the six, under 30%; and 40% is under 72%
+        alertname: RagRetrievalLatencyFastBurn
+        exp_alerts: []
+      - eval_time: 820m # 40% of the six
+        alertname: RagRetrievalLatencyFastBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: page }
+            exp_annotations: *retrieval_fast
+      - eval_time: 875m # the 30 m window is clean
+        alertname: RagRetrievalLatencyFastBurn
+        exp_alerts: []
+
+  - name: NFR-1, slow burn through 1 d and 2 h - 20% of retrievals slow for a day
+    interval: 5m
+    input_series:
+      - series: 'rag_retrieval_seconds_count{job="rag",instance="app:9464"}'
+        values: &slow1_count '0+100x385'
+      - series: 'rag_retrieval_seconds_bucket{job="rag",instance="app:9464",le="0.3"}'
+        values: &slow1_bucket '0+80x288 23140+100x96'
+    alert_rule_test:
+      - eval_time: 24h # 20% of the day
+        alertname: RagRetrievalLatencySlowBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: ticket }
+            exp_annotations: &retrieval_slow
+              summary: Retrieval is spending its latency budget (NFR-1)
+              description: Retrievals over 0.3 s burn NFR-1's 95% at 3 times its budget over 1 d, or at its budget over 3 d.
+      - eval_time: 31h # the 2 h and the 6 h windows are clean
+        alertname: RagRetrievalLatencySlowBurn
+        exp_alerts: []
+
+  - name: NFR-1, slow burn through 3 d and 6 h alone - 7% of retrievals slow steadily
+    interval: 5m
+    input_series:
+      - series: 'rag_retrieval_seconds_count{job="rag",instance="app:9464"}'
+        values: &slow2_count '0+100x288'
+      - series: 'rag_retrieval_seconds_bucket{job="rag",instance="app:9464",le="0.3"}'
+        values: &slow2_bucket '0+93x288'
+    alert_rule_test:
+      - eval_time: 24h # 7% is under 15% of the day, over 5% of the three days
+        alertname: RagRetrievalLatencySlowBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: ticket }
+            exp_annotations: *retrieval_slow
+
+  - name: NFR-1, a 2-hour burst of 50% slow after a good day stays quiet
+    interval: 5m
+    input_series:
+      - series: 'rag_retrieval_seconds_count{job="rag",instance="app:9464"}'
+        values: &burst_count '0+100x337'
+      - series: 'rag_retrieval_seconds_bucket{job="rag",instance="app:9464",le="0.3"}'
+        values: &burst_bucket '0+100x288 28850+50x23 30100+100x24'
+    alert_rule_test:
+      - eval_time: 26h # 50% of 2 h and 17% of 6 h, but 4% of the day and of three
+        alertname: RagRetrievalLatencySlowBurn
+        exp_alerts: []
+      - eval_time: 26h # nor fast: 17% of 6 h is under 30%, 50% of the hour under 72%
+        alertname: RagRetrievalLatencyFastBurn
+        exp_alerts: []
+
+  # --- NFR-2a: 95% of sources events under 2 s --------------------------------------------
+  - name: NFR-2a, fast burn through 1 h and 5 m - every sources event slow for 50 minutes
+    interval: 1m
+    input_series:
+      - series: 'rag_sources_seconds_count{job="rag",instance="app:9464"}'
+        values: *fast1_count
+      - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="2.0"}'
+        values: *fast1_bucket
+    alert_rule_test:
+      - eval_time: 450m
+        alertname: RagSourcesLatencyFastBurn
+        exp_alerts: []
+      - eval_time: 470m
+        alertname: RagSourcesLatencyFastBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: page }
+            exp_annotations: &sources_fast
+              summary: The sources event is spending its latency budget fast (NFR-2a)
+              description: Sources events over 2 s burn NFR-2a's 95% at 14.4 times its budget over 1 h, or 6 times over 6 h.
+      - eval_time: 480m
+        alertname: RagSourcesLatencyFastBurn
+        exp_alerts: []
+
+  - name: NFR-2a, fast burn through 6 h and 30 m - 40% of sources events slow for 7 hours
+    interval: 5m
+    input_series:
+      - series: 'rag_sources_seconds_count{job="rag",instance="app:9464"}'
+        values: *fast2_count
+      - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="2.0"}'
+        values: *fast2_bucket
+    alert_rule_test:
+      - eval_time: 600m
+        alertname: RagSourcesLatencyFastBurn
+        exp_alerts: []
+      - eval_time: 820m
+        alertname: RagSourcesLatencyFastBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: page }
+            exp_annotations: *sources_fast
+      - eval_time: 875m
+        alertname: RagSourcesLatencyFastBurn
+        exp_alerts: []
+
+  - name: NFR-2a, slow burn through 1 d and 2 h - 20% of sources events slow for a day
+    interval: 5m
+    input_series:
+      - series: 'rag_sources_seconds_count{job="rag",instance="app:9464"}'
+        values: *slow1_count
+      - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="2.0"}'
+        values: *slow1_bucket
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: RagSourcesLatencySlowBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: ticket }
+            exp_annotations: &sources_slow
+              summary: The sources event is spending its latency budget (NFR-2a)
+              description: Sources events over 2 s burn NFR-2a's 95% at 3 times its budget over 1 d, or at its budget over 3 d.
+      - eval_time: 31h
+        alertname: RagSourcesLatencySlowBurn
+        exp_alerts: []
+
+  - name: NFR-2a, slow burn through 3 d and 6 h alone - 7% of sources events slow steadily
+    interval: 5m
+    input_series:
+      - series: 'rag_sources_seconds_count{job="rag",instance="app:9464"}'
+        values: *slow2_count
+      - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="2.0"}'
+        values: *slow2_bucket
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: RagSourcesLatencySlowBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: ticket }
+            exp_annotations: *sources_slow
+
+  - name: NFR-2a, a 2-hour burst of 50% slow after a good day stays quiet
+    interval: 5m
+    input_series:
+      - series: 'rag_sources_seconds_count{job="rag",instance="app:9464"}'
+        values: *burst_count
+      - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="2.0"}'
+        values: *burst_bucket
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: RagSourcesLatencySlowBurn
+        exp_alerts: []
+      - eval_time: 26h
+        alertname: RagSourcesLatencyFastBurn
+        exp_alerts: []
+
+  # --- NFR-2b: 95% of first tokens under 300 s --------------------------------------------
+  - name: NFR-2b, fast burn through 1 h and 5 m - every first token slow for 50 minutes
+    interval: 1m
+    input_series:
+      - series: 'rag_ttft_seconds_count{job="rag",instance="app:9464"}'
+        values: *fast1_count
+      - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
+        values: *fast1_bucket
+    alert_rule_test:
+      - eval_time: 450m
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts: []
+      - eval_time: 470m
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: page }
+            exp_annotations: &ttft_fast
+              summary: The first token is spending its latency budget fast (NFR-2b)
+              description: First tokens over 300 s burn NFR-2b's 95% at 14.4 times its budget over 1 h, or 6 times over 6 h.
+      - eval_time: 480m
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts: []
+
+  - name: NFR-2b, fast burn through 6 h and 30 m - 40% of first tokens slow for 7 hours
+    interval: 5m
+    input_series:
+      - series: 'rag_ttft_seconds_count{job="rag",instance="app:9464"}'
+        values: *fast2_count
+      - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
+        values: *fast2_bucket
+    alert_rule_test:
+      - eval_time: 600m
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts: []
+      - eval_time: 820m
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: page }
+            exp_annotations: *ttft_fast
+      - eval_time: 875m
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts: []
+
+  - name: NFR-2b, slow burn through 1 d and 2 h - 20% of first tokens slow for a day
+    interval: 5m
+    input_series:
+      - series: 'rag_ttft_seconds_count{job="rag",instance="app:9464"}'
+        values: *slow1_count
+      - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
+        values: *slow1_bucket
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: RagFirstTokenLatencySlowBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: ticket }
+            exp_annotations: &ttft_slow
+              summary: The first token is spending its latency budget (NFR-2b)
+              description: First tokens over 300 s burn NFR-2b's 95% at 3 times its budget over 1 d, or at its budget over 3 d.
+      - eval_time: 31h
+        alertname: RagFirstTokenLatencySlowBurn
+        exp_alerts: []
+
+  - name: NFR-2b, slow burn through 3 d and 6 h alone - 7% of first tokens slow steadily
+    interval: 5m
+    input_series:
+      - series: 'rag_ttft_seconds_count{job="rag",instance="app:9464"}'
+        values: *slow2_count
+      - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
+        values: *slow2_bucket
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: RagFirstTokenLatencySlowBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: ticket }
+            exp_annotations: *ttft_slow
+
+  - name: NFR-2b, a 2-hour burst of 50% slow after a good day stays quiet
+    interval: 5m
+    input_series:
+      - series: 'rag_ttft_seconds_count{job="rag",instance="app:9464"}'
+        values: *burst_count
+      - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
+        values: *burst_bucket
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: RagFirstTokenLatencySlowBurn
+        exp_alerts: []
+      - eval_time: 26h
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts: []
+
+  # --- the causes -------------------------------------------------------------------------
+  - name: a breaker not closed for 5 minutes pages; its first minutes do not
+    interval: 1m
+    input_series:
+      # Qdrant's breaker open from minute 3 to 12; the model's from 8 to 20. No hosted
+      # fallback on this instance, so an open model breaker pages as well.
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="qdrant",state="closed"}'
+        values: '1x2 0x9 1x13'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="qdrant",state="open"}'
+        values: '0x2 1x9 0x13'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="qdrant",state="half-open"}'
+        values: '0x25'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="llm",state="closed"}'
+        values: '1x7 0x12 1x5'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="llm",state="open"}'
+        values: '0x7 1x12 0x5'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="llm",state="half-open"}'
+        values: '0x25'
+    alert_rule_test:
+      - eval_time: 5m # Qdrant's open, first seen: pending
+        alertname: RagBreakerOpen
+        exp_alerts: []
+      - eval_time: 10m # Qdrant's for 5 minutes; the model's just seen, pending
+        alertname: RagBreakerOpen
+        exp_alerts:
+          - exp_labels: { job: rag, instance: "app:9464", breaker: qdrant, severity: page }
+            exp_annotations:
+              summary: "app:9464: the qdrant breaker has been open for 5 minutes"
+              description: &breaker_page The questions that need it are refused with 503 and Retry-After; /v1/health names the dependency, and the server log says why.
+      - eval_time: 15m # Qdrant's closed again; the model's for 5 minutes
+        alertname: RagBreakerOpen
+        exp_alerts:
+          - exp_labels: { job: rag, instance: "app:9464", breaker: llm, severity: page }
+            exp_annotations:
+              summary: "app:9464: the llm breaker has been open for 5 minutes"
+              description: *breaker_page
+      - eval_time: 25m # both closed
+        alertname: RagBreakerOpen
+        exp_alerts: []
+
+  - name: a breaker flipping between open and half-open stays pending, then pages
+    interval: 1m
+    input_series:
+      # Open from minute 5, half-open from 10 (its probe out), open again from 15 (the probe
+      # failed), closed from 20.
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="qdrant",state="closed"}'
+        values: '1x4 0x14 1x10'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="qdrant",state="open"}'
+        values: '0x4 1x4 0x4 1x4 0x10'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="qdrant",state="half-open"}'
+        values: '0x9 1x4 0x15'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RagBreakerOpen
+        exp_alerts: []
+      - eval_time: 10m # half-open now, not closed for 5 minutes
+        alertname: RagBreakerOpen
+        exp_alerts:
+          - exp_labels: { job: rag, instance: "app:9464", breaker: qdrant, severity: page }
+            exp_annotations:
+              summary: "app:9464: the qdrant breaker has been open for 5 minutes"
+              description: *breaker_page
+      - eval_time: 20m
+        alertname: RagBreakerOpen
+        exp_alerts: []
+
+  - name: the model's breaker with a hosted fallback is a ticket, worded for the fallback
+    interval: 1m
+    input_series:
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="llm",state="closed"}'
+        values: '1x1 0x10 1x6'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="llm",state="open"}'
+        values: '0x1 1x10 0x6'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="llm",state="half-open"}'
+        values: '0x19'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="fallback",state="closed"}'
+        values: '1x19'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="fallback",state="open"}'
+        values: '0x19'
+      - series: 'rag_breaker_state{job="rag",instance="app:9464",breaker="fallback",state="half-open"}'
+        values: '0x19'
+    alert_rule_test:
+      - eval_time: 5m # open, first seen: pending
+        alertname: RagBreakerOpen
+        exp_alerts: []
+      - eval_time: 10m # open for 5 minutes: the ticket, and no page
+        alertname: RagBreakerOpen
+        exp_alerts:
+          - exp_labels: { job: rag, instance: "app:9464", breaker: llm, severity: ticket }
+            exp_annotations:
+              summary: "app:9464: the llm breaker has been open for 5 minutes"
+              description: Answers come from the hosted fallback and leave the host, the questions and their retrieved chunks with them, until Ollama answers again.
+      - eval_time: 15m
+        alertname: RagBreakerOpen
+        exp_alerts: []
+
+  - name: a failed ingest job is a ticket for an hour
+    interval: 1m
+    input_series:
+      - series: 'rag_ingest_runs_total{job="rag",instance="app:9464",status="failed"}'
+        values: '0x10 1x80'
+      - series: 'rag_ingest_runs_total{job="rag",instance="app:9464",status="succeeded"}'
+        values: '0+1x90'
+    alert_rule_test:
+      - eval_time: 5m # none failed yet
+        alertname: RagIngestFailed
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: RagIngestFailed
+        exp_alerts:
+          - exp_labels: { job: rag, instance: "app:9464", severity: ticket }
+            exp_annotations:
+              summary: "app:9464: an ingest job failed in the last hour"
+              description: GET /v1/ingest/<job_id> has its exit code and its log; the live index changed only if the job published.
+      - eval_time: 80m # the failure is more than an hour old
+        alertname: RagIngestFailed
+        exp_alerts: []
+
+  - name: a replica that does not answer its scrape pages after 5 minutes
+    interval: 1m
+    input_series:
+      - series: 'up{job="rag",instance="app:9464"}'
+        values: '1x4 0x10 1x5'
+    alert_rule_test:
+      - eval_time: 5m # down, first seen: pending
+        alertname: RagTargetDown
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: RagTargetDown
+        exp_alerts:
+          - exp_labels: { job: rag, instance: "app:9464", severity: page }
+            exp_annotations:
+              summary: "app:9464: the metrics port has not answered for 5 minutes"
+              description: rag-serve runs but does not answer, or it serves no metrics (RAG_API_METRICS_PORT).
+      - eval_time: 10m # the target is still discovered: nothing is missing
+        alertname: RagTargetMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: RagTargetDown
+        exp_alerts: []
+
+  - name: every replica gone, so no up at all, pages after 5 minutes
+    interval: 1m
+    input_series:
+      # The replica exits at minute 5: Docker's DNS drops it, and so does discovery, which
+      # ends its series (a stale marker) rather than reporting it down.
+      - series: 'up{job="rag",instance="172.18.0.5:9464"}'
+        values: '1x4 stale'
+    alert_rule_test:
+      - eval_time: 0m # running
+        alertname: RagTargetMissing
+        exp_alerts: []
+      - eval_time: 5m # gone, first seen: pending
+        alertname: RagTargetMissing
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: RagTargetMissing
+        exp_alerts:
+          - exp_labels: { job: rag, severity: page }
+            exp_annotations:
+              summary: No rag_qa API replica has been scraped for 5 minutes
+              description: Prometheus finds no app to scrape. Every replica has exited, or none was started.
+      - eval_time: 10m # and RagTargetDown cannot fire: there is no up to be 0
+        alertname: RagTargetDown
+        exp_alerts: []

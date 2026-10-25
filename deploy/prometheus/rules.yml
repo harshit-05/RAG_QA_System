@@ -1,0 +1,260 @@
+# Alert rules for the rag_qa API (NFR-10, DEC-22, S3-7b; ARCHITECTURE.md §3.1).
+#
+# Multi-window, multi-burn-rate alerts on four objectives, as in the SRE workbook ("Alerting
+# on SLOs"), plus four alerts on causes. rules.test.yml shows every alert firing and staying
+# quiet, at each window; CI's deploy-config job runs it with promtool.
+#
+# The objectives, each over 30 days (S3-7's plan, 2026-10-23):
+#   availability  99%. Bad: a question refused with 503 (busy, a dependency down, no index),
+#                 or an answer that failed after its 200 (an error event). A cancelled answer
+#                 counts on neither side: its client chose to leave.
+#   NFR-1         95% of retrievals, the query embedding and the search, under 0.3 s.
+#   NFR-2a        95% of sources events under 2 s from the question.
+#   NFR-2b        95% of first tokens under 300 s: this CPU's class, where the committed tier-2
+#                 run's p95 is 226.7 s and its max 269.2 s. A GPU host edits the bucket.
+# A latency objective reads its histogram's bucket at the objective: le="0.3", "2.0" and
+# "300.0", as prometheus_client exposes them and as Prometheus 3 stores every le (a whole
+# number is "2.0", never "2").
+#
+# The burn rates: page at 14.4 times the budget's rate over 1 h and 5 m (2% of a 30-day
+# budget in an hour), or 6 times over 6 h and 30 m (5% in six hours); ticket at 3 times over
+# 1 d and 2 h, or once over 3 d and 6 h. The long window says the budget is going; the short
+# one ends the alert soon after the burn stops. On a CPU host, which answers a question every
+# few minutes, one slow answer can fill a short window alone: the long window must agree.
+#
+# The SLIs sum over every replica (by job): the objective is the service's. The metrics are
+# S3-7's (README, "Metrics"); every label set starts at 0, so no sum is ever missing a term.
+
+groups:
+  # --- availability: 99% ------------------------------------------------------------------
+  - name: rag-availability
+    rules:
+      - record: rag:availability_errors:ratio_rate5m
+        expr: |
+          (sum by (job) (rate(rag_refusals_total{code="503"}[5m])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[5m])))
+          /
+          (sum by (job) (rate(rag_refusals_total{code="503"}[5m])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[5m])))
+      - record: rag:availability_errors:ratio_rate30m
+        expr: |
+          (sum by (job) (rate(rag_refusals_total{code="503"}[30m])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[30m])))
+          /
+          (sum by (job) (rate(rag_refusals_total{code="503"}[30m])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[30m])))
+      - record: rag:availability_errors:ratio_rate1h
+        expr: |
+          (sum by (job) (rate(rag_refusals_total{code="503"}[1h])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[1h])))
+          /
+          (sum by (job) (rate(rag_refusals_total{code="503"}[1h])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[1h])))
+      - record: rag:availability_errors:ratio_rate2h
+        expr: |
+          (sum by (job) (rate(rag_refusals_total{code="503"}[2h])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[2h])))
+          /
+          (sum by (job) (rate(rag_refusals_total{code="503"}[2h])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[2h])))
+      - record: rag:availability_errors:ratio_rate6h
+        expr: |
+          (sum by (job) (rate(rag_refusals_total{code="503"}[6h])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[6h])))
+          /
+          (sum by (job) (rate(rag_refusals_total{code="503"}[6h])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[6h])))
+      - record: rag:availability_errors:ratio_rate1d
+        expr: |
+          (sum by (job) (rate(rag_refusals_total{code="503"}[1d])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[1d])))
+          /
+          (sum by (job) (rate(rag_refusals_total{code="503"}[1d])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[1d])))
+      - record: rag:availability_errors:ratio_rate3d
+        expr: |
+          (sum by (job) (rate(rag_refusals_total{code="503"}[3d])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[3d])))
+          /
+          (sum by (job) (rate(rag_refusals_total{code="503"}[3d])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[3d])))
+      - alert: RagAvailabilityFastBurn
+        expr: |
+          (rag:availability_errors:ratio_rate1h > (14.4 * 0.01) and rag:availability_errors:ratio_rate5m > (14.4 * 0.01))
+          or
+          (rag:availability_errors:ratio_rate6h > (6 * 0.01) and rag:availability_errors:ratio_rate30m > (6 * 0.01))
+        labels:
+          severity: page
+        annotations:
+          summary: The API is spending its availability budget fast
+          description: 503 refusals and failed answers burn 99% availability at 14.4 times its budget over 1 h, or 6 times over 6 h.
+      - alert: RagAvailabilitySlowBurn
+        expr: |
+          (rag:availability_errors:ratio_rate1d > (3 * 0.01) and rag:availability_errors:ratio_rate2h > (3 * 0.01))
+          or
+          (rag:availability_errors:ratio_rate3d > (1 * 0.01) and rag:availability_errors:ratio_rate6h > (1 * 0.01))
+        labels:
+          severity: ticket
+        annotations:
+          summary: The API is spending its availability budget
+          description: 503 refusals and failed answers burn 99% availability at 3 times its budget over 1 d, or at its budget over 3 d.
+
+  # --- NFR-1: 95% of retrievals under 0.3 s ------------------------------------------------
+  - name: rag-retrieval-latency
+    rules:
+      - record: rag:retrieval_slow:ratio_rate5m
+        expr: 1 - sum by (job) (rate(rag_retrieval_seconds_bucket{le="0.3"}[5m])) / sum by (job) (rate(rag_retrieval_seconds_count[5m]))
+      - record: rag:retrieval_slow:ratio_rate30m
+        expr: 1 - sum by (job) (rate(rag_retrieval_seconds_bucket{le="0.3"}[30m])) / sum by (job) (rate(rag_retrieval_seconds_count[30m]))
+      - record: rag:retrieval_slow:ratio_rate1h
+        expr: 1 - sum by (job) (rate(rag_retrieval_seconds_bucket{le="0.3"}[1h])) / sum by (job) (rate(rag_retrieval_seconds_count[1h]))
+      - record: rag:retrieval_slow:ratio_rate2h
+        expr: 1 - sum by (job) (rate(rag_retrieval_seconds_bucket{le="0.3"}[2h])) / sum by (job) (rate(rag_retrieval_seconds_count[2h]))
+      - record: rag:retrieval_slow:ratio_rate6h
+        expr: 1 - sum by (job) (rate(rag_retrieval_seconds_bucket{le="0.3"}[6h])) / sum by (job) (rate(rag_retrieval_seconds_count[6h]))
+      - record: rag:retrieval_slow:ratio_rate1d
+        expr: 1 - sum by (job) (rate(rag_retrieval_seconds_bucket{le="0.3"}[1d])) / sum by (job) (rate(rag_retrieval_seconds_count[1d]))
+      - record: rag:retrieval_slow:ratio_rate3d
+        expr: 1 - sum by (job) (rate(rag_retrieval_seconds_bucket{le="0.3"}[3d])) / sum by (job) (rate(rag_retrieval_seconds_count[3d]))
+      - alert: RagRetrievalLatencyFastBurn
+        expr: |
+          (rag:retrieval_slow:ratio_rate1h > (14.4 * 0.05) and rag:retrieval_slow:ratio_rate5m > (14.4 * 0.05))
+          or
+          (rag:retrieval_slow:ratio_rate6h > (6 * 0.05) and rag:retrieval_slow:ratio_rate30m > (6 * 0.05))
+        labels:
+          severity: page
+        annotations:
+          summary: Retrieval is spending its latency budget fast (NFR-1)
+          description: Retrievals over 0.3 s burn NFR-1's 95% at 14.4 times its budget over 1 h, or 6 times over 6 h.
+      - alert: RagRetrievalLatencySlowBurn
+        expr: |
+          (rag:retrieval_slow:ratio_rate1d > (3 * 0.05) and rag:retrieval_slow:ratio_rate2h > (3 * 0.05))
+          or
+          (rag:retrieval_slow:ratio_rate3d > (1 * 0.05) and rag:retrieval_slow:ratio_rate6h > (1 * 0.05))
+        labels:
+          severity: ticket
+        annotations:
+          summary: Retrieval is spending its latency budget (NFR-1)
+          description: Retrievals over 0.3 s burn NFR-1's 95% at 3 times its budget over 1 d, or at its budget over 3 d.
+
+  # --- NFR-2a: 95% of sources events under 2 s --------------------------------------------
+  - name: rag-sources-latency
+    rules:
+      - record: rag:sources_slow:ratio_rate5m
+        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[5m])) / sum by (job) (rate(rag_sources_seconds_count[5m]))
+      - record: rag:sources_slow:ratio_rate30m
+        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[30m])) / sum by (job) (rate(rag_sources_seconds_count[30m]))
+      - record: rag:sources_slow:ratio_rate1h
+        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[1h])) / sum by (job) (rate(rag_sources_seconds_count[1h]))
+      - record: rag:sources_slow:ratio_rate2h
+        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[2h])) / sum by (job) (rate(rag_sources_seconds_count[2h]))
+      - record: rag:sources_slow:ratio_rate6h
+        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[6h])) / sum by (job) (rate(rag_sources_seconds_count[6h]))
+      - record: rag:sources_slow:ratio_rate1d
+        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[1d])) / sum by (job) (rate(rag_sources_seconds_count[1d]))
+      - record: rag:sources_slow:ratio_rate3d
+        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[3d])) / sum by (job) (rate(rag_sources_seconds_count[3d]))
+      - alert: RagSourcesLatencyFastBurn
+        expr: |
+          (rag:sources_slow:ratio_rate1h > (14.4 * 0.05) and rag:sources_slow:ratio_rate5m > (14.4 * 0.05))
+          or
+          (rag:sources_slow:ratio_rate6h > (6 * 0.05) and rag:sources_slow:ratio_rate30m > (6 * 0.05))
+        labels:
+          severity: page
+        annotations:
+          summary: The sources event is spending its latency budget fast (NFR-2a)
+          description: Sources events over 2 s burn NFR-2a's 95% at 14.4 times its budget over 1 h, or 6 times over 6 h.
+      - alert: RagSourcesLatencySlowBurn
+        expr: |
+          (rag:sources_slow:ratio_rate1d > (3 * 0.05) and rag:sources_slow:ratio_rate2h > (3 * 0.05))
+          or
+          (rag:sources_slow:ratio_rate3d > (1 * 0.05) and rag:sources_slow:ratio_rate6h > (1 * 0.05))
+        labels:
+          severity: ticket
+        annotations:
+          summary: The sources event is spending its latency budget (NFR-2a)
+          description: Sources events over 2 s burn NFR-2a's 95% at 3 times its budget over 1 d, or at its budget over 3 d.
+
+  # --- NFR-2b: 95% of first tokens under 300 s (this CPU's class) -------------------------
+  - name: rag-first-token-latency
+    rules:
+      - record: rag:ttft_slow:ratio_rate5m
+        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[5m])) / sum by (job) (rate(rag_ttft_seconds_count[5m]))
+      - record: rag:ttft_slow:ratio_rate30m
+        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[30m])) / sum by (job) (rate(rag_ttft_seconds_count[30m]))
+      - record: rag:ttft_slow:ratio_rate1h
+        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[1h])) / sum by (job) (rate(rag_ttft_seconds_count[1h]))
+      - record: rag:ttft_slow:ratio_rate2h
+        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[2h])) / sum by (job) (rate(rag_ttft_seconds_count[2h]))
+      - record: rag:ttft_slow:ratio_rate6h
+        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[6h])) / sum by (job) (rate(rag_ttft_seconds_count[6h]))
+      - record: rag:ttft_slow:ratio_rate1d
+        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[1d])) / sum by (job) (rate(rag_ttft_seconds_count[1d]))
+      - record: rag:ttft_slow:ratio_rate3d
+        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[3d])) / sum by (job) (rate(rag_ttft_seconds_count[3d]))
+      - alert: RagFirstTokenLatencyFastBurn
+        expr: |
+          (rag:ttft_slow:ratio_rate1h > (14.4 * 0.05) and rag:ttft_slow:ratio_rate5m > (14.4 * 0.05))
+          or
+          (rag:ttft_slow:ratio_rate6h > (6 * 0.05) and rag:ttft_slow:ratio_rate30m > (6 * 0.05))
+        labels:
+          severity: page
+        annotations:
+          summary: The first token is spending its latency budget fast (NFR-2b)
+          description: First tokens over 300 s burn NFR-2b's 95% at 14.4 times its budget over 1 h, or 6 times over 6 h.
+      - alert: RagFirstTokenLatencySlowBurn
+        expr: |
+          (rag:ttft_slow:ratio_rate1d > (3 * 0.05) and rag:ttft_slow:ratio_rate2h > (3 * 0.05))
+          or
+          (rag:ttft_slow:ratio_rate3d > (1 * 0.05) and rag:ttft_slow:ratio_rate6h > (1 * 0.05))
+        labels:
+          severity: ticket
+        annotations:
+          summary: The first token is spending its latency budget (NFR-2b)
+          description: First tokens over 300 s burn NFR-2b's 95% at 3 times its budget over 1 d, or at its budget over 3 d.
+
+  # --- the causes -------------------------------------------------------------------------
+  - name: rag-causes
+    rules:
+      # A breaker not closed, open or half-open, for 5 minutes (DEC-21): the max keeps one
+      # that flips between the two pending. Every breaker pages, but the model's while a
+      # hosted fallback answers in its place: the rule below.
+      - alert: RagBreakerOpen
+        expr: |
+          (max by (job, instance, breaker) (rag_breaker_state{state!="closed"}) == 1)
+          unless on (job, instance, breaker)
+          (max by (job, instance, breaker) (rag_breaker_state{breaker="llm"}) and on (job, instance) max by (job, instance) (rag_breaker_state{breaker="fallback"}))
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.instance }}: the {{ $labels.breaker }} breaker has been open for 5 minutes"
+          description: The questions that need it are refused with 503 and Retry-After; /v1/health names the dependency, and the server log says why.
+      # The model's breaker while the hosted fallback answers: answers still come, from the
+      # fallback, and every question and its chunks leave this host (DEC-21).
+      - alert: RagBreakerOpen
+        expr: |
+          (max by (job, instance, breaker) (rag_breaker_state{breaker="llm", state!="closed"}) == 1)
+          and on (job, instance)
+          max by (job, instance) (rag_breaker_state{breaker="fallback"})
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $labels.instance }}: the llm breaker has been open for 5 minutes"
+          description: Answers come from the hosted fallback and leave the host, the questions and their retrieved chunks with them, until Ollama answers again.
+      # A failed API ingest job in the last hour. A rag-ingest run outside the server has no
+      # metrics listener: its exit status is the operator's to watch.
+      - alert: RagIngestFailed
+        expr: sum by (job, instance) (increase(rag_ingest_runs_total{status="failed"}[1h])) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $labels.instance }}: an ingest job failed in the last hour"
+          description: GET /v1/ingest/<job_id> has its exit code and its log; the live index changed only if the job published.
+      # A replica that runs but does not answer its scrape.
+      - alert: RagTargetDown
+        expr: up{job="rag"} == 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.instance }}: the metrics port has not answered for 5 minutes"
+          description: rag-serve runs but does not answer, or it serves no metrics (RAG_API_METRICS_PORT).
+      # No replica at all. Docker's DNS lists running containers only, so exited replicas
+      # leave the DNS-discovered targets instead of showing as down: up disappears, and
+      # RagTargetDown cannot fire.
+      - alert: RagTargetMissing
+        expr: absent(up{job="rag"})
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: No rag_qa API replica has been scraped for 5 minutes
+          description: Prometheus finds no app to scrape. Every replica has exited, or none was started.

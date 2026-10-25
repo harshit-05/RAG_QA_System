@@ -1,0 +1,29 @@
+# Alertmanager for the rag_qa alerts (NFR-10, DEC-22, S3-7b). S3-9's compose runs it in its
+# observability profile, from prom/alertmanager:v0.34.1 pinned by digest (DEC-24); CI's
+# deploy-config job checks it with amtool from the same image.
+#
+# Every alert goes to the null receiver, which sends nothing, until an operator names a real
+# one: the email receiver below, commented out, shows how. Pages and tickets are told apart by
+# the severity label the rules set (deploy/prometheus/rules.yml). A password never goes in this
+# file: auth_password_file names a file the container mounts.
+
+route:
+  receiver: "null"
+  group_by: [alertname, job, instance, breaker]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  # routes:
+  #   - receiver: email
+  #     matchers: ['severity=~"page|ticket"']
+
+receivers:
+  - name: "null"
+  # - name: email
+  #   email_configs:
+  #     - to: oncall@example.com
+  #       from: alertmanager@example.com
+  #       smarthost: smtp.example.com:587
+  #       auth_username: alertmanager@example.com
+  #       auth_password_file: /etc/alertmanager/smtp_password
+  #       send_resolved: true
