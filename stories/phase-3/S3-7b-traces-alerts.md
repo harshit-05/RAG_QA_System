@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Built and reviewed, awaiting its close-out record: PR #26 on `feat/s3-7b-traces-alerts`, `845133b` … `0815ac1`, CI green on `0815ac1`. Plan approved 2026-10-25 (below, "Plan"); on Opus 5.5 at max effort (Deviation). The first review (2026-10-25) found one false claim (a span's exception text), six gaps in what the tests would catch and two smaller things, fixed on the PR ("First review"). |
+| **Status** | Built and reviewed, awaiting its close-out record: PR #26 on `feat/s3-7b-traces-alerts`, `845133b` … `0a11270`, CI green on `0815ac1` and on `0a11270` (run 40216686158). Plan approved 2026-10-25 (below, "Plan"); on Opus 5.5 at max effort (Deviation). The first review (2026-10-25) found one false claim (a span's exception text), six gaps in what the tests would catch and two smaller things, fixed on the PR ("First review"). The second (2026-10-26, on `0a11270`) found an alert that paged a healthy idle server, fixed on the PR, and a check that gated no merge, for the maintainer ("Second review"). |
 | **Closes** | NFR-10 (traces); DEC-22 (traces and alerts); DEC-24's `deploy-config` job |
 | **Depends on** | S3-7 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -301,6 +301,82 @@ tracing and rule tests passed ten repeats in a row.
 
 **For the close-out:** the Verification record, Discovered and Deviation are still the
 implementer's to write.
+
+## Second review (2026-10-26, Opus 5.5, on `0a11270`)
+
+**1 alert defect, fixed on the PR with four scenarios; 1 gating gap, for the maintainer.
+Nothing blocks DEC-14's cancel path.** Run on the PR's head after the maintainer's push
+(local and origin in sync), with the first review's record treated as claims to check. The
+maintainer's Qdrant was stopped and left so: the server tests ran on a throwaway Qdrant from
+compose's digest (`review-s3-7b-qdrant`, port 16333), the probes and mutations in scratch
+copies of `HEAD`, promtool and amtool from the pinned images. No model was run.
+
+- **Reproduced on `0a11270`:** ruff, format, mypy and `uv lock --check` clean; **1591 passed,
+  18 skipped, 5 xfailed**, coverage **98.47%**, the HF cache empty; the 11 `qdrant_server`
+  tests; `rag-eval check` exit 0; `promtool check config` (41 rules), both rule-test files and
+  `amtool check-config`; CI green (run 40216686158: `check`, `eval-retrieval`,
+  `deploy-config`). The lock: 13 packages added, none moved, pypdf 6.19.0. Tier 1 was not
+  re-run: since the first review's IDENTICAL run on `0815ac1`, only `scrub.py` and the export
+  path of `tracing.py` changed, and `rag-eval` never traces.
+- **DEC-14 with tracing on:** no span is current across a `yield`; each chat span ends in a
+  `finally` of its own, which a second cancel inside the stream's close cannot skip; every
+  real-uvicorn drop runs again with the contrib middleware and an SDK provider, then requires
+  every span ended and no context failed to detach; `rag-query`'s Ctrl-C marks its question
+  and its attempt cancelled.
+- **Six guards, each caught by mutation after a clean control:** the scrubbing exporter, the
+  executor thread's copy of the request's context, FastAPI's telemetry flags, the chat span's
+  `end()`, the ingest job's attach, and `receive` left out of the spans.
+- **The claims, against the installed source:** FastAPI 0.143's explicit `telemetry=` values
+  override `FASTAPI_OTEL_AUTO_CONFIGURE`; the rules' `le` strings ("0.3", "2.0", "300.0") are
+  prometheus_client's own exposition (S3-7's real scrape); every burn-rate threshold and the
+  README's percentages (2%, 5%, 10%, 10%); a malformed endpoint exits 2 in all three
+  commands without printing it.
+
+Finding, fixed:
+
+1. **`RagBreakerOpen` paged a healthy idle server after a model outage, until the next
+   question.** A breaker is open for 30 s, then half-open until a question probes it, and a
+   half-open breaker with no probe out refuses nothing. Readiness probes Qdrant's breaker
+   (`refresh()` reads the alias through it) but never the model's or the fallback's
+   (`llm_reachable()` touches no breaker), and the rule counted half-open as not closed. On
+   the real app, with the llm breaker opened and Ollama answering again: an hour idle,
+   `/v1/health` 200 ready, `refusal_s()` None, the scrape `rag_breaker_state{breaker="llm",
+   state="half-open"} 1`; the next question was let through, and closed it. promtool, with
+   that shape, fired the page at 10, 30 and 59 minutes, with a description ("refused with
+   503") false in that state. The tests held a breaker `open` for 9 minutes and more, which
+   the real one never is. Both rules now also need the breaker open within the last 4
+   minutes (`max_over_time(…{state="open"}[4m])`), under the 5 of `for`, so the opening that
+   began the outage never pages alone. `rules.causes.test.yml` gains four scenarios in the
+   breaker's real shape: idle after the outage, quiet at 8, 30 and 60 minutes, with and
+   without a fallback; probes failing at a question every 2 minutes, page (or ticket) at 8
+   minutes and not at 7. Each rule put back fails its own idle scenario. The cost: an outage
+   whose questions come more than 4 minutes apart does not page through this alert; the
+   availability alerts still do, on the failed answers (the 6 h and 30 m pair). README's row
+   and ARCHITECTURE's note say so.
+
+For the maintainer:
+
+2. **`deploy-config` gates no merge yet.** Ruleset 25561360 requires `check` and
+   `eval-retrieval` only, and S3-9 was to add `deploy-config` with `container`: until then, a
+   broken rule or a failing promtool test merges. The job runs on every pull request, so
+   requiring it is safe. The second review hands over a PUT, built from the ruleset as it is,
+   that adds it after S3-7b's merge; STATUS and S3-9 now say so (a PUT replaces the whole
+   list, so S3-9 builds its own from the ruleset as it then is).
+
+**After the fix:** 1591 passed, 18 skipped, 5 xfailed, coverage 98.47%; the rules' pytest;
+`promtool check config` and both rule-test files from the pinned image; ruff clean;
+`rag-eval check` exit 0.
+
+**Nits left:**
+
+- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` alone turns nothing on, since tracing keys on the
+  generic variable; set beside it, the SDK sends the spans there while the start-up line
+  names the generic one. No doc says so.
+- NFR-2b's SLI has no answer cancelled before its first token: a client that gives up after
+  300 s leaves no TTFT and counts in neither SLI, so slower answers make it look better.
+- The Scope says availability counts "5xx on `/v1/query`"; the rules count the 503 refusals
+  and the failed answers, and an unexpected 500 is seen by none, there being no HTTP status
+  metric.
 
 ## Deviation from plan
 

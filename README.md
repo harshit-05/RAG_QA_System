@@ -688,7 +688,7 @@ day's 10%, or three days' 10%.
 | `RagRetrievalLatencyFastBurn`, `…SlowBurn` | more than 5% of retrievals take over 0.3 s (NFR-1) |
 | `RagSourcesLatencyFastBurn`, `…SlowBurn` | more than 5% of `sources` events take over 2 s (NFR-2a); expect the ticket on a CPU host until S3-11's measures land |
 | `RagFirstTokenLatencyFastBurn`, `…SlowBurn` | more than 5% of first tokens take over 300 s (NFR-2b): this CPU's class, so a GPU host edits the bucket |
-| `RagBreakerOpen` | a dependency's breaker has not been closed for 5 minutes; for the model's, while the hosted fallback answers, a ticket that says answers leave the host |
+| `RagBreakerOpen` | a dependency's breaker has not closed for 5 minutes and keeps opening again, its probes failing; one left half-open by an idle server after its dependency came back does not fire. For the model's, while the hosted fallback answers, a ticket that says answers leave the host |
 | `RagIngestFailed` | an API ingest job failed in the last hour |
 | `RagTargetDown` | a replica has not answered its scrape for 5 minutes |
 | `RagTargetMissing` | Prometheus has found no replica to scrape for 5 minutes: every app container has exited |

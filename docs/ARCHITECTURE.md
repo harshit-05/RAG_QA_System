@@ -2691,7 +2691,9 @@ _As built in S3-7b (2026-10-25), from its approved plan (the story's "Plan", D1â
   yields fails the forced window's tests with "Failed to detach context".
 - **The alerts** (`deploy/prometheus/rules.yml`): recording rules for the four SLIs over seven
   windows, eight burn-rate alerts, `RagBreakerOpen` (a ticket for the model's while the hosted
-  fallback answers), `RagIngestFailed`, `RagTargetDown`, and `RagTargetMissing`: compose's
+  fallback answers; only while the breaker keeps opening again, since an idle server leaves a
+  model breaker half-open after its outage, with the model back, and readiness never probes
+  it: second review), `RagIngestFailed`, `RagTargetDown`, and `RagTargetMissing`: compose's
   replicas are found by DNS, so an exited one leaves the targets and its `up` disappears. The
   tests run with a 5-minute evaluation interval, about 20 s; at one minute they took four.
 - **The rules' tests** are two files: `rules.test.yml` evaluates every 5 minutes, and

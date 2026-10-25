@@ -13,7 +13,7 @@ is not traced. Prometheus finds the app's replicas by DNS, and `deploy-config` c
 Alertmanager's file too.
 
 **S3-7b is built and reviewed, awaiting the close-out** (PR #26, 2026-10-25; CI green on
-`0815ac1`). **First review (2026-10-25): no blocker; 1 false claim, 6 test gaps and 2 smaller
+`0815ac1`, and on `0a11270`, run 40216686158). **First review (2026-10-25): no blocker; 1 false claim, 6 test gaps and 2 smaller
 things, fixed on the PR.** Detail in the story ("First review").
 
 - **Fixed: a span could carry an exception's message and stacktrace.** The contrib server span
@@ -33,6 +33,23 @@ things, fixed on the PR.** Detail in the story ("First review").
   tracing mutants caught (the other two: an equivalent mutant, and the lifespan flush, now
   tested).
 - **After the fixes:** 1591 passed, coverage 98.47%; both rule-test files and `amtool` pass.
+
+**Second review of S3-7b (2026-10-26, on `0a11270`): no blocker; 1 alert defect, fixed on the
+PR, and 1 gating gap, for the maintainer.** The maintainer's Qdrant was stopped and left so
+(the server tests ran on a throwaway), and no model was run. Detail in the story ("Second
+review").
+
+- **Fixed: `RagBreakerOpen` paged a healthy idle server after a model outage,** until the
+  next question. An idle server leaves the model's breaker half-open with Ollama back, since
+  readiness never probes it, and the rule counted half-open (an hour idle on the real app,
+  `/v1/health` ready; promtool paged at 10, 30 and 59 minutes). It now also needs the breaker
+  open within the last 4 minutes, with four scenarios in the breaker's real shape.
+- **For the maintainer: `deploy-config` gates no merge yet.** The ruleset requires `check`
+  and `eval-retrieval` only. A PUT that adds it, to run after S3-7b's merge, is in the
+  review's hand-over; S3-9 adds `container` the same way.
+- **Held:** the gates (1591 passed, 98.47%; `rag-eval check` exit 0; promtool and amtool from
+  the pinned images; the lock), DEC-14 with tracing on, six tracing guards under mutation, the
+  `le` strings against the real exposition, and the burn-rate arithmetic.
 
 **S3-7 is merged** (2026-10-25, PR #25, merge commit `8afdc25`). CI was green on the PR's last
 head, `0a9a724`, the close-out record (run 40132623431), and is green on `main` after the
@@ -266,9 +283,10 @@ IDENTICAL.
   0 approvals; and `check` and `eval-retrieval` from GitHub Actions (integration 15368)
   passing, on a branch up to date with `main`. Squash and rebase merges are disabled in the
   repository settings, so a merge commit is the only method.
-- **§11's rule that a red stage blocks a merge now holds** for the two existing jobs. S3-9
-  adds `deploy-config` and `container` to this ruleset, by a PUT, and never creates a second
-  one.
+- **§11's rule that a red stage blocks a merge now holds** for the two existing jobs. S3-7b
+  adds a third, `deploy-config`, which the ruleset does not require yet: its second review
+  hands over a PUT that adds it after S3-7b's merge. S3-9 adds `container` the same way, and
+  never creates a second ruleset.
 - **Records go on the story's branch.** `main` takes no direct push, so a close-out after
   the merge (S1-8's and S2-3's precedent) needs a pull request of its own. Record the merge
   of one story on the next story's branch, as S3-5 does for S3-4.
@@ -1139,8 +1157,8 @@ The final story of each phase performs the tag + version bump at close-out.
 - [x] Resolve DEC-1 / DEC-2 — done in the Phase 0 arch pass, 2026-09-18.
 
 - [x] **A ruleset on `main`** — ruleset 25561360, applied 2026-10-21 ("Now"). It requires
-      `check` and `eval-retrieval`; S3-9's recipe extends it with `deploy-config` and
-      `container`.
+      `check` and `eval-retrieval`; S3-7b's second review's recipe extends it with
+      `deploy-config` after that story's merge, and S3-9's with `container`.
 
 - [x] **Phase 2 (S2-5b): somewhere to run tier-2 scoring.** Done 2026-10-11: a Colab T4,
   with Ollama pinned to 0.22.1 and outputs on Google Drive. That is about 35 min per
