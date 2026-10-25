@@ -2646,6 +2646,47 @@ _As built in S3-7 (2026-10-23), from its approved plan (the story's "Plan", D1�
   started seconds apart both passed the check for an existing collection. The second's
   create then failed with a 409, and its cleanup deleted the first's collection mid-timing.
 
+_As built in S3-7b (2026-10-25), from its approved plan (the story's "Plan", D1–D13):_
+
+- **Tracing** (`observability/tracing.py`) is on only when a command calls `configure()` and
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is set: `rag-serve`, `rag-query` and `rag-ingest`, never
+  `rag-eval`. A provider of our own, never the global one, with a batch processor and the
+  OTLP/HTTP exporter, which reads the SDK's own variables; our code imports them only then. The
+  shared code, retrieval and the answer stream, gets no-op spans otherwise, whatever the
+  environment holds. Flushed in the API's lifespan (a SIGTERM ends `rag-serve` before `main`'s
+  `finally`), shut down at each command's end. A malformed endpoint exits 2.
+- **The spans**, as designed above: `rag.retrieve` in `open_retrieval`'s half, its children in
+  `QdrantRetriever` and `_bound`; one `chat {model}` per attempt in `stream_answer`, started
+  after the breaker allows it, with an explicit parent and never current, ended in a nested
+  `finally`; `rag.query` per `rag-query` question; `rag.ingest` and its four steps over what
+  `load_s`, `embed_s` and `write_s` time. `serialized` runs its executor thread in a copy of the
+  request's context; an ingest job attaches its request's in its thread, so its run is in the
+  `POST /v1/ingest` trace. Log lines carry `trace_id` and `span_id` under a span.
+- **FastAPI 0.143 has OpenTelemetry of its own** (found in S3-7b's plan): server spans,
+  operation spans, OTel logs and metrics, switched on whenever a provider is configured,
+  a global one included. It ends a dropped client's server span as an error
+  (`ConnectionError`), where a cancel here leaves the status unset, and it wraps `receive`. The
+  maintainer kept the contrib instrumentation; `create_app` passes `telemetry` with `tracing`,
+  `metrics`, `logs` and `auto_configure` false, and a test shows one server span per request
+  with a global provider set, against a control app that makes its own.
+- **Python reads `OTEL_EXPORTER_OTLP_TIMEOUT` in seconds,** not the specification's
+  milliseconds. A dead collector costs at most that at exit, with the exporter's warnings.
+- **langsmith 0.12, through langchain-core, imports the SDK's `TracerProvider`** whenever the
+  SDK is installed, as a type: every command loads `opentelemetry.sdk.trace` (about 20 ms) and
+  configures nothing. The architecture test holds the exporter and the instrumentation out
+  instead, and no command sets a global provider.
+- **The cancel guarantee, with tracing on:** DEC-14's forced-cancel tests and every real-uvicorn
+  drop pass with the instrumentation wrapping the app, every span that starts ends, and no
+  context fails to detach. A mutant that makes the chat span current across the stream's
+  yields fails the forced window's tests with "Failed to detach context".
+- **The alerts** (`deploy/prometheus/rules.yml`): recording rules for the four SLIs over seven
+  windows, eight burn-rate alerts, `RagBreakerOpen` (a ticket for the model's while the hosted
+  fallback answers), `RagIngestFailed`, `RagTargetDown`, and `RagTargetMissing`: compose's
+  replicas are found by DNS, so an exited one leaves the targets and its `up` disappears. The
+  tests run with a 5-minute evaluation interval, about 20 s; at one minute they took four.
+- **The `deploy-config` job** runs `promtool check config`, `promtool test rules` and `amtool
+  check-config`, from the images DEC-24 pins.
+
 **DEC-23 — The API beyond localhost: named, scoped keys, rate limits, a body-size limit,
 durable job records and a stateless query tier** (NFR-5; DEC-18's Phase 3 half).
 
@@ -2860,7 +2901,9 @@ a separate ingest worker (on one host there is no CPU to isolate it on).
     A later pin of the same immutable tag that shows another digest is investigated, not
     accepted.
   - **The `deploy-config` job:** `promtool test rules`, `promtool check config` and
-    `docker compose config -q`, with promtool from the Prometheus image pinned above.
+    `docker compose config -q`, with promtool from the Prometheus image pinned above. S3-7b
+    built it with promtool's two and `amtool check-config`, from the Alertmanager image pinned
+    above (the maintainer, at its plan); S3-9 adds the compose check.
   - **The audit policy** (a backlog line, decided here):
     - `pip-audit --ignore-vuln ID` only for an advisory with no fixed release, with a
       reason and a date beside it in `ci.yml`, and a line in STATUS.md;
