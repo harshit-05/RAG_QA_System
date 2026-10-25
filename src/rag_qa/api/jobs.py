@@ -19,9 +19,13 @@ them are path-free (S2-6), since they go over HTTP.
 - **What it reports** (S3-7): the job's log lines carry its ``job_id``, and each job counts in
   ``rag_ingest_runs_total`` by how it ended, its embedded chunks in ``rag_ingest_chunks_total``.
   A ``rag-ingest`` run outside the server has no metrics listener: it reports in its log.
+- **Its trace** (S3-7b): while tracing is on, the job's ``rag.ingest`` span is the child of the
+  ``POST /v1/ingest`` request that started it, in that request's trace, though it ends minutes
+  after the request does. A job abandoned at shutdown never ends its spans: they go with it.
 """
 
 import asyncio
+import functools
 import logging
 import threading
 import uuid
@@ -30,6 +34,8 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+
+from opentelemetry.context import Context
 
 from rag_qa.api.models import JobStatus
 from rag_qa.config import ConfigError
@@ -46,7 +52,7 @@ from rag_qa.ingest import (
     outcome,
 )
 from rag_qa.ingest import logger as ingest_logger
-from rag_qa.observability import logs, metrics
+from rag_qa.observability import logs, metrics, tracing
 from rag_qa.schema import RagConfig
 from rag_qa.vectorstore import StoreUnavailableError
 
@@ -119,14 +125,16 @@ class IngestJobs:
         while len(self._jobs) > KEEP:
             self._jobs.popitem(last=False)  # the oldest; the running job is the newest
         self._running = job
-        task = asyncio.create_task(self._run(job), name=f"ingest-{job.job_id}")
+        # The request's context, for the job's trace: read here, in the request's own task.
+        parent = tracing.current()
+        task = asyncio.create_task(self._run(job, parent), name=f"ingest-{job.job_id}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return job
 
-    async def _run(self, job: IngestJob) -> None:
+    async def _run(self, job: IngestJob, parent: Context | None) -> None:
         try:
-            await _in_daemon_thread(self._work, job)
+            await _in_daemon_thread(functools.partial(self._work, parent=parent), job)
         finally:
             self._running = None
         try:
@@ -136,8 +144,9 @@ class IngestJobs:
         except Exception:
             logger.exception("Could not serve what ingest job %s published", job.job_id)
 
-    def _work(self, job: IngestJob) -> None:
-        """The run itself, in the job's thread. Never raises: every ending is recorded."""
+    def _work(self, job: IngestJob, *, parent: Context | None = None) -> None:
+        """The run itself, in the job's thread, under ``parent``, the request's context while
+        tracing is on. Never raises: every ending is recorded."""
         logs.bind(job_id=job.job_id)  # this thread's own context: every line of the run
         job.started_at = datetime.now(UTC)
         job.status = "running"
@@ -147,7 +156,8 @@ class IngestJobs:
         if ingest_logger.getEffectiveLevel() > logging.INFO:
             ingest_logger.setLevel(logging.INFO)  # progress is INFO, as rag-ingest shows it
         try:
-            report = ingest(self._config, rebuild=job.rebuild)
+            with tracing.attached(parent):
+                report = ingest(self._config, rebuild=job.rebuild)
         except (
             ConfigError,
             FileNotFoundError,

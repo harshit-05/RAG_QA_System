@@ -57,13 +57,20 @@ and JSON lines when read by a machine. The summary and the outcome are printed o
 run times its phases, and the summary reports its throughput: pages loaded, chunks embedded
 and points written per second; the "Published …" line carries the same as fields.
 
+**Its trace** (NFR-10, S3-7b). While tracing is on, a run is a ``rag.ingest`` span, with its
+counts as attributes, and with a child for each step: the corpus walk, the loading and
+splitting (``load_s``), the embedding (``embed_s``) and the publishing (``write_s``). The API's
+jobs run it too, in their request's trace; ``rag-ingest`` turns tracing on with
+``OTEL_EXPORTER_OTLP_ENDPOINT`` (:mod:`rag_qa.observability.tracing`).
+
 ``rag-ingest`` exit codes: **0** the index matches the corpus; **1** the run completed but
 a document or folder could not be read, or there was nothing to index — and also an
 unexpected error, which exits 1 with a traceback (Python's own status for an unhandled
 exception), so 1 alone does not say whether an index was published; **2** the run could
-not start (configuration problem, another ingestion running, something in the alias's
-way, or a command-line usage error, as ``argparse`` uses), or Qdrant could not be used,
-before the run or during it, which publishes nothing.
+not start (configuration problem, a trace endpoint that is not an http(s) URL, another
+ingestion running, something in the alias's way, or a command-line usage error, as
+``argparse`` uses), or Qdrant could not be used, before the run or during it, which
+publishes nothing.
 """
 
 import argparse
@@ -83,6 +90,8 @@ from typing import Any
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
+from opentelemetry.semconv.attributes.db_attributes import DB_COLLECTION_NAME, DB_SYSTEM_NAME
+from opentelemetry.trace import Span
 
 from rag_qa.components import (
     build_embedder,
@@ -109,7 +118,7 @@ from rag_qa.manifest import (
     same_sparse,
     spec_identity,
 )
-from rag_qa.observability import logs
+from rag_qa.observability import logs, tracing
 from rag_qa.schema import RagConfig
 from rag_qa.settings import ENV_CONFIG
 from rag_qa.vectorstore import (
@@ -846,9 +855,13 @@ def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestRe
     wanted = _Identities.of(config)
     encoder = build_sparse_encoder(config)  # before any work: a bad spec stops the run here
     live = plan.live
-    started = time.perf_counter()
-    prepared = _prepare(config, plan, report)
-    report.load_s = time.perf_counter() - started
+    with tracing.span(tracing.INGEST_PREPARE) as span:
+        started = time.perf_counter()
+        prepared = _prepare(config, plan, report)
+        report.load_s = time.perf_counter() - started
+        span.set_attributes(
+            {tracing.INGEST_PAGES: report.documents, tracing.CHUNKS: len(prepared.texts)}
+        )
     report.chunks = len(prepared.texts)
     if live is None:  # a full rebuild
         if not prepared.texts:
@@ -878,20 +891,21 @@ def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestRe
         delete = [cid for name in (*plan.remove, *replaced) for cid in live.chunk_ids_of(name)]
 
     vectors: list[list[float]] = []
-    embed_s = 0.0
+    embeddings: Embeddings | None = None
     if prepared.texts:  # a run that only deletes never loads the embedding model
         logger.info("Embedding %s...", _counted(len(prepared.texts), "chunk", "chunks"))
         embeddings = plan.embeddings if plan.embeddings is not None else build_embedder(config)
-        started = time.perf_counter()  # the embedding alone: the model's load is not NFR-3's
-        # One call over every chunk, in walk order: sentence-transformers sorts a call's
-        # texts by length before batching, so these are the batches v0.2 embedded, and a
-        # full rebuild reproduces its vectors exactly.
-        vectors = _embed_with_progress(embeddings, prepared.texts)
-        embed_s = time.perf_counter() - started
-    # The BM25 vectors beside them (DEC-20, S3-5): arithmetic on the texts, no model.
-    started = time.perf_counter()
-    sparse = None if encoder is None else encoder.encode_documents(prepared.texts)
-    report.embed_s = embed_s + (time.perf_counter() - started)
+    # The embedding alone, as embed_s times it: the model's load is not NFR-3's.
+    with tracing.span(tracing.INGEST_EMBED, {tracing.CHUNKS: len(prepared.texts)}):
+        started = time.perf_counter()
+        if embeddings is not None:
+            # One call over every chunk, in walk order: sentence-transformers sorts a call's
+            # texts by length before batching, so these are the batches v0.2 embedded, and a
+            # full rebuild reproduces its vectors exactly.
+            vectors = _embed_with_progress(embeddings, prepared.texts)
+        # The BM25 vectors beside them (DEC-20, S3-5): arithmetic on the texts, no model.
+        sparse = None if encoder is None else encoder.encode_documents(prepared.texts)
+        report.embed_s = time.perf_counter() - started
     dimension = len(vectors[0]) if live is None else live.embedder.dimension
     manifest = Manifest(
         generation="",  # write_generation names it after the collection it creates
@@ -904,23 +918,27 @@ def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestRe
         store=STORE,
         documents=dict(sorted(documents.items())),
     )
-    started = time.perf_counter()
-    published = write_generation(
-        store,
-        manifest,
-        base=plan.base,
-        delete=delete,
-        add=Embedded(
-            ids=prepared.ids,
-            texts=prepared.texts,
-            metadatas=prepared.metadatas,
-            vectors=vectors,
-            sparse=sparse,
-        ),
-    )
-    report.write_s = time.perf_counter() - started
-    report.published = published.generation
-    report.points = sum(record.chunks for record in manifest.documents.values())
+    with tracing.span(tracing.INGEST_PUBLISH, {DB_SYSTEM_NAME: tracing.QDRANT}) as span:
+        started = time.perf_counter()
+        published = write_generation(
+            store,
+            manifest,
+            base=plan.base,
+            delete=delete,
+            add=Embedded(
+                ids=prepared.ids,
+                texts=prepared.texts,
+                metadatas=prepared.metadatas,
+                vectors=vectors,
+                sparse=sparse,
+            ),
+        )
+        report.write_s = time.perf_counter() - started
+        report.published = published.generation
+        report.points = sum(record.chunks for record in manifest.documents.values())
+        span.set_attributes(
+            {DB_COLLECTION_NAME: published.generation, tracing.INGEST_POINTS: report.points}
+        )
     logger.info(
         "Published %s: %s, %s.",
         published.generation,
@@ -955,16 +973,39 @@ def ingest(
     :class:`IndexInTheWayError`, :class:`IngestionRunningError`, :class:`ConfigError` and
     :class:`~rag_qa.vectorstore.StoreUnavailableError` (Qdrant cannot be used, at any
     point) with nothing published. Any other exception propagates, also with nothing
-    published.
+    published. While tracing is on, the run is a ``rag.ingest`` span (the module docstring).
     """
-    _check_corpus(config.paths.data)  # before the lock, so a mistyped path writes nothing
-    if store is not None:
-        return _ingest(config, store, rebuild=rebuild)
-    own = build_store(config)
-    try:
-        return _ingest(config, own, rebuild=rebuild)
-    finally:
-        own.close()
+    with tracing.span(tracing.INGEST, {tracing.INGEST_REBUILD: rebuild}) as span:
+        _check_corpus(config.paths.data)  # before the lock, so a mistyped path writes nothing
+        if store is not None:
+            report = _ingest(config, store, rebuild=rebuild)
+        else:
+            own = build_store(config)
+            try:
+                report = _ingest(config, own, rebuild=rebuild)
+            finally:
+                own.close()
+        _record(span, report)
+        return report
+
+
+def _record(span: Span, report: IngestReport) -> None:
+    """A run's counts on its span: the report's, never a document's name or text."""
+    span.set_attributes(
+        {
+            tracing.INGEST_FULL: report.rebuild is not None,
+            tracing.INGEST_PAGES: report.documents,
+            tracing.CHUNKS: report.chunks,
+            tracing.INGEST_POINTS: report.points,
+            tracing.INGEST_ADDED: report.added,
+            tracing.INGEST_CHANGED: report.changed,
+            tracing.INGEST_REMOVED: report.removed,
+            tracing.INGEST_KEPT: report.kept,
+            tracing.INGEST_FAILED: len(report.failed),
+        }
+    )
+    if report.published is not None:
+        span.set_attribute(DB_COLLECTION_NAME, report.published)
 
 
 def _ingest(config: RagConfig, store: QdrantStore, *, rebuild: bool) -> IngestReport:
@@ -981,7 +1022,9 @@ def _ingest(config: RagConfig, store: QdrantStore, *, rebuild: bool) -> IngestRe
         leftovers = recover(store)
         if leftovers:
             logger.info("Removed what an earlier run left behind: %s", ", ".join(leftovers))
-        scan = scan_corpus(config, report)
+        with tracing.span(tracing.INGEST_SCAN) as span:
+            scan = scan_corpus(config, report)
+            span.set_attribute(tracing.INGEST_FILES, len(scan.files))
         if not scan.files and not scan.unhashed:
             return report  # nothing to index: the live index, if any, is left as it is
         plan = _plan(config, store, scan, report, rebuild=rebuild)
@@ -1064,9 +1107,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     except logs.LogSettingsError as e:
         print(f"Error: invalid log settings: {e}", file=sys.stderr)
         return EXIT_CANNOT_START
-    # Flushed, so a run piped into tee keeps these lines in order with the log's.
-    print("--- Starting Document Ingestion Engine ---", flush=True)
-    return _run(args)
+    try:
+        tracing.configure("rag-ingest")
+    except tracing.TraceSettingsError as e:
+        print(f"Error: invalid trace settings: {e}", file=sys.stderr)
+        return EXIT_CANNOT_START
+    try:
+        # Flushed, so a run piped into tee keeps these lines in order with the log's.
+        print("--- Starting Document Ingestion Engine ---", flush=True)
+        return _run(args)
+    finally:
+        tracing.shutdown()  # the run's spans, however it ended
 
 
 def _run(args: argparse.Namespace) -> int:

@@ -13,8 +13,10 @@ unless ``RAG_TEST_QDRANT_URL`` names one (CI's eval-retrieval job does).
 import asyncio
 import copy
 import json
+import logging
 import os
 import threading
+import time
 import zipfile
 from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
@@ -28,10 +30,12 @@ import yaml
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from opentelemetry.context import Context
+from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor, TracerProvider
 from pydantic import Field
 from qdrant_client import QdrantClient
 
-from rag_qa.observability import logs, metrics
+from rag_qa.observability import logs, metrics, tracing
 from rag_qa.settings import ENV_CONFIG, ENV_DATA_PATH, ENV_STATE_PATH
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -195,12 +199,14 @@ def instant_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
 def isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A developer's exported RAG_* variables must not leak into any test: the paths, since
     S2-7 the server's RAG_API_* settings, a token included, and since S3-2 the store's
-    RAG_QDRANT_* ones, a key included. ``paths.state`` goes to the test's own folder, so
-    no test takes the repository's writer lock. A command's log lines come out as console
-    lines (S3-7), so a test reads them as a person would; ``tests/test_logs.py`` asks for
-    the JSON ones, and for the choice made without the variable."""
+    RAG_QDRANT_* ones, a key included. Nor their OTEL_* ones (S3-7b): an endpoint left in
+    the shell would send a test's spans to a real collector. ``paths.state`` goes to the
+    test's own folder, so no test takes the repository's writer lock. A command's log lines
+    come out as console lines (S3-7), so a test reads them as a person would;
+    ``tests/test_logs.py`` asks for the JSON ones, and for the choice made without the
+    variable."""
     for name in {ENV_CONFIG, ENV_DATA_PATH, *os.environ}:
-        if name.startswith("RAG_"):
+        if name.startswith(("RAG_", "OTEL_")) or name == "FASTAPI_OTEL_AUTO_CONFIGURE":
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(ENV_STATE_PATH, str(tmp_path / "var"))
     monkeypatch.setenv("RAG_LOG_FORMAT", "console")
@@ -213,6 +219,176 @@ def reset_logging() -> Iterator[None]:
     yield
     logs.reset_logging()
     metrics.unwatch()
+
+
+@pytest.fixture(autouse=True)
+def reset_tracing() -> Iterator[None]:
+    """Close a provider a command built, and undo a test's (S3-7b): one process runs the
+    whole session, and no test may trace the next."""
+    yield
+    tracing.shutdown()
+    tracing.uninstall()
+
+
+def eventually(seconds: float, condition: Callable[[], bool]) -> bool:
+    """Whether ``condition`` holds, polled until ``seconds`` have passed."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.005)
+    return condition()
+
+
+# --- traces (S3-7b) -------------------------------------------------------------------------
+
+
+class SpanRecorder(SpanProcessor):
+    """Every span started and every span ended, from any thread: what shows that each one
+    that started also ended (DEC-22), which an exporter, seeing ended spans only, cannot."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._started: dict[int, str] = {}
+        self._ended: list[ReadableSpan] = []
+
+    def on_start(self, span: Span, parent_context: Context | None = None) -> None:
+        with self._lock:
+            self._started[span.context.span_id] = span.name
+
+    def on_end(self, span: ReadableSpan) -> None:
+        with self._lock:
+            self._ended.append(span)
+
+    def ended(self) -> list[ReadableSpan]:
+        with self._lock:
+            return list(self._ended)
+
+    def open(self) -> list[str]:
+        """The names of the spans that started and have not ended."""
+        with self._lock:
+            done = {span.context.span_id for span in self._ended if span.context is not None}
+            return [name for span_id, name in self._started.items() if span_id not in done]
+
+    def shutdown(self) -> None:
+        pass
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return True
+
+
+@dataclass
+class Traced:
+    """The spans a test made, read from its :class:`SpanRecorder`."""
+
+    recorder: SpanRecorder
+
+    def spans(self, name: str | None = None) -> list[ReadableSpan]:
+        """The ended spans, in the order they ended; only those called ``name``, if given."""
+        return [s for s in self.recorder.ended() if name is None or s.name == name]
+
+    def one(self, name: str) -> ReadableSpan:
+        found = self.spans(name)
+        assert len(found) == 1, f"{len(found)} spans named {name!r}: {self.names()}"
+        return found[0]
+
+    def names(self) -> list[str]:
+        return [s.name for s in self.spans()]
+
+    def children(self, parent: ReadableSpan) -> list[ReadableSpan]:
+        """The ended spans whose parent is ``parent``, in the order they started."""
+        assert parent.context is not None
+        found = [
+            s
+            for s in self.spans()
+            if s.parent is not None and s.parent.span_id == parent.context.span_id
+        ]
+        return sorted(found, key=lambda s: s.start_time or 0)
+
+    def text(self) -> str:
+        """Everything the spans say, as one string: their names, attributes, events and
+        status descriptions. For the tests that no question, chunk or answer is in any."""
+        parts: list[str] = []
+        for s in self.spans():
+            parts.append(s.name)
+            parts += [f"{k}={v}" for k, v in (s.attributes or {}).items()]
+            for event in s.events:
+                parts.append(event.name)
+                parts += [f"{k}={v}" for k, v in (event.attributes or {}).items()]
+            parts.append(s.status.description or "")
+        return "\n".join(parts)
+
+
+@pytest.fixture
+def traced(caplog: pytest.LogCaptureFixture) -> Iterator[Traced]:
+    """Tracing on, into a recorder, for one test (S3-7b). Afterwards, every span that started
+    has ended, whichever task or thread ended it, and no context failed to detach: DEC-22's
+    two rules for spans that live through a cancel."""
+    provider = TracerProvider()
+    recorder = SpanRecorder()
+    provider.add_span_processor(recorder)
+    tracing.install(provider)
+    caplog.set_level(logging.ERROR, logger="opentelemetry.context")
+    try:
+        yield Traced(recorder)
+        # Some end in a worker thread, or in the slot's teardown, just after the test's
+        # last line.
+        assert eventually(2.0, lambda: not recorder.open()), f"never ended: {recorder.open()}"
+        # Every phase's records: caplog.text here holds the teardown's alone, and a context
+        # fails to detach while the test runs.
+        failed = [
+            record.getMessage()
+            for when in ("setup", "call", "teardown")
+            for record in caplog.get_records(when)
+            if "Failed to detach context" in record.getMessage()
+        ]
+        assert failed == [], "a context was detached in another task than attached it"
+    finally:
+        tracing.uninstall()
+        provider.shutdown()
+
+
+@pytest.fixture(params=["untraced", "traced"])
+def either_way(request: pytest.FixtureRequest) -> Traced | None:
+    """The test twice: with tracing off, then on, with :func:`traced`'s checks (S3-7b)."""
+    if request.param == "untraced":
+        return None
+    return cast(Traced, request.getfixturevalue("traced"))
+
+
+@dataclass
+class FakeCollector:
+    """An OTLP/HTTP collector on a free local port, which keeps every request it is sent:
+    ``(path, content type, body)``."""
+
+    url: str = ""
+    requests: list[tuple[str, str, bytes]] = field(default_factory=list)
+
+
+@pytest.fixture
+def fake_collector() -> Iterator[FakeCollector]:
+    state = FakeCollector()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            state.requests.append((self.path, self.headers.get("Content-Type", ""), body))
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    state.url = f"http://127.0.0.1:{server.server_address[1]}"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield state
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 @pytest.fixture

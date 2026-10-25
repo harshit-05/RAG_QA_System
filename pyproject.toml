@@ -22,7 +22,7 @@ dependencies = [
     "pyyaml>=6",
     "pydantic>=2.12",   # Field(exclude_if=...): S3-7's answers file keeps its identity
     "pydantic-settings>=2.10",
-    "fastapi>=0.135",
+    "fastapi>=0.143",   # FastAPI(telemetry=...), in 0.142.0 on; 0.143.0 is what S3-7b checked
     "uvicorn>=0.32.1",
     "requests>=2.34.2",   # scripts/fetch_dataset.py; declared, not left transitive (S2-8)
     "qdrant-client>=1.19.1",   # the index (DEC-19, S3-2); only rag_qa.vectorstore imports it
@@ -33,6 +33,11 @@ dependencies = [
     "structlog>=26.1.0",
     "prometheus-client>=0.26.0",
     "opentelemetry-semantic-conventions>=0.66b1",
+    # Traces (NFR-10, DEC-22, S3-7b), exported over OTLP/HTTP only when a collector is named.
+    # The SDK and the instrumentation pin the semantic conventions exactly, so they move as one.
+    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1",
+    "opentelemetry-instrumentation-fastapi>=0.66b1",   # the HTTP server span
 ]
 
 [project.scripts]

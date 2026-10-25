@@ -54,7 +54,7 @@ from rag_qa.components import (
     service_of,
 )
 from rag_qa.manifest import Manifest, embedder_identity, same_sparse
-from rag_qa.observability import metrics
+from rag_qa.observability import metrics, tracing
 from rag_qa.resilience import CircuitBreaker
 from rag_qa.schema import RagConfig
 from rag_qa.sparse import Bm25Encoder
@@ -298,7 +298,8 @@ def _bound(
     executor thread, retrieval included (DEC-14).
 
     Each half is timed for the metrics (S3-7): the query embedding and the search, which
-    NFR-1 bounds, then the rerank.
+    NFR-1 bounds, then the rerank, which is a span of its own while tracing is on (S3-7b),
+    with how many candidates it scored, how many it kept and its cut.
     """
     query = config.pipeline.query
     spec = config.retriever(query.retriever)
@@ -317,12 +318,24 @@ def _bound(
         metrics.RETRIEVAL_SECONDS.observe(time.perf_counter() - started)
         if reranker is None:
             return docs
-        started = time.perf_counter()
-        kept = list(reranker.compress_documents(docs, asked.question))
-        metrics.RERANK_SECONDS.observe(time.perf_counter() - started)
+        with tracing.span(tracing.RERANK, _rerank_attributes(reranker, len(docs))) as span:
+            started = time.perf_counter()
+            kept = list(reranker.compress_documents(docs, asked.question))
+            metrics.RERANK_SECONDS.observe(time.perf_counter() - started)
+            span.set_attribute(tracing.RERANK_KEPT, len(kept))
         return kept
 
     return RunnableLambda(retrieve)
+
+
+def _rerank_attributes(reranker: BaseDocumentCompressor, candidates: int) -> dict[str, int | float]:
+    """A rerank span's attributes before it runs: the candidates, and the reranker's cut
+    (``min_score``, DEC-16) when it has one."""
+    attributes: dict[str, int | float] = {tracing.RERANK_CANDIDATES: candidates}
+    min_score = getattr(reranker, "min_score", None)
+    if isinstance(min_score, int | float) and not isinstance(min_score, bool):
+        attributes[tracing.RERANK_MIN_SCORE] = float(min_score)
+    return attributes
 
 
 def open_retrieval(
@@ -357,6 +370,11 @@ def open_retrieval(
     finds that generation gone, deleted two switches later, the half resolves the alias
     once more, checks the generation it names as above, and searches that; it never
     retries the search it lost. ``generation`` and ``manifest`` stay what was opened.
+
+    **A span per retrieval** while tracing is on (S3-7b): ``rag.retrieve``, with the query
+    embedding, the search and the rerank beneath it. It runs where the retrieval runs, in an
+    executor thread, whose context is the request's (:func:`rag_qa.api.state.serialized`) or
+    ``rag-query``'s question's.
     """
     store = store if store is not None else build_store(config)
     generation, manifest = _checked(config, store, embeddings)
@@ -366,14 +384,17 @@ def open_retrieval(
     bound = _bound(config, store, generation, embeddings, reranker, sparse)
 
     def retrieve(asked: RetrievalQuery) -> list[Document]:
-        # One budget for every attempt this retrieval makes, retries included: the API
-        # holds its retrieval lock throughout (DEC-21, design review 2).
-        with resilience.deadline(store.deadline_s):
-            try:
-                return bound.invoke(asked)
-            except GenerationGoneError:
-                again, _ = _checked(config, store, embeddings)
-                return _bound(config, store, again, embeddings, reranker, sparse).invoke(asked)
+        with tracing.span(tracing.RETRIEVE, {tracing.SOURCES: len(asked.sources)}) as span:
+            # One budget for every attempt this retrieval makes, retries included: the API
+            # holds its retrieval lock throughout (DEC-21, design review 2).
+            with resilience.deadline(store.deadline_s):
+                try:
+                    docs = bound.invoke(asked)
+                except GenerationGoneError:
+                    again, _ = _checked(config, store, embeddings)
+                    docs = _bound(config, store, again, embeddings, reranker, sparse).invoke(asked)
+            span.set_attribute(tracing.CHUNKS, len(docs))
+            return docs
 
     return Retrieval(
         retrieve=RunnableLambda(retrieve),

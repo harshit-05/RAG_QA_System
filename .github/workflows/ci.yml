@@ -3,7 +3,8 @@
 # Gates run cheapest first and all block. Each gate is added by the story that
 # makes it passable: ruff + pytest here (S1-2), coverage (S1-5), mypy (S1-6),
 # pip-audit (S1-8), the tier-1 retrieval eval (S2-3), the tier-2 check (S2-5b),
-# the format check (S3-1), Qdrant as a service and its server tests (S3-2).
+# the format check (S3-1), Qdrant as a service and its server tests (S3-2), and the
+# deploy files' checks and the alert rules' tests (S3-7b).
 #
 # The check job is hermetic by design: no Ollama, no model download, no network in
 # the suite. HF_HUB_OFFLINE is the tripwire for that: a test that tries to fetch an
@@ -254,3 +255,29 @@ jobs:
           HF_HUB_OFFLINE: "1"
           RAG_TEST_QDRANT_URL: http://localhost:6333
         run: uv run pytest -m qdrant_server
+
+  # The deploy files (DEC-22, DEC-24, S3-7b): Prometheus's config and the alert rules it loads
+  # checked, the rules' unit tests run (each alert firing and quiet, at each window), and
+  # Alertmanager's config checked. promtool and amtool run from the images S3-9's compose
+  # runs, pinned by index digest as DEC-24's table has them (each checked against Quay's), so
+  # nothing is installed on the runner. Prometheus publishes no signatures; the image's promtool
+  # is byte-identical to the release tarball's (design review 2). No network beyond the pulls.
+  deploy-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PROMETHEUS: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+      ALERTMANAGER: prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Check Prometheus's config and its rules
+        run: docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool "$PROMETHEUS" check config /p/prometheus.yml
+
+      # About 30 s: promtool evaluates every rule at each step of each scenario. The causes'
+      # file evaluates every minute, over short scenarios, to tell `for: 5m` from `for: 1m`.
+      - name: Test the alert rules
+        run: docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool "$PROMETHEUS" test rules /p/rules.test.yml /p/rules.causes.test.yml
+
+      - name: Check Alertmanager's config
+        run: docker run --rm -v "$PWD/deploy/alertmanager:/a:ro" --entrypoint amtool "$ALERTMANAGER" check-config /a/alertmanager.yml

@@ -42,11 +42,16 @@ left this machine. Without one, a stopped Ollama stops the start, as before.
 the model that answered, the times and the token counts, never the question or the answer
 (:func:`rag_qa.observability.logs.configure_logging`; JSON when stderr is not a terminal).
 
+**Its traces (NFR-10, S3-7b).** With ``OTEL_EXPORTER_OTLP_ENDPOINT`` set, each question is a
+trace of its own: a ``rag.query`` span, with the retrieval and each attempt at a model beneath
+it, and a Ctrl-C marked on it (:mod:`rag_qa.observability.tracing`). Never the question's text.
+
 ``rag-query`` exit codes: **0** the session ended normally; **2** it could not start
-(configuration problem, Qdrant unusable, no index yet, an index this config cannot use,
-the language model's server not answering, a model that would not load, Ctrl-C while
-loading, or a command-line usage error). An index it cannot use is one built with another
-embedder (DEC-17): it says to re-run ``rag-ingest``, before loading any model.
+(configuration problem, a trace endpoint that is not an http(s) URL, Qdrant unusable, no
+index yet, an index this config cannot use, the language model's server not answering, a
+model that would not load, Ctrl-C while loading, or a command-line usage error). An index it
+cannot use is one built with another embedder (DEC-17): it says to re-run ``rag-ingest``,
+before loading any model.
 """
 
 import argparse
@@ -82,6 +87,7 @@ from rag_qa.chain import (
 from rag_qa.components import OLLAMA_HINT, build_store, preflight, raised_by_fallback
 from rag_qa.config import ConfigError, load_config, resolve_config_path
 from rag_qa.manifest import Manifest
+from rag_qa.observability import tracing
 from rag_qa.observability.logs import LogSettingsError, configure_logging
 from rag_qa.resilience import BreakerOpenError
 from rag_qa.schema import RagConfig
@@ -230,9 +236,12 @@ class _Answer:
         self.task = asyncio.current_task()
         pipeline = self.pipeline
         fallback = pipeline.fallback_ref if pipeline.fallback_llm is not None else None
-        await render(
-            stream_answer(pipeline, self.question, sources=self.sources), fallback=fallback
-        )
+        # The question's trace (S3-7b). Current across awaits in this one task, never across a
+        # yield; the answer stream and the retrieval thread take it as their parent.
+        with tracing.span(tracing.QUERY, {tracing.SOURCES: len(self.sources)}):
+            await render(
+                stream_answer(pipeline, self.question, sources=self.sources), fallback=fallback
+            )
 
     def unwinding(self) -> bool:
         """Whether a second Ctrl-C interrupted the cancelled answer before it finished.
@@ -474,7 +483,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     except LogSettingsError as e:
         print(f"Error: invalid log settings: {e}", file=sys.stderr)
         return EXIT_CANNOT_START
+    try:
+        tracing.configure("rag-query")
+    except tracing.TraceSettingsError as e:
+        print(f"Error: invalid trace settings: {e}", file=sys.stderr)
+        return EXIT_CANNOT_START
+    try:
+        return _session(args)
+    finally:
+        tracing.shutdown()  # the session's last spans, however it ended
 
+
+def _session(args: argparse.Namespace) -> int:
+    """Everything after the logs and the traces are set up: see :func:`main`."""
     print("--- Initializing the Q&A system ---")
     try:
         config = load_config(args.config)

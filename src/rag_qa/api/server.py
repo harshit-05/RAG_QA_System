@@ -15,16 +15,19 @@ uvicorn reports ASGI spec 2.3, under which a client disconnect cancels its answe
 during the model's prompt evaluation too. That is why this command runs uvicorn and
 nothing else (DEC-18).
 
-**Logs and metrics** (NFR-10, DEC-22, S3-7). Its log lines, uvicorn's included, go through
-:func:`rag_qa.observability.logs.configure_logging`: JSON when stderr is not a terminal, or
-with ``RAG_LOG_FORMAT=json``. With ``RAG_API_METRICS_PORT`` set, Prometheus scrapes the
-metrics there, on the API's own host, from a listener of its own that starts before uvicorn
-and stops after it.
+**Logs, metrics and traces** (NFR-10, DEC-22, S3-7, S3-7b). Its log lines, uvicorn's
+included, go through :func:`rag_qa.observability.logs.configure_logging`: JSON when stderr is
+not a terminal, or with ``RAG_LOG_FORMAT=json``. With ``RAG_API_METRICS_PORT`` set, Prometheus
+scrapes the metrics there, on the API's own host, from a listener of its own that starts
+before uvicorn and stops after it. With ``OTEL_EXPORTER_OTLP_ENDPOINT`` set, every request
+but the health probes is traced, and its spans go to that collector
+(:mod:`rag_qa.observability.tracing`).
 
 ``rag-serve`` exit codes: **0** the server ran and was stopped with Ctrl-C; **2** it could
-not start (invalid settings, a non-loopback host without a token, a configuration error,
-Qdrant unusable, the model's server not answering with no hosted fallback configured, the
-address in use, the metrics port in use or the API's own, or a usage error).
+not start (invalid settings, a trace endpoint that is not an http(s) URL, a non-loopback host
+without a token, a configuration error, Qdrant unusable, the model's server not answering
+with no hosted fallback configured, the address in use, the metrics port in use or the API's
+own, or a usage error).
 A SIGTERM shuts
 it down the same way, and uvicorn then ends the process by that signal, as service
 managers expect (status 143 in a shell).
@@ -41,7 +44,7 @@ from pydantic import ValidationError
 from rag_qa.api.app import create_app
 from rag_qa.components import build_store, preflight
 from rag_qa.config import ConfigError, load_config
-from rag_qa.observability import metrics
+from rag_qa.observability import metrics, tracing
 from rag_qa.observability.logs import LogSettingsError, configure_logging
 from rag_qa.settings import (
     ENV_CONFIG,
@@ -77,7 +80,8 @@ def build_parser() -> argparse.ArgumentParser:
         "start (invalid settings, a non-loopback host without RAG_API_TOKEN, a "
         "configuration error, the language model's server not answering with no hosted "
         "fallback configured, the address in use, the metrics port in use or the API's "
-        "own, or a usage error). Set RAG_API_METRICS_PORT for Prometheus's metrics.",
+        "own, or a usage error). Set RAG_API_METRICS_PORT for Prometheus's metrics, and "
+        "OTEL_EXPORTER_OTLP_ENDPOINT to send traces to a collector.",
     )
     parser.add_argument(
         "--config",
@@ -103,6 +107,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     except LogSettingsError as e:
         print(f"Error: invalid log settings: {e}", file=sys.stderr)
         return EXIT_CANNOT_START
+    try:
+        tracing.configure("rag-serve")
+    except tracing.TraceSettingsError as e:
+        print(f"Error: invalid trace settings: {e}", file=sys.stderr)
+        return EXIT_CANNOT_START
+    try:
+        return _serve(args)
+    finally:
+        tracing.shutdown()  # what the lifespan's flush left, on every ending but a SIGTERM
+
+
+def _serve(args: argparse.Namespace) -> int:
+    """Everything after the logs and the traces are set up: see :func:`main`."""
     try:
         settings = ServerSettings()
     except ValidationError as e:

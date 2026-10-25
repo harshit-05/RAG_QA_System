@@ -92,6 +92,14 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     - **SSE and bodies:** `flush_interval -1`, and `request_body max_size 64KB`.
   - **Profile `observability`:** Jaeger 2.22.0, Prometheus v3.15.0 (scraping the app's
     metrics port on the internal network) and Alertmanager v0.34.1, with S3-7b's files.
+    - **The app's environment for them** (S3-7b's close-out): `RAG_API_METRICS_PORT=9464`,
+      the port `deploy/prometheus/prometheus.yml` discovers the `app` replicas on, and
+      `OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318`. Tracing keys on that generic
+      variable: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` alone turns nothing on, and set beside it
+      the spans go there while the start-up line names the generic one (S3-7b's second
+      review). The Deployment section says so.
+    - **Checking the traces:** Jaeger 2.22's query API is `/api/v3/` (`/api/v3/services`,
+      `/api/v3/traces?query.service_name=…`); the older `/api/services` answers 404.
     The metrics port carries no token (S3-7), so it is never published. `rag-serve` binds
     it where the API listens, `0.0.0.0` in the container, so only a published port would
     expose it beyond the internal network.
@@ -108,7 +116,12 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
   status 143, which stays. Check, and record here:
   - the status with and without the init;
   - that the lifespan's shutdown lines appear in `docker compose logs`;
-  - that a second SIGTERM does not force a stop.
+  - that a second SIGTERM does not force a stop;
+  - **the shutdown with a dead trace collector** (S3-7b's first review): `GRACEFUL_SHUTDOWN_S` is
+    5, and the lifespan's span flush then waits up to `OTEL_EXPORTER_OTLP_TIMEOUT` (10 s;
+    measured 6.3 s against a closed port, 10.0 s against one that never answers), so a
+    `docker stop`'s default 10 s can SIGKILL `rag-serve` (137, not 143) and lose the flush.
+    Set `stop_grace_period` in compose (30 s), and check it with a dead `OTEL_EXPORTER_OTLP_ENDPOINT`.
 - **The `eval` extra's `langchain` bump** (moved from S3-11; maintainer, design review 1):
   `uv lock --upgrade-package langchain`, and nothing else. Checked in a scratch copy on
   2026-10-15, it moves exactly five packages:
@@ -189,6 +202,10 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
     - **It extends ruleset 25561360** (applied 2026-10-21, which already requires `check` and
       `eval-retrieval`) with `deploy-config` and `container`, by a PUT to that ruleset. It
       never creates a second ruleset (STATUS.md, "Now").
+    - **`deploy-config` may be required already:** S3-7b's second review (2026-10-26) handed
+      over a PUT that adds it after S3-7b's merge. A PUT replaces the whole list, so build
+      S3-9's from the ruleset as it then is (`gh api …/rulesets/25561360`), and check that
+      all four names come back.
 - **README:** a "Deployment" section covering:
   - `cp .env.example .env`, keys (`rag-keys`), `docker compose up -d`, the HTTPS address;
   - a host shell loads `.env` before a CLI talks to the stack, `set -a; . ./.env; set +a`

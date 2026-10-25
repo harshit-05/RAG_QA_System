@@ -1,0 +1,38 @@
+# Prometheus for the rag_qa API (NFR-10, DEC-22, S3-7b). S3-9's compose runs it in its
+# observability profile, from prom/prometheus:v3.15.0 pinned by digest (DEC-24), with this
+# folder mounted; CI's deploy-config job checks it with promtool from the same image.
+#
+# It scrapes every replica of compose's app service. The metrics listen on
+# RAG_API_METRICS_PORT, which compose sets to 9464, on the API's host: all interfaces inside
+# the container. The port is never published, so only the stack's network reaches it, and
+# it carries no token (README, "Metrics").
+#
+# The replicas are found by DNS: Docker's DNS gives the service name one A record per running
+# container, so --scale app=2 makes two targets. A static app:9464 would resolve to one
+# replica per scrape and mix their counters. An exited replica leaves the targets rather than
+# showing as down, which is why the rules page on an absent up as well (RagTargetMissing).
+#
+# For a run by hand on this host, outside compose, replace dns_sd_configs with
+#     static_configs:
+#       - targets: ["127.0.0.1:9464"]
+# and run Prometheus with --network host.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 30s
+
+rule_files:
+  - rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: rag
+    dns_sd_configs:
+      - names: ["app"]
+        type: A
+        port: 9464
+        refresh_interval: 30s

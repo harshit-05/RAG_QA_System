@@ -567,8 +567,9 @@ as a regression alarm rather than a measure of absolute quality.
 
 ## Observability
 
-Every command logs through one formatter, and `rag-serve` can serve its metrics to
-Prometheus. Neither ever holds a question's or an answer's text.
+Every command logs through one formatter; `rag-serve` can serve its metrics to Prometheus,
+which alert rules watch; and `rag-serve`, `rag-query` and `rag-ingest` can send traces to an
+OpenTelemetry collector. None of them ever holds a question's or an answer's text.
 
 ### Logs
 
@@ -582,7 +583,9 @@ as ours.
   as it always read; `rag-serve`'s carry the time, the level and the logger.
 - **Each JSON line** holds `event` (the message), `level`, `logger`, `timestamp` (UTC) and
   its own fields, plus the request's `request_id` in the API, and the job's `job_id` in an
-  ingest job. A complete answer logs one line, in the API and in `rag-query`:
+  ingest job. While [tracing](#traces) is on, a line logged under a span carries its
+  `trace_id` and `span_id` too. A complete answer logs one line, in the API and in
+  `rag-query`:
 
   ```json
   {"event": "Answered by components.llms.mistral_ollama in 176.3 s (first token at 157.0 s), 1,302 input and 87 output tokens.", "ttft_ms": 157033.6, "total_ms": 176273.5, "model": "components.llms.mistral_ollama", "input_tokens": 1302, "output_tokens": 87, "level": "info", "logger": "rag_qa.api.routes", "request_id": "…", "timestamp": "…"}
@@ -624,6 +627,84 @@ key. Off unless the variable is set; a port in use stops `rag-serve` with exit 2
 
 Plus the process's own: memory, CPU, open files. A `rag-ingest` run has no listener; its
 throughput is in its summary ([Capacity planning](#capacity-planning)).
+
+### Traces
+
+Off unless a collector is named. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to its base address, and
+`rag-serve`, `rag-query` and `rag-ingest` send their spans there over OTLP/HTTP (the exporter
+adds `/v1/traces`). A throwaway [Jaeger](https://www.jaegertracing.io/), the image the
+compose stack pins, takes them and shows them on <http://127.0.0.1:16686>:
+
+```bash
+docker run --rm -d --name jaeger -p 127.0.0.1:16686:16686 -p 127.0.0.1:4318:4318 \
+  jaegertracing/jaeger:2.22.0@sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 uv run rag-serve
+```
+
+- **An answer over HTTP** is one trace: the request's server span (`POST /v1/query`), and
+  beneath it `rag.retrieve` (with `rag.embed_query`, `rag.vector_search` and `rag.rerank`)
+  and one `chat {model}` span per attempt at a model. A chat span carries the OpenTelemetry
+  GenAI conventions' attributes: the provider, the model asked, its temperature and maximum
+  tokens, the server, the token counts and the time to the first chunk; plus the model's
+  config reference, the attempt, and whether the hosted fallback answered and why
+  (`breaker_open` or `connection_failed`). The health probes are not traced.
+- **A `rag-query` question** is a trace of its own, `rag.query`, with the same spans beneath.
+- **An ingest** is `rag.ingest`, with a span for the corpus walk, the loading and splitting,
+  the embedding and the publishing, and its counts as attributes. An API job's is in the trace
+  of the `POST /v1/ingest` that started it.
+- **A cancelled answer** (its client left, or Ctrl-C) is marked `rag.cancelled`, with its
+  status unset: the client's choice is no error. A failure is status ERROR with `error.type`,
+  the exception's class name, never its message.
+- **No span holds a question, a prompt, a chunk or an answer,** nor an exception's message or
+  stacktrace. The collector is not this host, so spans are scrubbed on the way out: an
+  unhandled exception's server span carries an `exception` event with the class name only, and
+  the full traceback is in `rag-serve`'s log, on this host. No LangChain callback handler
+  is used either: one that waits in the token callback would let a cancel miss the model's
+  stream.
+- **The settings are the SDK's own:** `OTEL_SERVICE_NAME` (default: the command's name),
+  `OTEL_EXPORTER_OTLP_HEADERS`, and `OTEL_EXPORTER_OTLP_TIMEOUT`, which Python's SDK reads in
+  seconds, not the specification's milliseconds (default 10). An endpoint that is not an
+  http(s) URL stops the command with exit 2.
+- **A collector that is down** costs at most that timeout when the command exits, with the
+  exporter's warnings in the log; answers are never held up by it.
+- **`rag-eval` is never traced,** whatever the shell holds: its record is its files.
+- **The server span's HTTP attributes** are the FastAPI instrumentation's defaults, the older
+  names (`http.method`, `http.url`); `OTEL_SEMCONV_STABILITY_OPT_IN=http` switches it to the
+  stable ones. `http.url` includes the query string; the API reads none, so a client should
+  not put a secret in one. FastAPI's own OpenTelemetry support is turned off, so a request has
+  one server span, never two.
+
+### Alerts
+
+`deploy/prometheus/rules.yml` holds the alert rules, for S3-9's compose stack, which runs
+Prometheus and Alertmanager in its `observability` profile. Four objectives are watched by
+burn rate over two pairs of windows, as in Google's SRE workbook: a page when an hour's burn
+(and the last 5 minutes') would spend 2% of a 30-day budget, or six hours' 5%; a ticket for a
+day's 10%, or three days' 10%.
+
+| Alert | Fires when |
+| --- | --- |
+| `RagAvailabilityFastBurn`, `…SlowBurn` | more than 1% of questions fail, over 30 days: refused with 503, or ending in an `error` event; cancelled ones count on neither side |
+| `RagRetrievalLatencyFastBurn`, `…SlowBurn` | more than 5% of retrievals take over 0.3 s (NFR-1) |
+| `RagSourcesLatencyFastBurn`, `…SlowBurn` | more than 5% of `sources` events take over 2 s (NFR-2a); expect the ticket on a CPU host until S3-11's measures land |
+| `RagFirstTokenLatencyFastBurn`, `…SlowBurn` | more than 5% of first tokens take over 300 s (NFR-2b): this CPU's class, so a GPU host edits the bucket |
+| `RagBreakerOpen` | a dependency's breaker has not closed for 5 minutes and keeps opening again, its probes failing; one left half-open by an idle server after its dependency came back does not fire. For the model's, while the hosted fallback answers, a ticket that says answers leave the host |
+| `RagIngestFailed` | an API ingest job failed in the last hour |
+| `RagTargetDown` | a replica has not answered its scrape for 5 minutes |
+| `RagTargetMissing` | Prometheus has found no replica to scrape for 5 minutes: every app container has exited |
+
+`deploy/prometheus/prometheus.yml` scrapes every replica of compose's `app` service, found by
+DNS on port 9464 (`RAG_API_METRICS_PORT`); for a Prometheus run by hand, its comment gives the
+static line for `127.0.0.1:9464`. `deploy/alertmanager/alertmanager.yml` sends every alert to a
+receiver that sends nothing, until an operator names one; an email one is there, commented
+out. CI's `deploy-config` job checks both files and runs the rules' tests, each alert firing
+and staying quiet at each window (a second file evaluates every minute, to test the five
+minutes the cause alerts wait), with the tools from the pinned images:
+
+```bash
+PROMETHEUS=prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+docker run --rm -v "$PWD/deploy/prometheus:/p:ro" --entrypoint promtool "$PROMETHEUS" test rules /p/rules.test.yml /p/rules.causes.test.yml
+```
 
 ## Capacity planning
 
@@ -747,12 +828,15 @@ src/rag_qa/
   chain.py         the retrieval and answer chain (LangChain LCEL)
   cli.py           the rag-query command
   answering.py     one answer as a stream of events, for the CLI, the API and evaluation
-  observability/   structured logs for every command, and the metrics rag-serve serves
+  observability/   structured logs for every command, the metrics rag-serve serves, and the
+                   traces sent to a collector when one is named
   api/             the rag-serve command: the HTTP API, its ingest jobs and its checks
   evaluation/      the rag-eval command: retrieval scores (tier 1), and generation
                    scored by RAGAs offline, then checked against the floors (tier 2)
 eval/              the golden set, the floors, the judge's Modelfile and the committed
                    tier-2 run
+deploy/            Prometheus's config and alert rules, with the rules' tests, and
+                   Alertmanager's config
 scripts/           fetch_dataset.py, a standalone helper that downloads a Hugging Face
                    dataset to downloads/, never into a corpus; bench_retrieval.py, the
                    retrieval benchmark behind Capacity planning

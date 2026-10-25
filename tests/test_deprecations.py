@@ -109,6 +109,57 @@ def test_no_deprecated_api_across_imports_and_the_whole_pipeline(fake_rag: Path)
     assert violations(records) == [], violations(records)
 
 
+def test_no_deprecated_api_with_tracing_on(fake_rag: Path) -> None:
+    # S3-7b: the SDK, the instrumented app, every span helper and the semantic conventions'
+    # GenAI constants, which 0.66b1 marks deprecated: reading a member must warn of nothing.
+    records = record_warnings(
+        """
+        import asyncio
+        from qdrant_client import QdrantClient
+        import rag_qa.vectorstore
+        client = QdrantClient(":memory:")
+        client.close = lambda **kwargs: None
+        rag_qa.vectorstore.connect = lambda *args, **kwargs: client
+        from fastapi.testclient import TestClient
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+        import rag_qa.answering
+        from rag_qa.api.app import create_app
+        from rag_qa.chain import build_query_pipeline
+        from rag_qa.config import load_config
+        from rag_qa.ingest import ingest
+        from rag_qa.observability import tracing
+        from rag_qa.settings import ServerSettings
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        tracing.install(provider)
+        config = load_config()
+        ingest(config)
+        pipeline = build_query_pipeline(config)
+        async def answer():
+            with tracing.span(tracing.QUERY):
+                events = rag_qa.answering.stream_answer(pipeline, "How many staff?")
+                return [e async for e in events]
+        assert asyncio.run(answer())
+        asyncio.run(pipeline.aclose())
+        app = create_app(config, ServerSettings())
+        with TestClient(app, base_url="http://127.0.0.1") as http:
+            assert http.post("/v1/query", json={"question": "How many staff?"}).status_code == 200
+        tracing.uninstall()
+        names = {span.name for span in exporter.get_finished_spans()}
+        assert {"rag.ingest", "rag.query", "rag.retrieve", "POST /v1/query"} <= names, names
+        """,
+        env={
+            "RAG_CONFIG": str(fake_rag),
+            "RAG_DATA_PATH": os.environ["RAG_DATA_PATH"],
+            "RAG_STATE_PATH": os.environ["RAG_STATE_PATH"],
+        },
+    )
+    assert violations(records) == [], violations(records)
+
+
 def test_negative_control_the_gate_flags_a_deprecated_langchain_api() -> None:
     # A method of the chat model class we answer with, deprecated in langchain-core 1.4.2
     # and removed in 2.0, which pyproject.toml's bound keeps out. It replaced the legacy
