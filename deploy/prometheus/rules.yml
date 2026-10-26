@@ -16,6 +16,14 @@
 # "300.0", as prometheus_client exposes them and as Prometheus 3 stores every le (a whole
 # number is "2.0", never "2").
 #
+# An answer whose client left before its sources or its first token has no event to time,
+# and availability leaves it out, so a hung model whose clients give up would move no SLI
+# (S3-7b's fix, 2026-10-26). rag_abandoned_seconds keeps how long each had waited, and for
+# what. One that waited past an objective counts as slow there, since its event would have
+# come later still; a younger one counts on neither side, its event unknown. NFR-2a reads
+# those that waited for their sources; NFR-2b all of them, since an answer without its
+# sources had no first token either.
+#
 # The burn rates: page at 14.4 times the budget's rate over 1 h and 5 m (2% of a 30-day
 # budget in an hour), or 6 times over 6 h and 30 m (5% in six hours); ticket at 3 times over
 # 1 d and 2 h, or once over 3 d and 6 h. The long window says the budget is going; the short
@@ -127,19 +135,82 @@ groups:
   - name: rag-sources-latency
     rules:
       - record: rag:sources_slow:ratio_rate5m
-        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[5m])) / sum by (job) (rate(rag_sources_seconds_count[5m]))
+        expr: |
+          (
+            sum by (job) (rate(rag_sources_seconds_count[5m])) - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[5m]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[5m])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[5m]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_sources_seconds_count[5m]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[5m])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[5m]))
+          )
       - record: rag:sources_slow:ratio_rate30m
-        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[30m])) / sum by (job) (rate(rag_sources_seconds_count[30m]))
+        expr: |
+          (
+            sum by (job) (rate(rag_sources_seconds_count[30m])) - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[30m]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[30m])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[30m]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_sources_seconds_count[30m]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[30m])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[30m]))
+          )
       - record: rag:sources_slow:ratio_rate1h
-        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[1h])) / sum by (job) (rate(rag_sources_seconds_count[1h]))
+        expr: |
+          (
+            sum by (job) (rate(rag_sources_seconds_count[1h])) - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[1h]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[1h])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[1h]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_sources_seconds_count[1h]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[1h])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[1h]))
+          )
       - record: rag:sources_slow:ratio_rate2h
-        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[2h])) / sum by (job) (rate(rag_sources_seconds_count[2h]))
+        expr: |
+          (
+            sum by (job) (rate(rag_sources_seconds_count[2h])) - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[2h]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[2h])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[2h]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_sources_seconds_count[2h]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[2h])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[2h]))
+          )
       - record: rag:sources_slow:ratio_rate6h
-        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[6h])) / sum by (job) (rate(rag_sources_seconds_count[6h]))
+        expr: |
+          (
+            sum by (job) (rate(rag_sources_seconds_count[6h])) - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[6h]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[6h])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[6h]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_sources_seconds_count[6h]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[6h])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[6h]))
+          )
       - record: rag:sources_slow:ratio_rate1d
-        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[1d])) / sum by (job) (rate(rag_sources_seconds_count[1d]))
+        expr: |
+          (
+            sum by (job) (rate(rag_sources_seconds_count[1d])) - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[1d]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[1d])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[1d]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_sources_seconds_count[1d]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[1d])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[1d]))
+          )
       - record: rag:sources_slow:ratio_rate3d
-        expr: 1 - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[3d])) / sum by (job) (rate(rag_sources_seconds_count[3d]))
+        expr: |
+          (
+            sum by (job) (rate(rag_sources_seconds_count[3d])) - sum by (job) (rate(rag_sources_seconds_bucket{le="2.0"}[3d]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[3d])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[3d]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_sources_seconds_count[3d]))
+            + sum by (job) (rate(rag_abandoned_seconds_count{waiting_for="sources"}[3d])) - sum by (job) (rate(rag_abandoned_seconds_bucket{waiting_for="sources",le="2.0"}[3d]))
+          )
       - alert: RagSourcesLatencyFastBurn
         expr: |
           (rag:sources_slow:ratio_rate1h > (14.4 * 0.05) and rag:sources_slow:ratio_rate5m > (14.4 * 0.05))
@@ -165,19 +236,82 @@ groups:
   - name: rag-first-token-latency
     rules:
       - record: rag:ttft_slow:ratio_rate5m
-        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[5m])) / sum by (job) (rate(rag_ttft_seconds_count[5m]))
+        expr: |
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[5m])) - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[5m]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[5m])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[5m]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[5m]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[5m])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[5m]))
+          )
       - record: rag:ttft_slow:ratio_rate30m
-        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[30m])) / sum by (job) (rate(rag_ttft_seconds_count[30m]))
+        expr: |
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[30m])) - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[30m]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[30m])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[30m]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[30m]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[30m])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[30m]))
+          )
       - record: rag:ttft_slow:ratio_rate1h
-        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[1h])) / sum by (job) (rate(rag_ttft_seconds_count[1h]))
+        expr: |
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[1h])) - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[1h]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[1h])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[1h]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[1h]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[1h])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[1h]))
+          )
       - record: rag:ttft_slow:ratio_rate2h
-        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[2h])) / sum by (job) (rate(rag_ttft_seconds_count[2h]))
+        expr: |
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[2h])) - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[2h]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[2h])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[2h]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[2h]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[2h])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[2h]))
+          )
       - record: rag:ttft_slow:ratio_rate6h
-        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[6h])) / sum by (job) (rate(rag_ttft_seconds_count[6h]))
+        expr: |
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[6h])) - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[6h]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[6h])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[6h]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[6h]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[6h])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[6h]))
+          )
       - record: rag:ttft_slow:ratio_rate1d
-        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[1d])) / sum by (job) (rate(rag_ttft_seconds_count[1d]))
+        expr: |
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[1d])) - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[1d]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[1d])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[1d]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[1d]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[1d])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[1d]))
+          )
       - record: rag:ttft_slow:ratio_rate3d
-        expr: 1 - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[3d])) / sum by (job) (rate(rag_ttft_seconds_count[3d]))
+        expr: |
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[3d])) - sum by (job) (rate(rag_ttft_seconds_bucket{le="300.0"}[3d]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[3d])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[3d]))
+          )
+          /
+          (
+            sum by (job) (rate(rag_ttft_seconds_count[3d]))
+            + sum by (job) (rate(rag_abandoned_seconds_count[3d])) - sum by (job) (rate(rag_abandoned_seconds_bucket{le="300.0"}[3d]))
+          )
       - alert: RagFirstTokenLatencyFastBurn
         expr: |
           (rag:ttft_slow:ratio_rate1h > (14.4 * 0.05) and rag:ttft_slow:ratio_rate5m > (14.4 * 0.05))
