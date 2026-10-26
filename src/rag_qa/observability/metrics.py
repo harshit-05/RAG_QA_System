@@ -17,6 +17,12 @@ listener: it reports in its log (DEC-22).
 ``rag_ttft_seconds`` at 300 s (NFR-2b, this CPU's class). Availability counts the 503s
 (:data:`REFUSALS`) and the answers that failed after their 200 (:data:`ANSWERS`).
 
+**An answer whose client left before its first token** has no first token to observe, and
+availability leaves cancelled answers out, so a hung model whose users give up would move no
+SLI. :data:`ABANDONED_SECONDS` keeps how long each had waited, and for what: the sources and
+first-token SLIs count those past their objective as slow, since their event would have come
+later still, and leave younger ones out of both sides (S3-7b's fix, 2026-10-26).
+
 **The GenAI convention's metric**, ``gen_ai_client_token_usage``: its name, labels and values
 from opentelemetry-semantic-conventions 0.66b1, never typed (:mod:`.genai` says why only its
 members are read); its buckets and required labels as the convention gives them (semantic
@@ -79,11 +85,42 @@ SOURCES_SECONDS: Final = Histogram(
     buckets=(0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 30.0),
     registry=REGISTRY,
 )
+#: The buckets of a wait for a first token, abandoned or not. The abandoned answers' must hold
+#: both objectives: the sources' 2 s and the first token's 300 s.
+_WAITS: Final = (
+    0.25,
+    0.5,
+    1.0,
+    2.0,
+    5.0,
+    10.0,
+    30.0,
+    60.0,
+    120.0,
+    180.0,
+    240.0,
+    300.0,
+    450.0,
+    600.0,
+)
 TTFT_SECONDS: Final = Histogram(
     "rag_ttft_seconds",
     "From a question to its answer's first token, answers cancelled later included: NFR-2b, "
     "reported per class of hardware.",
-    buckets=(0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 180.0, 240.0, 300.0, 450.0, 600.0),
+    buckets=_WAITS,
+    registry=REGISTRY,
+)
+#: What an answer still waited for when its client left: its sources event, or, after them,
+#: its first token.
+WAITING_FOR_SOURCES: Final = "sources"
+WAITING_FOR_FIRST_TOKEN: Final = "first_token"
+ABANDONED_SECONDS: Final = Histogram(
+    "rag_abandoned_seconds",
+    "How long a question had waited when its client left before the answer's first token, by "
+    "what it still waited for: sources, or first_token after them. The latency SLIs count "
+    "those past their objective as slow.",
+    labelnames=("waiting_for",),
+    buckets=_WAITS,
     registry=REGISTRY,
 )
 ANSWER_SECONDS: Final = Histogram(
@@ -181,6 +218,10 @@ INGEST_CHUNKS: Final = Counter(
 # Every label set starts at zero, so a rate over a quiet window is 0, never absent.
 for _outcome in (ANSWERED, FAILED, CANCELLED):
     ANSWERS.labels(outcome=_outcome)
+# The latency SLIs add these to their histograms' rates: an absent series would empty the sum,
+# and silence the alert.
+for _waiting_for in (WAITING_FOR_SOURCES, WAITING_FOR_FIRST_TOKEN):
+    ABANDONED_SECONDS.labels(waiting_for=_waiting_for)
 for _reason in (BUSY, DEPENDENCY_DOWN, NO_INDEX):
     REFUSALS.labels(code="503", reason=_reason)
 for _status in ("succeeded", "failed"):

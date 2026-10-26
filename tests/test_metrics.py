@@ -33,6 +33,7 @@ from opentelemetry.semconv._incubating.attributes import gen_ai_attributes as ge
 from opentelemetry.semconv._incubating.metrics import gen_ai_metrics
 from prometheus_client import generate_latest
 
+from rag_qa.api import state as api_state
 from rag_qa.api.app import create_app
 from rag_qa.api.state import Served, Serving
 from rag_qa.chain import RetrievalQuery, build_retrieve
@@ -74,6 +75,8 @@ ANSWER_SAMPLES = (
     ("rag_sources_seconds_count", {}),
     ("rag_ttft_seconds_count", {}),
     ("rag_answer_seconds_count", {}),
+    ("rag_abandoned_seconds_count", {"waiting_for": "sources"}),
+    ("rag_abandoned_seconds_count", {"waiting_for": "first_token"}),
 )
 
 
@@ -121,11 +124,58 @@ def test_the_token_metric_is_named_as_the_genai_convention_names_it() -> None:
         (metrics.RETRIEVAL_SECONDS, 0.3),  # NFR-1
         (metrics.SOURCES_SECONDS, 2.0),  # NFR-2a
         (metrics.TTFT_SECONDS, 300.0),  # NFR-2b, this CPU's class
+        # The abandoned answers count in both SLIs, each at its own objective (S3-7b's fix).
+        (metrics.ABANDONED_SECONDS, 2.0),
+        (metrics.ABANDONED_SECONDS, 300.0),
     ],
 )
 def test_each_slo_histogram_has_a_bucket_at_its_objective(histogram: Any, objective: float) -> None:
     # S3-7b's burn-rate rules count the answers under it: le="<objective>".
     assert objective in histogram._upper_bounds
+
+
+def test_a_slot_counts_an_answer_abandoned_before_its_first_token_once_with_its_wait() -> None:
+    # S3-7b's fix: no first token to observe, and availability leaves cancels out, so this is
+    # the only trace a hung model's abandoned answers leave in the SLIs.
+    def abandoned(waiting_for: str, kind: str = "count") -> float:
+        return value(f"rag_abandoned_seconds_{kind}", waiting_for=waiting_for)
+
+    before = {w: (abandoned(w), abandoned(w, "sum")) for w in ("sources", "first_token")}
+    pool = api_state.SlotPool(4)
+
+    during_retrieval = pool.take()
+    assert during_retrieval is not None
+    during_retrieval.begin(time.perf_counter() - 30.0)  # asked 30 s ago
+    during_retrieval.release()
+    during_retrieval.release()  # once, however many paths release it
+    assert abandoned("sources") - before["sources"][0] == 1
+    assert 30.0 <= abandoned("sources", "sum") - before["sources"][1] < 31.0
+
+    during_prefill = pool.take()
+    assert during_prefill is not None
+    during_prefill.begin(time.perf_counter() - 400.0)
+    during_prefill.waiting_for = metrics.WAITING_FOR_FIRST_TOKEN  # the route, at sources
+    during_prefill.release()
+    assert abandoned("first_token") - before["first_token"][0] == 1
+    assert 400.0 <= abandoned("first_token", "sum") - before["first_token"][1] < 401.0
+
+    # After a first token, or ended otherwise, or before its stream began: not abandoned.
+    for waiting_for, outcome in (
+        (None, metrics.CANCELLED),
+        (metrics.WAITING_FOR_FIRST_TOKEN, metrics.FAILED),
+        (metrics.WAITING_FOR_FIRST_TOKEN, metrics.ANSWERED),
+    ):
+        slot = pool.take()
+        assert slot is not None
+        slot.begin(time.perf_counter())
+        slot.waiting_for, slot.outcome = waiting_for, outcome
+        slot.release()
+    refused = pool.take()  # its slot taken, then refused before its answer began
+    assert refused is not None
+    refused.release()
+    assert abandoned("sources") - before["sources"][0] == 1
+    assert abandoned("first_token") - before["first_token"][0] == 1
+    assert pool.in_use == 0
 
 
 def test_every_label_set_is_there_at_zero_and_no_created_series() -> None:
@@ -136,6 +186,8 @@ def test_every_label_set_is_there_at_zero_and_no_created_series() -> None:
         'rag_refusals_total{code="503",reason="dependency_down"}',
         'rag_refusals_total{code="503",reason="no_index"}',
         'rag_ingest_runs_total{status="failed"}',
+        'rag_abandoned_seconds_count{waiting_for="sources"}',
+        'rag_abandoned_seconds_count{waiting_for="first_token"}',
     ):
         assert line in text
     assert "_created" not in text
@@ -204,6 +256,8 @@ def test_an_answer_moves_its_times_its_tokens_and_its_outcome(
     assert counts.moved("rag_answers_total", outcome="answered") == 1
     for name in ("rag_sources_seconds_count", "rag_ttft_seconds_count", "rag_answer_seconds_count"):
         assert counts.moved(name) == 1
+    for waiting_for in ("sources", "first_token"):
+        assert counts.moved("rag_abandoned_seconds_count", waiting_for=waiting_for) == 0
     assert counts.moved(sent_in[0], **sent_in[1]) == 900
     assert counts.moved(sent_out[0], **sent_out[1]) == 120
     assert counts.moved("rag_fallback_answers_total") == 0
@@ -251,6 +305,8 @@ def test_an_answer_that_fails_after_its_200_counts_as_failed(fake_config: RagCon
     assert counts.moved("rag_answers_total", outcome="failed") == 1
     assert counts.moved("rag_answers_total", outcome="answered") == 0
     assert counts.moved("rag_answer_seconds_count") == 0
+    # Failed before its first token, but not abandoned: its client was still there.
+    assert counts.moved("rag_abandoned_seconds_count", waiting_for="first_token") == 0
 
 
 def test_an_open_breaker_after_the_stream_began_is_one_warning_line_not_a_traceback(
