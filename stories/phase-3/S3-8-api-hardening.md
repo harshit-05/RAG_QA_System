@@ -317,3 +317,56 @@ the golden questions, so `rag-eval check` stays 0 and the contexts IDENTICAL to 
 - **The README's "Upgrading from v0.3" gains item 6,** the API's limits (not in D12).
 - **The close-out adds a fix commit** before the record: the live run's two findings
   (Discovered).
+
+## First review (2026-10-27, Opus 5.5 on `646e888`, PR #28)
+
+Reviewed as the first reviewer, against the PR's head, in scratch copies of it (never in the
+repository). The maintainer's Qdrant was not touched; the one container run was promtool, by
+digest, with `--rm`. One defect in what the story claims, two gaps and one overstated comment,
+all fixed on the PR.
+
+**Reproduced as they were:** the suite (1711 passed, 18 skipped, 5 xfailed; 98.28%), ruff,
+mypy, `uv lock --check` (`uv.lock` equal to `main`'s), `rag-eval check` (exit 0) and
+`promtool test rules` and `check rules` (41 rules) from CI's pinned image. After the live run
+(`2aef8d7`) only a log plural and the dead job's lock-file cleanup moved in `src/`, none on the
+retrieval path, so the IDENTICAL contexts stand.
+
+**Fixed:**
+
+1. **One refused read held every key closed.** `KeyRing.refresh` stored the file's signature
+   before it read the file, so an `OSError` (a full table of open files, an I/O error) left the
+   signature as "seen": every later look found the file unchanged, and keyed requests got 503
+   and readiness 503 until the file's mtime moved or the server restarted. That is not "until it
+   parses again" (this story, the README, ARCHITECTURE). A read the system refused is now a
+   `KeysFileUnreadableError`: its signature is forgotten, so the next look (5 s) reads again,
+   and the warning is said once. A file that does not parse still stays closed until it
+   changes. Reproduced with one injected `OSError`: no match after 1 h; after the fix, a match 6 s
+   later.
+2. **Nothing tested that an unchanged file is not read again** (`auth.py`'s `return` was never
+   run). Removing it failed no test; it also re-parses, and re-warns, a broken file at every
+   look. A test now counts the reads and the warnings over three looks.
+3. **`declared_length` took `str.isdigit()`**, which accepts `\xb2` ('²'), and `int()` refuses
+   it. Unreachable under h11, which answers 400 first (`httptools` is not installed here, so
+   not tried). Now ASCII digits only; the unit test has the case.
+4. **A comment overstated:** a question and its sources do not "fit in a fraction" of 64 KiB;
+   the model's largest ASCII request is about 53 KB (82%), and names of multi-byte characters
+   pass the limit. The comment says so, and a test pins the ASCII maximum under it.
+
+**Checked, nothing to fix:**
+
+- **Cross-process job records:** 12 processes starting at once gave 1 started and 11 refused;
+  after `kill -9` of the holder its job read `failed`, `abandoned`, and the next start was
+  accepted.
+- **`forwarded_allow_ips`:** uvicorn's source reads `FORWARDED_ALLOW_IPS` only for `None`; an
+  empty list trusts nobody.
+- **The eviction scan** costs 1.1 ms a take at worst, and only above about 1,700 new addresses a
+  second on the failure table (its oldest bucket must be 6 s old to be full), 10,000 on the
+  others. Bounded; the "stops at once" holds below that.
+- **A scoped link-local IPv6 address** (`fe80::1%eth0`) does not break `client_key`; all of
+  them share one `/64` bucket.
+- **Extra mutants** (the removal of the bucket cap, a deferred `BEGIN` in `start()`, the
+  failure bucket drawn for valid keys, a zero recheck interval): all caught. The fifth, the
+  unchanged-signature shortcut removed, survived before fix 2 and is caught now.
+
+**After the fixes:** 1715 passed, 18 skipped, 5 xfailed; coverage 98.26%; ruff, format and mypy
+clean; the lock unchanged.

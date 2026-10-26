@@ -5,10 +5,16 @@
 
 ## Now
 
-**Next action: open S3-8's PR from `feat/s3-8-api-hardening`,** then its two reviews, then a
-merge commit; then S3-9. The PR's title and the merge message carry the breaking changes
-(`f961a25`, `bad1070`). `gh pr checks` is the one Verification command left: CI runs on pull
-requests.
+**Next action: S3-8's second review on PR #28** (`feat/s3-8-api-hardening`), then a merge
+commit; then S3-9. The PR's title and the merge message carry the breaking changes (`f961a25`,
+`bad1070`). `gh pr checks` is the one Verification command left.
+
+**S3-8's first review is done (2026-10-27, on `646e888`).** Detail in the story ("First
+review"). One defect, fixed on the PR: a read of the keys file the system refused (a full table
+of open files, an I/O error) held every key closed until the file changed, where the docs say
+"until it parses again"; it is now tried again at the next look. Also fixed: an untested
+"unchanged file is not read again", a `Content-Length` parsed with `isdigit()`, and a comment
+on the 64 KiB limit that overstated. The suite: 1715 passed, 18 skipped, 5 xfailed; 98.26%.
 
 **S3-8 is done (2026-10-26), before its PR.** Detail in the story.
 
