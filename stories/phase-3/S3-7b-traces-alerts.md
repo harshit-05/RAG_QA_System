@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done 2026-10-26 (PR #26, merged 2026-10-26 as `e6e1f26`; CI green on `main` after it, run 40238581649). Plan approved 2026-10-25 (below, "Plan"); on Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-25 (`845133b` … `0815ac1`). The first review (2026-10-25, on `0815ac1`) found one false claim (a span's exception text), six gaps in what the tests would catch and two smaller things; the second (2026-10-26, on `0a11270`) found an alert that paged a healthy idle server, and a check that gated no merge, for the maintainer. The fixes are on the PR (`cc11d55` … `98ddc6e`). CI is green on `98ddc6e` (run 40235082842: `check`, `eval-retrieval`, `deploy-config`) and on the close-out record, `492b66f` (run 40237334537). The maintainer added `deploy-config` to `main`'s ruleset after the merge (2026-10-26). An answer abandoned before its first token was invisible to every alert: being fixed after the merge, on `fix/s3-7b-abandoned-answers` ("After the merge"). |
+| **Status** | Done 2026-10-26 (PR #26, merged 2026-10-26 as `e6e1f26`; CI green on `main` after it, run 40238581649). Plan approved 2026-10-25 (below, "Plan"); on Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-25 (`845133b` … `0815ac1`). The first review (2026-10-25, on `0815ac1`) found one false claim (a span's exception text), six gaps in what the tests would catch and two smaller things; the second (2026-10-26, on `0a11270`) found an alert that paged a healthy idle server, and a check that gated no merge, for the maintainer. The fixes are on the PR (`cc11d55` … `98ddc6e`). CI is green on `98ddc6e` (run 40235082842: `check`, `eval-retrieval`, `deploy-config`) and on the close-out record, `492b66f` (run 40237334537). The maintainer added `deploy-config` to `main`'s ruleset after the merge (2026-10-26). An answer abandoned before its first token was invisible to every alert: fixed after the merge, in PR #27, awaiting its merge ("After the merge"). |
 | **Closes** | NFR-10 (traces); DEC-22 (traces and alerts); DEC-24's `deploy-config` job |
 | **Depends on** | S3-7 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -488,7 +488,40 @@ retrieval that hangs is the same for the `sources` SLI.
 **The maintainer's decision (2026-10-26):** fix it before S3-8, on
 `fix/s3-7b-abandoned-answers`, the `sources` stage included. A histogram of how long an answer
 had waited when its client left before its first token; each SLI counts those past its
-objective as slow, and leaves younger ones out of both sides. (Filled at the fix's close-out.)
+objective as slow, and leaves younger ones out of both sides.
+
+**As built** (PR #27, `d685104` … `5b72815`; on Opus 5.5 at max effort, as S3-7b ran):
+
+- **`rag_abandoned_seconds{waiting_for}`** (`metrics.py`): `sources`, then `first_token` once
+  the sources event went out. It has the first-token histogram's buckets, which hold both
+  objectives, and both label sets are there at zero from the start: an absent series would
+  empty the SLI's sum and silence its alert.
+- **Recorded in `Slot.release()`,** the one place every ending passes once, a drop between
+  events included. `Slot.begin(received_at)` sets the outcome, the stage and the arrival time
+  together, so no age is taken from an unset time; the route moves the stage at `sources` and
+  at the first token. Synchronous, with no new `await`: DEC-14's window is untouched. Answers
+  refused before their stream began stay out, as they do of `rag_answers_total`.
+- **The SLIs** (`rules.yml`, 14 recording rules): slow = (events over the objective + answers
+  abandoned past it) / (all events + answers abandoned past it). NFR-2a reads the `sources`
+  stage at 2 s, NFR-2b both stages at 300 s. The alerts themselves are unchanged.
+
+| # | Check | Result |
+| --- | --- | --- |
+| 1 | `uv run rag-eval check` | exit 0: the committed run matches this checkout |
+| 2 | `HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q` | 1594 passed, 18 skipped, 5 xfailed; coverage 98.47%; `HF_HOME` stayed empty |
+| 3 | `uv run ruff check && uv run ruff format --check && uv run mypy` | all checks passed; 77 files formatted; no issues in 38 source files |
+| 4 | the lock | `uv.lock` and `pyproject.toml` unchanged; `uv lock --check` resolves 194 |
+| 5 | `promtool check config`, `promtool test rules` on both files, `amtool check-config` (the pinned images) | SUCCESS, 41 rules; SUCCESS, both files; SUCCESS |
+| 6 | the real drops (`test_api_uvicorn.py`, tracing off and on) | a drop during the prefill counts once under `first_token`, and one during retrieval once under `sources`; a drop mid-stream, and the forced window's (its blocked event is the first token, already observed), count none |
+| 7 | promtool's new scenarios | a hung model whose clients leave after 5 minutes: quiet at 15 minutes, the first-token page at 35, which the merged rules never gave; a hung retrieval: the sources page at 35 minutes, and no first-token page; clients that leave sooner: the SLI at 0, both alerts quiet. The arithmetic: sources 0.5 and first token 0.625, values a wrong stage, objective or side would change |
+| 8 | mutants, in scratch copies | 4 of the code (no record at release, no stage at `sources`, no clear at the first token, failed answers recorded too) and 6 of the rules (the `sources` stage dropped, its wait read at 300 s, the first token's at 2 s, the `first_token` stage alone, no abandoned answers below the line, the rule as merged), each caught |
+| 9 | the `fix(api)` commit alone: `main` plus its five files, in a scratch tree | 1592 passed, 20 skipped (the hygiene test outside a checkout), 5 xfailed; ruff and mypy clean; promtool green on the rules as merged |
+| 10 | the live check: a question dropped during the prefill on the real API | not run: optional, and the maintainer's call |
+| 11 | `gh pr checks 27` | green on `5b72815` (run 40280659911): `check` 5m10s, `deploy-config` 30s, `eval-retrieval` 3m7s |
+
+**Deviation from the fix's plan:** `Slot.begin()`, which the plan did not name, and the
+route's own first-token flag gave way to `slot.waiting_for`. The rule tests' existing latency
+scenarios carry the new series at zero, which their SLIs now need.
 
 The same probe found one more thing, for the backlog: on a quiet host (a question every 20
 minutes), one failed answer pages `RagAvailabilityFastBurn`, since with so few events one
