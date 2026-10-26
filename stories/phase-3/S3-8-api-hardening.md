@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Todo |
+| **Status** | In progress. Plan approved 2026-10-26 (below, "Plan"); on Opus 5.5 at max effort (Deviation). |
 | **Closes** | NFR-5; DEC-23; backlog: multi-user auth and rate limiting (API deployment hardening), request size and health-check load, statelessness |
 | **Depends on** | S3-7b (S3-7 was split in its plan, 2026-10-23) |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -172,6 +172,53 @@ gh pr checks
   row is read again after the probe (design review 2).
 - **The address the limits count** (design review 2): `forwarded_allow_ips` is always passed,
   and never as a range.
+
+## Plan (approved 2026-10-26)
+
+Approved by the maintainer, with both open questions taken as recommended (Q1, Q2). This
+section is the record to cross-check the work against; the full plan, with the files, the tests
+and the recipes, is `~/.claude/plans/yup-proceed-make-the-wobbly-finch.md`. A departure from it
+goes under "Deviation from plan".
+
+**What the plan found, checking the design against the libraries as installed** (uvicorn
+0.54.0, FastAPI 0.143.0, Starlette 1.7.0, opentelemetry-instrumentation-fastapi 0.66b1):
+
+- **uvicorn trusts `X-Forwarded-For` from loopback unless told otherwise.** `Config` reads
+  `FORWARDED_ALLOW_IPS`, defaulting to `127.0.0.1,::1`. Passing `forwarded_allow_ips=[]` trusts
+  nobody (`_TrustedHosts([])` trusts neither loopback nor `172.18.0.10`).
+- **FastAPI re-raises an `HTTPException` raised while it reads a body,** and turns any other
+  exception into the 400 "There was an error parsing the body" (`fastapi/routing.py`).
+- **The contrib instrumentation wraps the outermost layer** (it patches
+  `build_middleware_stack`), so our middleware sits inside it and inside
+  `ServerErrorMiddleware`: an unhandled exception passes through ours before it becomes a 500.
+- **The hermetic suite can run two replicas:** each test has a `var/` of its own and one
+  in-memory Qdrant client, which every store it builds shares.
+- **No dependency is needed:** sqlite3, hmac, secrets and fcntl are the standard library, and
+  SQLite 3.50.4 has `json_insert`.
+
+| # | Decision |
+| --- | --- |
+| D1 | **The keys file** (`api/auth.py`): `{"version": 1, "keys": [{name, scopes, sha256, created}]}`. Names `[a-z0-9][a-z0-9_-]{0,63}`, `token` reserved; scopes a non-empty subset of `query` and `ingest`. Re-read when `(st_ino, st_mtime_ns, st_size)` moves, checked at most every 5 s. A missing, unreadable or malformed file fails closed: keyed requests get 503 with `Retry-After: 5` and fixed text, never the path. `RAG_API_TOKEN` keeps working, as the key `token` with both scopes. |
+| D2 | **The check:** `Bearer <token>`, parsed as today; the sha256 of the presented bytes compared with every stored digest by `hmac.compare_digest`, on bytes; the same 401 for every failure. While the file is broken, a presentation that is not the token draws on the failed-auth bucket too, so wrong guesses cannot probe the token unthrottled. |
+| D3 | **Scopes:** an async `authenticate` dependency on the `v1` and `docs` routers, then one scope per route. A valid key without it gets 403. The key's name is bound into the logs (`api_key`) and set on the server span (`rag.api_key.name`), never the token; the job thread binds it too. |
+| D4 | **"No credential"** is no token and no keys file (`ServerSettings.has_credential`); only then are a non-loopback `Host` and `--host` refused. A broken keys file at start-up is a warning; **readiness answers 503 while it is broken** (Q1), with a `keys` entry. |
+| D5 | **`rag-keys`** `add NAME --scope …` (the token alone on stdout, once), `list` (never hashes), `revoke NAME`; `--file` defaults to `$RAG_API_KEYS_FILE`. Each change under a `flock` on `<file>.lock`, written to a 0600 temporary file, fsynced, `os.replace`d, the folder fsynced. Exit 0 done, 1 a name taken or unknown, 2 cannot run. |
+| D6 | **Rate limits** (`api/limits.py`): token buckets per key (`RAG_API_RATE_LIMIT`, 60 a minute), per address without a configured credential, and per address for failed authentication (10 a minute, drawn only after a token fails). At most 10,000 buckets a table: the first full one from the least recently used end is evicted, else the least recently used; IPv6 by its /64. Health exempt; 429 with `Retry-After`. Order: Origin 403, Host 403, authentication 401/429/503, the key's bucket 429, scope 403, then the query route's own refusals. |
+| D7 | **The client's address:** `rag-serve` always passes `forwarded_allow_ips`, `RAG_API_TRUSTED_PROXIES` or `[]`, from one config builder the real-uvicorn tests share. Addresses only: a range, `*` or a name exits 2. |
+| D8 | **Body size:** a pure ASGI middleware, 64 KiB: by `Content-Length` before the app runs, or `HTTPException(413)` from the wrapped `receive` as a body streams; `http.disconnect` passed through untouched. |
+| D9 | **The availability SLI** (the backlog line): an unexpected 500 on `POST /v1/query` counts as `rag_refusals_total{code="500",reason="error"}`, a broken keys file as `503 keys_unreadable`; the SLI reads `code=~"5.."`. The 401, 403, 413 and 429 refusals count on neither side: the client's, or policy. Every new label set starts at 0. |
+| D10 | **Health load:** the readiness probes of Qdrant's alias and of Ollama, cached for 5 s and single-flight; a question still reads the alias on every request. |
+| D11 | **Durable jobs** in `var/jobs.sqlite3`, WAL: the job lock `var/jobs/<id>.lock` taken before a `BEGIN IMMEDIATE` start that checks and inserts; the row "running" from `ingest()`'s new `on_locked` callback; the final row written before the lock is released. Read the row, probe the lock without creating it, read again; only a row still unfinished is abandoned, written back `WHERE status IN ('queued', 'running')`. The last 100 kept; `GET /v1/ingest/{id}` gains `abandoned`. |
+| D12 | **Docs:** the README's Access, Metrics and Alerts; DEC-23's as-built note; the records. |
+| D13 | **Breaking** (`feat(api)!`): every route but health is rate-limited, loopback without a credential included; a body over 64 KiB gets 413; `X-Forwarded-For` is no longer trusted from loopback, and `FORWARDED_ALLOW_IPS` is ignored. |
+
+**The backlog lines that touch S3-8:** the availability SLI's unseen 500s is folded in (D9).
+The name-based no-secrets rule (the config schema, outside this story's scope) and the Qdrant
+URL in a job's error text (which waits on S3-9's internal network) stay, led by S3-9 (Q2). The
+stale `stream_options` assertion stays: this story does not run `test_fallback_openai.py`.
+
+**Nothing hashed moves:** no edit to the config, the prompt, a model, a retriever, the corpus or
+the golden questions, so `rag-eval check` stays 0 and the contexts IDENTICAL to S3-2's.
 
 ## Discovered
 

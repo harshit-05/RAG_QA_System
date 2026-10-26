@@ -5,10 +5,19 @@
 
 ## Now
 
-**Next action: once CI is green on the close-out record, merge PR #27 with a merge commit;
-then S3-8,** plan-first, on `feat/s3-8-api-hardening`. Nothing in PR #27 is breaking.
+**Next action: S3-8 is in progress** on `feat/s3-8-api-hardening`. Its plan was approved on
+2026-10-26 (the story's "Plan"), on Opus 5.5 at max effort where the story routes to Fable.
 
-**The fix for answers abandoned before their first token is done (2026-10-26, PR #27).** The
+**The fix after S3-7b is merged** (2026-10-26, PR #27, merge commit `12f4768`). CI was green on
+the PR's last head, `d3ed26a` (run 40283612574), and is green on `main` after the merge (run
+40284703179: `check`, `deploy-config`, `eval-retrieval`). No Dependency Graph run: #27 changed
+no dependency. The live check on the real API was optional, and was not run. Ruleset 25561360
+requires `check`, `deploy-config` (since 2026-10-26) and `eval-retrieval`; S3-9 adds
+`container`. The live index is unchanged: the `rag_qa` alias names
+`rag_qa--gen-20261019T153834837765Z-7f20891e`, and S3-2's parity baseline is still
+`~/dev/rag-s3-2/contexts-qdrant.json` (sha256 `5a36e2f9…a074cbc`).
+
+**The fix for answers abandoned before their first token was done (2026-10-26, PR #27).** The
 maintainer chose it before S3-8. Detail in S3-7b's story ("After the merge"), as
 `fix/s2-1-cancel-race`'s went in S2-1's.
 
@@ -1717,8 +1726,8 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Done 2026-10-22 (PR #23, merged 2026-10-22) |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Done 2026-10-23 (PR #24, merged 2026-10-23) |
 | [S3-7](phase-3/S3-7-observability.md) | Structured logs, metrics and the capacity benchmarks | NFR-10 (logs, metrics), NFR-1, NFR-2 (a), NFR-3, DEC-22 (logs, metrics) | S3-6 | Done 2026-10-25 (PR #25, merged 2026-10-25) |
-| [S3-7b](phase-3/S3-7b-traces-alerts.md) | Traces and alerts | NFR-10 (traces), DEC-22 (traces, alerts) | S3-7 | Done 2026-10-26 (PR #26, merged 2026-10-26; a fix after it, PR #27) |
-| [S3-8](phase-3/S3-8-api-hardening.md) | API keys, rate limits and a stateless query tier | NFR-5, DEC-23 | S3-7b | Todo |
+| [S3-7b](phase-3/S3-7b-traces-alerts.md) | Traces and alerts | NFR-10 (traces), DEC-22 (traces, alerts) | S3-7 | Done 2026-10-26 (PR #26, merged 2026-10-26; a fix after it, PR #27, merged 2026-10-26) |
+| [S3-8](phase-3/S3-8-api-hardening.md) | API keys, rate limits and a stateless query tier | NFR-5, DEC-23 | S3-7b | In progress (plan approved 2026-10-26) |
 | [S3-9](phase-3/S3-9-containers.md) | Containers, compose, TLS and CI scanning | §11 (CI, containers, config), §8.3, §9 LLM05, DEC-24 | S3-8 | Todo |
 | [S3-10](phase-3/S3-10-backup-restore.md) | Backup and restore | §11 (backup and DR), DEC-25 | S3-9 | Todo |
 | [S3-11](phase-3/S3-11-tier2-sweep.md) | The tier-2 sweep: measure every lever on a T4 | DEC-2, DEC-26 (the sweep), NFR-2 (a)'s levers | S3-5, S3-10 | Todo |

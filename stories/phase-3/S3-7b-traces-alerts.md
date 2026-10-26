@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done 2026-10-26 (PR #26, merged 2026-10-26 as `e6e1f26`; CI green on `main` after it, run 40238581649). Plan approved 2026-10-25 (below, "Plan"); on Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-25 (`845133b` … `0815ac1`). The first review (2026-10-25, on `0815ac1`) found one false claim (a span's exception text), six gaps in what the tests would catch and two smaller things; the second (2026-10-26, on `0a11270`) found an alert that paged a healthy idle server, and a check that gated no merge, for the maintainer. The fixes are on the PR (`cc11d55` … `98ddc6e`). CI is green on `98ddc6e` (run 40235082842: `check`, `eval-retrieval`, `deploy-config`) and on the close-out record, `492b66f` (run 40237334537). The maintainer added `deploy-config` to `main`'s ruleset after the merge (2026-10-26). An answer abandoned before its first token was invisible to every alert: fixed after the merge, in PR #27, awaiting its merge ("After the merge"). |
+| **Status** | Done 2026-10-26 (PR #26, merged 2026-10-26 as `e6e1f26`; CI green on `main` after it, run 40238581649). Plan approved 2026-10-25 (below, "Plan"); on Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-25 (`845133b` … `0815ac1`). The first review (2026-10-25, on `0815ac1`) found one false claim (a span's exception text), six gaps in what the tests would catch and two smaller things; the second (2026-10-26, on `0a11270`) found an alert that paged a healthy idle server, and a check that gated no merge, for the maintainer. The fixes are on the PR (`cc11d55` … `98ddc6e`). CI is green on `98ddc6e` (run 40235082842: `check`, `eval-retrieval`, `deploy-config`) and on the close-out record, `492b66f` (run 40237334537). The maintainer added `deploy-config` to `main`'s ruleset after the merge (2026-10-26). An answer abandoned before its first token was invisible to every alert: fixed after the merge, in PR #27, merged 2026-10-26 as `12f4768` ("After the merge"). |
 | **Closes** | NFR-10 (traces); DEC-22 (traces and alerts); DEC-24's `deploy-config` job |
 | **Depends on** | S3-7 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -526,3 +526,8 @@ scenarios carry the new series at zero, which their SLIs now need.
 The same probe found one more thing, for the backlog: on a quiet host (a question every 20
 minutes), one failed answer pages `RagAvailabilityFastBurn`, since with so few events one
 failure is 14.4 times the budget.
+
+**Merged** (2026-10-26, PR #27, merge commit `12f4768`). CI was green on the PR's last head,
+`d3ed26a` (run 40283612574), and is green on `main` after the merge (run 40284703179:
+`check`, `deploy-config`, `eval-retrieval`). No Dependency Graph run: the PR changed no
+dependency. The live check on the real API (row 10) was optional, and was not run.
