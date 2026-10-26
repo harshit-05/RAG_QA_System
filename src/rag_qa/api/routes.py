@@ -82,6 +82,7 @@ from rag_qa.api.models import (
     QueryRequest,
 )
 from rag_qa.api.state import (
+    LLM_CHECK_TIMEOUT_S,
     NO_INDEX_YET,
     REINGEST,
     STORE_DOWN,
@@ -91,7 +92,7 @@ from rag_qa.api.state import (
     wait_s,
 )
 from rag_qa.chain import IncompatibleIndexError, NoIndexError, QueryPipeline
-from rag_qa.components import FALLBACK_SERVICE, llm_reachable, raised_by_fallback
+from rag_qa.components import FALLBACK_SERVICE, raised_by_fallback
 from rag_qa.observability import logs, metrics, tracing
 from rag_qa.observability.genai import model_identity
 from rag_qa.resilience import OPEN, BreakerOpenError, CircuitBreaker
@@ -103,9 +104,6 @@ logger = logging.getLogger(__name__)
 #: How long a busy server asks a client to wait before asking again, in seconds. An
 #: answer takes minutes on CPU; this is how often it is reasonable to check.
 RETRY_AFTER_S = 30
-
-#: Seconds Ollama has to answer the readiness check (ARCHITECTURE.md §2.4).
-LLM_CHECK_TIMEOUT_S = 2.0
 
 
 # --- dependencies: the refusals, in order -------------------------------------------------
@@ -648,9 +646,13 @@ async def readiness(
     """Ready: an index the config can use is served and Qdrant's breaker is not open, the
     model's server answers within 2 s, or the hosted fallback can answer in its place (its
     breaker not open), and the keys file, when one is set, can be used. 503 otherwise, with
-    what is missing. ``breakers`` reports each dependency's breaker, by role (DEC-21)."""
+    what is missing. ``breakers`` reports each dependency's breaker, by role (DEC-21).
+
+    Never rate-limited, and cheap (DEC-23): the alias and the model's server are each asked at
+    most once every 5 s, whoever polls (:class:`rag_qa.api.state.Probe`); the breakers and
+    the keys file are read as they are now."""
     keys = keys_health(request.app.state.keys)
-    await serving.refresh()
+    await serving.index_probe.get()
     served = serving.served
     pipeline = serving.pipeline
     if serving.store.breaker.state == OPEN:
@@ -669,7 +671,7 @@ async def readiness(
             documents=None,
             detail=served.problem or "serving",
         )
-    reachable = await llm_reachable(pipeline.llm, LLM_CHECK_TIMEOUT_S)
+    reachable = await serving.llm_probe.get()
     covered = (
         reachable is False
         and pipeline.fallback_llm is not None

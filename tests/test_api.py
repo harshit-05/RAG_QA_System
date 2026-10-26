@@ -142,6 +142,14 @@ def refused(client: TestClient) -> tuple[httpx.Response, httpx.Response]:
     return client.post("/v1/query", json={"question": "q"}), client.get("/v1/documents")
 
 
+def health_now(client: TestClient, serving: Serving) -> httpx.Response:
+    """``GET /v1/health`` as it is now: the probes' cached answers dropped first, as 5 s
+    passing would (DEC-23). The tests that read health twice in a row read through this."""
+    serving.index_probe.forget()
+    serving.llm_probe.forget()
+    return client.get("/v1/health")
+
+
 def bigger_embedder(c: dict[str, Any]) -> None:
     """Config edit: the fakes, with an embedder whose vectors another index cannot hold."""
     use_fakes(c)
@@ -1025,10 +1033,10 @@ def test_an_index_rebuilt_with_another_embedder_makes_the_server_not_ready(
     scratch_config: RagConfig, make_config: MakeConfig, tmp_path: Path
 ) -> None:
     ingest(scratch_config)
-    with serve(scratch_config, tmp_path) as (client, _):
+    with serve(scratch_config, tmp_path) as (client, serving):
         assert client.get("/v1/health").status_code == 200
         ingest(load_config(make_config(bigger_embedder)), rebuild=True)  # a CLI --rebuild
-        health = client.get("/v1/health")
+        health = health_now(client, serving)
         assert health.status_code == 503
         assert health.json()["index"]["detail"] == REINGEST
         for response in refused(client):
@@ -1085,6 +1093,112 @@ def test_health_is_503_when_the_models_server_does_not_answer(
     assert health.json()["status"] == "not ready"
     assert health.json()["index"]["ready"] is True
     assert health.json()["llm"]["ready"] is False
+
+
+# --- the health probes' cost (S3-8, DEC-23) ---------------------------------------------------
+
+
+def test_a_flood_of_health_probes_asks_each_dependency_once_and_a_question_still_reads_the_alias(
+    scratch_config: RagConfig,
+    tmp_path: Path,
+    fake_ollama: FakeOllama,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Docker's and Caddy's checks poll readiness from one address, and it is never
+    # rate-limited: the probes behind it are each made at most once per 5 s, whoever asks.
+    ingest(scratch_config)
+    up = ChatOllama(model="mistral", base_url=fake_ollama.url)
+    monkeypatch.setattr("rag_qa.api.state.build_llm", lambda config: up)
+    with serve(scratch_config, tmp_path) as (client, serving):
+        reads: list[None] = []
+        real = serving.store.alias_target
+
+        def counted() -> str | None:
+            reads.append(None)
+            return real()
+
+        monkeypatch.setattr(serving.store, "alias_target", counted)
+        before = fake_ollama.requests.count("/api/tags")
+        for _ in range(200):
+            assert client.get("/v1/health").status_code == 200
+        assert fake_ollama.requests.count("/api/tags") - before <= 1
+        assert len(reads) <= 1
+        # A question is never served from the probe's answer: it reads the alias itself (NFR-5).
+        alias_reads = len(reads)
+        assert client.post("/v1/query", json={"question": "q"}).status_code == 200
+        assert len(reads) > alias_reads
+
+
+def test_a_probe_is_asked_once_by_concurrent_callers_and_again_after_5_s() -> None:
+    clock = Clock()
+    asked: list[int] = []
+    gate = asyncio.Event()
+
+    async def ask() -> int:
+        asked.append(len(asked))
+        await gate.wait()
+        return len(asked)
+
+    probe: api_state.Probe[int] = api_state.Probe(ask, clock=clock)
+
+    async def scenario() -> tuple[list[int], int, int]:
+        waiting = [asyncio.create_task(probe.get()) for _ in range(50)]
+        await asyncio.sleep(0)
+        gate.set()
+        answers = await asyncio.gather(*waiting)
+        clock.now += 4.9
+        cached = await probe.get()
+        clock.now += 0.1
+        fresh = await probe.get()
+        return list(answers), cached, fresh
+
+    answers, cached, fresh = asyncio.run(scenario())
+    assert answers == [1] * 50  # one call shared by all fifty
+    assert (cached, fresh) == (1, 2)
+
+
+def test_a_cancelled_caller_leaves_the_probe_running_and_its_answer_cached() -> None:
+    clock = Clock()
+    asked: list[None] = []
+
+    async def ask() -> str:
+        asked.append(None)
+        await asyncio.sleep(0.05)
+        return "answered"
+
+    probe: api_state.Probe[str] = api_state.Probe(ask, clock=clock)
+
+    async def scenario() -> str:
+        caller = asyncio.create_task(probe.get())
+        await asyncio.sleep(0.01)
+        caller.cancel()  # a health client that gave up
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        await asyncio.sleep(0.1)
+        return await probe.get()
+
+    assert asyncio.run(scenario()) == "answered"
+    assert len(asked) == 1
+
+
+def test_a_probe_that_raises_caches_nothing() -> None:
+    attempts: list[None] = []
+
+    async def ask() -> str:
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise RuntimeError("once")
+        return "fine"
+
+    probe: api_state.Probe[str] = api_state.Probe(ask, clock=Clock())
+
+    async def scenario() -> str:
+        with pytest.raises(RuntimeError):
+            await probe.get()
+        return await probe.get()
+
+    assert asyncio.run(scenario()) == "fine"
+    assert len(attempts) == 2
 
 
 # --- one retrieval at a time (S2-4's second review) -----------------------------------------
@@ -1197,7 +1311,7 @@ def test_an_open_that_fails_for_another_reason_is_not_ready_and_tried_again(
     # It is not ready instead, says so without the error's text (which names paths), and
     # the next request tries again, since such a failure is likelier to pass than not.
     ingest(scratch_config)
-    with serve(scratch_config, tmp_path) as (client, _):
+    with serve(scratch_config, tmp_path) as (client, serving):
         real_open = api_state.open_retrieval
         failing = [True]
 
@@ -1210,7 +1324,7 @@ def test_an_open_that_fails_for_another_reason_is_not_ready_and_tried_again(
         (sample_corpus / "added.txt").write_text("A new note.\n")
         ingest(scratch_config)  # a rag-ingest outside the server flips a new generation in
 
-        health = client.get("/v1/health")
+        health = health_now(client, serving)
         assert health.status_code == 503
         assert health.json()["index"]["detail"] == api_state.UNAVAILABLE
         for response in refused(client):
@@ -1219,7 +1333,7 @@ def test_an_open_that_fails_for_another_reason_is_not_ready_and_tried_again(
         assert "the disk went away" in caplog.text  # in the server log only
 
         failing[0] = False
-        assert client.get("/v1/health").status_code == 200
+        assert health_now(client, serving).status_code == 200
         assert client.post("/v1/query", json={"question": "q"}).status_code == 200
 
 
@@ -1240,7 +1354,7 @@ def test_qdrant_unreachable_on_a_refresh_is_not_ready_and_tried_again(
             raise StoreUnavailableError("cannot use Qdrant at http://q (ConnectError)")
 
         monkeypatch.setattr(serving.store, "alias_target", down)
-        health = client.get("/v1/health")
+        health = health_now(client, serving)
         assert health.status_code == 503
         assert health.json()["index"]["detail"] == api_state.UNAVAILABLE
         for response in refused(client):
@@ -1249,7 +1363,7 @@ def test_qdrant_unreachable_on_a_refresh_is_not_ready_and_tried_again(
         assert caplog.text.count("Not serving an index: cannot use Qdrant") == 1  # said once
 
         monkeypatch.setattr(serving.store, "alias_target", real)
-        assert client.get("/v1/health").status_code == 200
+        assert health_now(client, serving).status_code == 200
         assert client.post("/v1/query", json={"question": "q"}).status_code == 200
 
 
@@ -1540,7 +1654,7 @@ def test_qdrant_down_on_a_refresh_is_named_by_its_own_failure_not_the_breaker_s(
 
         monkeypatch.setattr(serving.store.client, "get_aliases", down)
         with caplog.at_level(logging.WARNING, logger="rag_qa.api.state"):
-            health = client.get("/v1/health")
+            health = health_now(client, serving)
     assert health.status_code == 503
     assert health.json()["index"]["detail"] == STORE_DOWN
     assert serving.store.breaker.state == "open"

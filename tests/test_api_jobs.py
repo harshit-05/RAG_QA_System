@@ -5,7 +5,7 @@ Two :class:`rag_qa.api.jobs.JobStore` objects over one state folder stand for tw
 ``flock`` belongs to the open file, so one process's two opens conflict as two processes'
 would. A job whose process dies is a real child process, killed with SIGKILL, since only the
 kernel's release of its lock is the real thing. Through the HTTP API, ``test_api.py`` runs the
-jobs.
+jobs, and ``test_api_replicas.py`` two apps over one state folder.
 """
 
 import asyncio
