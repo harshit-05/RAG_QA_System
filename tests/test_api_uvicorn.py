@@ -41,12 +41,14 @@ import pytest
 import uvicorn
 from anyio.streams.memory import MemoryObjectSendStream
 from conftest import StreamingFakeChatModel, Traced, fake_serving, sse_events
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from langchain_core.documents import Document
 from langchain_core.runnables import RunnableLambda
 from opentelemetry.trace import SpanKind, StatusCode
 
 from rag_qa.api.app import create_app
+from rag_qa.api.limits import BodyLimit
+from rag_qa.api.server import uvicorn_config
 from rag_qa.api.state import Serving, Slot
 from rag_qa.chain import RetrievalQuery
 from rag_qa.observability import metrics, tracing
@@ -56,21 +58,34 @@ from rag_qa.settings import ServerSettings
 #: How long a stopped answer may take to close its stream to the model (the story's 1 s).
 CLOSE_WITHIN_S = 1.0
 
-Start = Callable[[FastAPI], int]
+Start = Callable[..., int]
 
 
 @pytest.fixture
 def start_server() -> Iterator[Start]:
-    """Start uvicorn with an app on a free loopback port, in a thread; returns the port."""
+    """Start uvicorn with an app on a free loopback port, in a thread; returns the port.
+
+    As ``rag-serve`` configures it (:func:`rag_qa.api.server.uvicorn_config`), for ``settings``
+    or the defaults, so the forwarded headers are handled as they are in production (S3-8);
+    ``config`` is a uvicorn config to run instead, for a control."""
     running: list[tuple[uvicorn.Server, threading.Thread]] = []
 
-    def start(app: FastAPI) -> int:
+    def start(
+        app: Any, settings: ServerSettings | None = None, config: uvicorn.Config | None = None
+    ) -> int:
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         port = int(sock.getsockname()[1])
-        server = uvicorn.Server(
-            uvicorn.Config(app, log_level="warning", timeout_graceful_shutdown=1)
-        )
+        if config is None:
+            config = uvicorn_config(
+                app,
+                settings or ServerSettings(),
+                "127.0.0.1",
+                port,
+                log_level="warning",
+                timeout_graceful_shutdown=1,
+            )
+        server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
         thread.start()
         running.append((server, thread))
@@ -87,7 +102,11 @@ def start_server() -> Iterator[Start]:
 
 
 def serve(start: Start, config: RagConfig, serving: Serving) -> int:
-    return start(create_app(config, ServerSettings(), serving=serving))
+    app = create_app(config, ServerSettings(), serving=serving)
+    # Every drop runs with the body limit on: it wraps receive, which carries the disconnect
+    # (DEC-23, design review 2).
+    assert app.user_middleware[0].cls is BodyLimit
+    return start(app)
 
 
 def ask(port: int, question: str = "How many staff?") -> socket.socket:
@@ -406,3 +425,79 @@ def test_negative_control_without_the_slots_close_the_stream_stays_open(
     monkeypatch.setattr(Slot, "aclose", release_only)
     model, _ = drop_while_an_event_waits(start_server, fake_config, blocked_sends)
     assert within(CLOSE_WITHIN_S, lambda: model.closed)
+
+
+# --- what reaches the app (S3-8, DEC-23) -------------------------------------------------------
+
+
+def status_of(sock: socket.socket) -> int:
+    """The status code of the response on ``sock``."""
+    head = read_until(sock, b"\r\n\r\n")
+    return int(head.split(b" ", 2)[1])
+
+
+def test_a_declared_megabyte_without_a_token_is_413_before_any_of_it_is_sent(
+    start_server: Start, fake_config: RagConfig
+) -> None:
+    # The body is never read: the answer comes before the client sends a byte of it.
+    serving = fake_serving(fake_config, StreamingFakeChatModel())
+    port = start_server(create_app(fake_config, ServerSettings(token="s3cret"), serving=serving))
+    with socket.create_connection(("127.0.0.1", port)) as sock:
+        sock.sendall(
+            b"POST /v1/query HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+            b"Content-Length: 1048576\r\n\r\n"
+        )
+        assert status_of(sock) == 413
+
+
+def test_a_chunked_body_over_the_limit_without_a_token_is_413_not_400_401_or_422(
+    start_server: Start, fake_config: RagConfig
+) -> None:
+    # No Content-Length: the limit finds out as the chunks arrive, and FastAPI answers its
+    # HTTPException; any other exception would have been a 400 (DEC-23, design review 2). The
+    # body is sent whole, 80 KiB, so the server closes nothing on unread bytes.
+    serving = fake_serving(fake_config, StreamingFakeChatModel())
+    port = start_server(create_app(fake_config, ServerSettings(token="s3cret"), serving=serving))
+    chunk = b"4000\r\n" + b" " * 0x4000 + b"\r\n"  # 16 KiB a chunk
+    with socket.create_connection(("127.0.0.1", port)) as sock:
+        sock.sendall(
+            b"POST /v1/query HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n" + chunk * 5 + b"0\r\n\r\n"
+        )
+        assert status_of(sock) == 413
+    assert serving.slots.in_use == 0
+
+
+def client_probe() -> FastAPI:
+    """An app that answers with the client's address as the app sees it."""
+    probe = FastAPI()
+
+    @probe.get("/client")
+    async def client(request: Request) -> dict[str, str | None]:
+        return {"host": None if request.client is None else request.client.host}
+
+    return probe
+
+
+def seen_as(port: int, forwarded_for: str) -> str:
+    response = httpx.get(
+        f"http://127.0.0.1:{port}/client", headers={"X-Forwarded-For": forwarded_for}
+    )
+    return str(response.json()["host"])
+
+
+def test_a_loopback_client_cannot_name_its_own_address(
+    start_server: Start, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # uvicorn believes a loopback client's X-Forwarded-For by default, so every request could
+    # claim a fresh address, and a rate limit of its own (DEC-23, design review 2). rag-serve's
+    # configuration believes nobody's unless RAG_API_TRUSTED_PROXIES names it.
+    monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
+    ours = start_server(client_probe())
+    assert seen_as(ours, "203.0.113.7") == "127.0.0.1"
+    # The control: uvicorn's own default, which rag-serve never uses.
+    default = start_server(None, config=uvicorn.Config(client_probe(), log_level="warning"))
+    assert seen_as(default, "203.0.113.7") == "203.0.113.7"
+    # A proxy named by its address is believed.
+    trusted = start_server(client_probe(), ServerSettings(trusted_proxies="127.0.0.1"))
+    assert seen_as(trusted, "203.0.113.7") == "203.0.113.7"

@@ -37,8 +37,10 @@ import argparse
 import logging
 import sys
 from collections.abc import Callable, Sequence
+from typing import Any
 
 import uvicorn
+from fastapi import FastAPI
 from pydantic import ValidationError
 
 from rag_qa.api.app import create_app
@@ -97,6 +99,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--port", type=_port, help="port to listen on (default: $RAG_API_PORT, then 8000)"
     )
     return parser
+
+
+def uvicorn_config(
+    app: FastAPI, settings: ServerSettings, host: str, port: int, **options: Any
+) -> uvicorn.Config:
+    """How ``rag-serve`` runs ``app`` under uvicorn; ``options`` are for the tests, which run
+    the same configuration on a socket of their own.
+
+    **``forwarded_allow_ips`` is always passed** (DEC-23, design review 2): the trusted proxies'
+    addresses (``RAG_API_TRUSTED_PROXIES``), or none. Left out, uvicorn would believe the
+    ``X-Forwarded-For`` of any loopback client (``FORWARDED_ALLOW_IPS``, by default
+    ``127.0.0.1,::1``), and the rate limits would count whatever address it named.
+    """
+    chosen: dict[str, Any] = {
+        "host": host,
+        "port": port,
+        "forwarded_allow_ips": settings.proxies,
+        "timeout_graceful_shutdown": GRACEFUL_SHUTDOWN_S,
+        # uvicorn's lines go through our formatter (S3-7): no config of its own, and so it sets
+        # its loggers' level itself.
+        "log_config": None,
+        "log_level": "info",
+    }
+    return uvicorn.Config(app, **(chosen | options))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -171,18 +197,7 @@ def _serve(args: argparse.Namespace) -> int:
             config.component(fallback).spec()["base_url"],
         )
 
-    server = uvicorn.Server(
-        uvicorn.Config(
-            create_app(config, settings),
-            host=host,
-            port=port,
-            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
-            # uvicorn's lines go through our formatter (S3-7): no config of its own, and so
-            # it sets its loggers' level itself.
-            log_config=None,
-            log_level="info",
-        )
-    )
+    server = uvicorn.Server(uvicorn_config(create_app(config, settings), settings, host, port))
     stop_metrics: Callable[[], None] | None = None
     if settings.metrics_port is not None:
         try:

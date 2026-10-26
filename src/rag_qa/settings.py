@@ -154,8 +154,25 @@ class TraceSettings(BaseSettings):
 
 
 #: The prefix of the HTTP server's settings: ``RAG_API_TOKEN``, ``RAG_API_MAX_CONCURRENT``,
-#: ``RAG_API_HOST``, ``RAG_API_PORT``, ``RAG_API_METRICS_PORT``.
+#: ``RAG_API_HOST``, ``RAG_API_PORT``, ``RAG_API_METRICS_PORT``, ``RAG_API_TRUSTED_PROXIES``.
 ENV_API_PREFIX = "RAG_API_"
+
+
+def proxy_addresses(value: str) -> tuple[str, ...]:
+    """``RAG_API_TRUSTED_PROXIES`` as addresses: IP addresses separated by commas, each one
+    proxy's own, normalised. A range, ``*`` or a name raises ``ValueError`` (DEC-23, design
+    review 2): in the stack a published port's connections arrive from the network's gateway,
+    inside the network's range, and would then name any address they liked."""
+    found = []
+    for item in value.split(","):
+        try:
+            found.append(str(ipaddress.ip_address(item.strip())))
+        except ValueError:
+            raise ValueError(
+                "must be IP addresses separated by commas, each one proxy's own: a range "
+                "(with /), a wildcard or a host name is refused"
+            ) from None
+    return tuple(found)
 
 
 class ServerSettings(BaseSettings):
@@ -165,7 +182,9 @@ class ServerSettings(BaseSettings):
     only. ``max_concurrent`` is how many answers stream at once; a CPU host generates one at
     a time. ``host`` and ``port`` are the defaults ``rag-serve --host/--port`` override.
     ``metrics_port`` is where Prometheus scrapes the metrics, on the API's own host: a
-    listener of its own, off unless set (DEC-22, S3-7).
+    listener of its own, off unless set (DEC-22, S3-7). ``trusted_proxies`` are the addresses
+    whose ``X-Forwarded-For`` names the client (:func:`proxy_addresses`); unset, nobody's is
+    believed, loopback's included (DEC-23, S3-8).
     """
 
     model_config = SettingsConfigDict(env_prefix=ENV_API_PREFIX, env_ignore_empty=True, frozen=True)
@@ -175,6 +194,18 @@ class ServerSettings(BaseSettings):
     host: str = Field(default="127.0.0.1", min_length=1)
     port: int = Field(default=8000, ge=1, le=65535)
     metrics_port: int | None = Field(default=None, ge=1, le=65535)
+    #: A string, not a list: pydantic-settings would read a list from the environment as JSON.
+    trusted_proxies: str | None = None
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def check_trusted_proxies(cls, value: str | None) -> str | None:
+        return None if value is None else ",".join(proxy_addresses(value))
+
+    @property
+    def proxies(self) -> list[str]:
+        """The trusted proxies' addresses, none when unset: what uvicorn is given."""
+        return [] if self.trusted_proxies is None else list(proxy_addresses(self.trusted_proxies))
 
     @field_validator("token")
     @classmethod

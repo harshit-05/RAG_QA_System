@@ -494,6 +494,40 @@ def test_a_body_that_is_not_json_is_refused_before_the_dependencies(
     assert model.prompts == []
 
 
+def test_a_body_over_the_limit_is_413_before_any_other_refusal(
+    fake_config: RagConfig, tmp_path: Path
+) -> None:
+    # S3-8 (DEC-23): the size is checked before FastAPI reads the body, ahead of every
+    # dependency, which closes the gap above: no token, a web page's Origin or JSON that does
+    # not parse, a body over 64 KiB is never read. With Content-Length, and streamed without
+    # one (an iterator body); test_api_uvicorn.py sends both over a real socket.
+    model = StreamingFakeChatModel()
+    big = b"{" + b" " * (64 * 1024)
+    as_json = {"content-type": "application/json"}
+    with serve(fake_config, tmp_path, fake_serving(fake_config, model), token=TOKEN) as (
+        client,
+        serving,
+    ):
+        for path in ("/v1/query", "/v1/ingest"):
+            for headers in (as_json, {**as_json, "origin": "https://example.com"}):
+                declared = client.post(path, content=big, headers=headers)
+                assert declared.status_code == 413, declared.text
+                assert declared.json() == {"detail": "the request body is larger than 64 KiB"}
+                streamed = client.post(
+                    path, content=iter([big[:40_000], big[40_000:]]), headers=headers
+                )
+                assert streamed.status_code == 413, streamed.text
+                assert streamed.json() == declared.json()
+        # At the limit exactly, the usual order resumes: JSON that parses, then the 401, which
+        # comes before the model's 422 for an overlong question.
+        at_limit = b'{"question": "' + b"a" * (64 * 1024 - 16) + b'"}'
+        assert len(at_limit) == 64 * 1024
+        assert client.post("/v1/query", content=at_limit, headers=as_json).status_code == 401
+        assert serving.jobs.running is None
+        assert serving.slots.in_use == 0
+    assert model.prompts == []
+
+
 @pytest.mark.parametrize(
     "body",
     [{}, {"rebuild": "true"}, {"rebuild": 1}, {"rebuild": None}, {"rebuild": False, "config": "x"}],

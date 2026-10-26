@@ -14,8 +14,9 @@ listener: it reports in its log (DEC-22).
 
 **The SLOs** (S3-7b's alert rules). Each latency histogram has a bucket at its objective:
 ``rag_retrieval_seconds`` at 0.3 s (NFR-1), ``rag_sources_seconds`` at 2 s (NFR-2a),
-``rag_ttft_seconds`` at 300 s (NFR-2b, this CPU's class). Availability counts the 503s
-(:data:`REFUSALS`) and the answers that failed after their 200 (:data:`ANSWERS`).
+``rag_ttft_seconds`` at 300 s (NFR-2b, this CPU's class). Availability counts the 5xx
+refusals (:data:`REFUSALS`: the 503s, and an unexpected 500 since S3-8) and the answers that
+failed after their 200 (:data:`ANSWERS`).
 
 **An answer whose client left before its first token** has no first token to observe, and
 availability leaves cancelled answers out, so a hung model whose users give up would move no
@@ -189,17 +190,35 @@ FALLBACK_ANSWERS: Final = Counter(
 )
 
 #: Why a question was refused before its first byte (DEC-18): no free slot, a breaker open on
-#: a dependency it needs (DEC-21), or no index the config can use.
+#: a dependency it needs (DEC-21), or no index the config can use; a body over the limit, or an
+#: unexpected error, the server's own 500 (S3-8).
 BUSY: Final = "busy"
 DEPENDENCY_DOWN: Final = "dependency_down"
 NO_INDEX: Final = "no_index"
+BODY_TOO_LARGE: Final = "too_large"
+SERVER_ERROR: Final = "error"
+#: Each reason's status code. Availability counts the 5xx ones as bad, and the 4xx ones, the
+#: client's or the limits', on neither side (``deploy/prometheus/rules.yml``).
+REFUSAL_CODES: Final = {
+    BUSY: "503",
+    DEPENDENCY_DOWN: "503",
+    NO_INDEX: "503",
+    BODY_TOO_LARGE: "413",
+    SERVER_ERROR: "500",
+}
 REFUSALS: Final = Counter(
     "rag_refusals",
     "Questions refused before their first byte, by status code and reason: 503 busy, "
-    "dependency_down or no_index. S3-8 adds the 429s.",
+    "dependency_down or no_index; 413 too_large; 500 error, an unexpected one.",
     labelnames=("code", "reason"),
     registry=REGISTRY,
 )
+
+
+def refused(reason: str) -> None:
+    """Count one question refused for ``reason``, under its code (:data:`REFUSAL_CODES`)."""
+    REFUSALS.labels(code=REFUSAL_CODES[reason], reason=reason).inc()
+
 
 # --- ingest jobs -----------------------------------------------------------------------------
 
@@ -222,8 +241,8 @@ for _outcome in (ANSWERED, FAILED, CANCELLED):
 # and silence the alert.
 for _waiting_for in (WAITING_FOR_SOURCES, WAITING_FOR_FIRST_TOKEN):
     ABANDONED_SECONDS.labels(waiting_for=_waiting_for)
-for _reason in (BUSY, DEPENDENCY_DOWN, NO_INDEX):
-    REFUSALS.labels(code="503", reason=_reason)
+for _reason, _code in REFUSAL_CODES.items():
+    REFUSALS.labels(code=_code, reason=_reason)
 for _status in ("succeeded", "failed"):
     INGEST_RUNS.labels(status=_status)
 

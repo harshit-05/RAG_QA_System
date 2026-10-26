@@ -5,9 +5,11 @@
 # quiet, at each window; CI's deploy-config job runs it with promtool.
 #
 # The objectives, each over 30 days (S3-7's plan, 2026-10-23):
-#   availability  99%. Bad: a question refused with 503 (busy, a dependency down, no index),
-#                 or an answer that failed after its 200 (an error event). A cancelled answer
-#                 counts on neither side: its client chose to leave.
+#   availability  99%. Bad: a question refused with a 5xx: 503 (busy, a dependency down, no
+#                 index, an unreadable keys file) or an unexpected 500 (S3-8); or an answer
+#                 that failed after its 200 (an error event). A cancelled answer counts on
+#                 neither side: its client chose to leave. Nor do the 4xx refusals (S3-8): 401,
+#                 403 and 413 are the client's, and 429 the limits' policy, not a fault.
 #   NFR-1         95% of retrievals, the query embedding and the search, under 0.3 s.
 #   NFR-2a        95% of sources events under 2 s from the question.
 #   NFR-2b        95% of first tokens under 300 s: this CPU's class, where the committed tier-2
@@ -39,39 +41,39 @@ groups:
     rules:
       - record: rag:availability_errors:ratio_rate5m
         expr: |
-          (sum by (job) (rate(rag_refusals_total{code="503"}[5m])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[5m])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[5m])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[5m])))
           /
-          (sum by (job) (rate(rag_refusals_total{code="503"}[5m])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[5m])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[5m])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[5m])))
       - record: rag:availability_errors:ratio_rate30m
         expr: |
-          (sum by (job) (rate(rag_refusals_total{code="503"}[30m])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[30m])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[30m])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[30m])))
           /
-          (sum by (job) (rate(rag_refusals_total{code="503"}[30m])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[30m])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[30m])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[30m])))
       - record: rag:availability_errors:ratio_rate1h
         expr: |
-          (sum by (job) (rate(rag_refusals_total{code="503"}[1h])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[1h])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[1h])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[1h])))
           /
-          (sum by (job) (rate(rag_refusals_total{code="503"}[1h])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[1h])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[1h])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[1h])))
       - record: rag:availability_errors:ratio_rate2h
         expr: |
-          (sum by (job) (rate(rag_refusals_total{code="503"}[2h])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[2h])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[2h])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[2h])))
           /
-          (sum by (job) (rate(rag_refusals_total{code="503"}[2h])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[2h])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[2h])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[2h])))
       - record: rag:availability_errors:ratio_rate6h
         expr: |
-          (sum by (job) (rate(rag_refusals_total{code="503"}[6h])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[6h])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[6h])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[6h])))
           /
-          (sum by (job) (rate(rag_refusals_total{code="503"}[6h])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[6h])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[6h])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[6h])))
       - record: rag:availability_errors:ratio_rate1d
         expr: |
-          (sum by (job) (rate(rag_refusals_total{code="503"}[1d])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[1d])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[1d])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[1d])))
           /
-          (sum by (job) (rate(rag_refusals_total{code="503"}[1d])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[1d])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[1d])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[1d])))
       - record: rag:availability_errors:ratio_rate3d
         expr: |
-          (sum by (job) (rate(rag_refusals_total{code="503"}[3d])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[3d])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[3d])) + sum by (job) (rate(rag_answers_total{outcome="failed"}[3d])))
           /
-          (sum by (job) (rate(rag_refusals_total{code="503"}[3d])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[3d])))
+          (sum by (job) (rate(rag_refusals_total{code=~"5.."}[3d])) + sum by (job) (rate(rag_answers_total{outcome=~"answered|failed"}[3d])))
       - alert: RagAvailabilityFastBurn
         expr: |
           (rag:availability_errors:ratio_rate1h > (14.4 * 0.01) and rag:availability_errors:ratio_rate5m > (14.4 * 0.01))
@@ -81,7 +83,7 @@ groups:
           severity: page
         annotations:
           summary: The API is spending its availability budget fast
-          description: 503 refusals and failed answers burn 99% availability at 14.4 times its budget over 1 h, or 6 times over 6 h.
+          description: 5xx refusals and failed answers burn 99% availability at 14.4 times its budget over 1 h, or 6 times over 6 h.
       - alert: RagAvailabilitySlowBurn
         expr: |
           (rag:availability_errors:ratio_rate1d > (3 * 0.01) and rag:availability_errors:ratio_rate2h > (3 * 0.01))
@@ -91,7 +93,7 @@ groups:
           severity: ticket
         annotations:
           summary: The API is spending its availability budget
-          description: 503 refusals and failed answers burn 99% availability at 3 times its budget over 1 d, or at its budget over 3 d.
+          description: 5xx refusals and failed answers burn 99% availability at 3 times its budget over 1 d, or at its budget over 3 d.
 
   # --- NFR-1: 95% of retrievals under 0.3 s ------------------------------------------------
   - name: rag-retrieval-latency
