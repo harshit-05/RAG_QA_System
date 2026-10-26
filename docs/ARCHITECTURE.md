@@ -2820,6 +2820,49 @@ Rejected: OIDC or JWT (an identity provider to run); slowapi (an unmaintained wr
 what is 30 lines here); Redis or Postgres for job records (a service for single-flight rows);
 a separate ingest worker (on one host there is no CPU to isolate it on).
 
+_As built in S3-8 (2026-10-26), from its approved plan (the story's "Plan", D1–D13):_
+
+- **The keys** (`api/auth.py`, `api/keys_cli.py`, `rag-keys`). The file is
+  `{"version": 1, "keys": [...]}`; a name is `[a-z0-9][a-z0-9_-]{0,63}`, and `token` is
+  reserved for `RAG_API_TOKEN`. `KeyRing` looks at the file at most every 5 s and reads it
+  again when its signature moved; a file that cannot be used holds no key, its problem is fixed
+  text (never the path), keys get 503 with `Retry-After: 5`, and readiness is 503 with a `keys`
+  entry (the maintainer's choice at the plan). A wrong token presented while the file is broken
+  draws on the failure bucket too, or guesses at `RAG_API_TOKEN` would meet unthrottled 503s.
+  `rag-keys` writes under a `flock` on `<file>.lock`, through a 0600 temporary file and
+  `os.replace`, the folder fsynced; it loads no web framework and no model stack.
+- **The dependency order on a route:** Origin 403; Host 403 (no credential only);
+  `authenticate` (401, 429 after 10 failures a minute from the address, 503 for a broken
+  file, then the key's own 429); the route's `scope` (403); the query route's own refusals.
+  FastAPI still parses JSON before any dependency, so a malformed body's 422 comes first, now
+  over at most 64 KiB, and draws on no bucket.
+- **The limits** (`api/limits.py`): `Buckets` holds `[tokens, when]` in an `OrderedDict` in
+  recency order; a full table scans from its least recently used end for a full bucket, which
+  under a flood of new addresses is the first it looks at. They are used on the event loop
+  alone, so they take no lock. The 429's `Retry-After` is the wait for one token.
+- **The client's address:** `server.uvicorn_config` always passes `forwarded_allow_ips`, so
+  uvicorn's `FORWARDED_ALLOW_IPS` default never applies; `RAG_API_TRUSTED_PROXIES` takes IP
+  addresses only.
+- **The body limit and the 500s:** two pure ASGI middlewares, `BodyLimit` outermost, then
+  `CountServerErrors`, inside Starlette's error middleware and the contrib instrumentation. An
+  unexpected 500 on a question counts as `rag_refusals_total{code="500",reason="error"}`. The
+  availability SLI reads `code=~"5.."`: the 503s (a broken keys file's included) and the 500s
+  are bad, and the 401, 403, 413 and 429 refusals, the client's or the limits' policy, count on
+  neither side. A pytest ties the rules' selector to `metrics.REFUSAL_CODES`.
+- **The job records** (`api/jobs.py`): one table, `synchronous=NORMAL` (a commit survives the
+  process, which is the abandoned case; a power cut may lose the last few, never the
+  database), a connection per call. A row reads `running` from `ingest()`'s `on_locked`
+  callback. Each guard against the race design review 2 measured, the second read and the
+  conditional verdict, is enough alone; both are kept, and a test removes them together. An
+  abandoned job counts once in `rag_ingest_runs_total{status="failed"}`, by the replica whose
+  write changed its row, so `RagIngestFailed` fires after a crash mid-ingest too. The last 100
+  jobs are kept.
+- **The health probes:** `state.Probe`, a shared task behind `asyncio.shield`, cached for 5 s;
+  an exception is not cached. Readiness reads the alias and the model's server through one
+  each; a question never does.
+- **NFR-5's test** (`tests/test_api_replicas.py`): two apps over one in-memory Qdrant and one
+  `var/`, and a third started afterwards that rebuilds the same view from the shared state.
+
 **DEC-24 — One image, one compose file, and scanning in CI** (SRS §11; §8.3's overlays).
 
 - **The image,** built in stages.

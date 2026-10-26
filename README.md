@@ -143,6 +143,12 @@ before. What needs something from you:
 5. **Exit 2 also means Qdrant could not be used**, for every command that reads or writes
    the index: `rag-ingest`, `rag-query`, `rag-serve`, `rag-eval retrieval` and
    `rag-eval generate`. `rag-eval check` and `score` never touch it.
+6. **The HTTP API limits its callers** ([Access](#access)). Every route but the health probes
+   takes `RAG_API_RATE_LIMIT` requests a minute (60) per key, or per address on a loopback
+   server with none, so a script polling a job faster than once a second gets `429` with
+   `Retry-After`. A body over 64 KiB gets `413`. `X-Forwarded-For` is believed only from
+   `RAG_API_TRUSTED_PROXIES`, never from loopback by default. `RAG_API_TOKEN` keeps working;
+   `rag-keys` makes named keys beside it.
 
 ### Upgrading from v0.2
 
@@ -239,9 +245,9 @@ Ollama down too, and the fallback answers until Ollama is back.
 | --- | --- |
 | `POST /v1/query` `{"question": "..."}` | streams an answer: `sources`, then `token`…, then `done` (or `error`); an optional `"sources": [...]` limits it to those documents |
 | `POST /v1/ingest` `{"rebuild": false}` | starts an ingest job, as `rag-ingest` (`--rebuild` with `true`); 202 with its `job_id` |
-| `GET /v1/ingest/{job_id}` | the job: `status`, `rag-ingest`'s `exit_code`, the `report` and the `log` |
+| `GET /v1/ingest/{job_id}` | the job, whichever replica runs it: `status`, `rag-ingest`'s `exit_code`, the `report` and the `log`; `abandoned` when the server running it died first |
 | `GET /v1/documents` | what the index holds, from its manifest |
-| `GET /v1/health` | 200 when an index is served and Ollama answers, or the hosted fallback can answer in its place; 503, saying what is missing. `breakers` reports each dependency's circuit breaker |
+| `GET /v1/health` | 200 when an index is served and Ollama answers, or the hosted fallback can answer in its place, and the keys file, if one is set, can be used; 503, saying what is missing. `breakers` reports each dependency's circuit breaker. Never rate-limited, and Qdrant and Ollama are each asked at most once per 5 s |
 | `GET /v1/health/live` | 200 while the process runs |
 | `GET /docs`, `/openapi.json` | the docs and the schema, to read: a browser's "Try it out" POST sends `Origin` and gets `403` |
 
@@ -320,8 +326,10 @@ How it behaves:
 - **Leaving stops the answer.** Closing the connection (Ctrl-C on `curl`) stops
   generation, as Ctrl-C does in `rag-query`, and frees the slot at once. If it lands while
   the model reads the prompt, Ollama may finish that step first (see Known limitations).
-- **Ingest jobs run one at a time** (`409` while one runs), and a running `rag-ingest`
-  holds them off as well. When a job publishes a new index, the server switches to it;
+- **Ingest jobs run one at a time** (`409` while one runs, whichever replica is asked), and
+  a running `rag-ingest` holds them off as well. A job whose server died before it ended
+  reads `failed`, with `"abandoned": true`; the next ingest cleans up what it left. The last
+  100 jobs are kept, in `var/jobs.sqlite3`. When a job publishes a new index, the server switches to it;
   answers already streaming finish on the old one. An index that `rag-ingest` publishes
   outside the server is picked up on the next request.
 - **A request cannot choose a component.** The query body is the question and, optionally,
@@ -332,30 +340,91 @@ How it behaves:
 
 | Variable | Default | |
 | --- | --- | --- |
-| `RAG_API_TOKEN` | unset | when set, every endpoint but the health probes needs `Authorization: Bearer <token>` |
+| `RAG_API_KEYS_FILE` | unset | the API keys, made with `rag-keys`; keep it in `var/` (below) |
+| `RAG_API_TOKEN` | unset | one more key, named `token`, with every scope |
+| `RAG_API_RATE_LIMIT` | `60` | requests a minute each key may make, or each address when no key is configured |
+| `RAG_API_TRUSTED_PROXIES` | unset | the reverse proxy's own IP address(es), whose `X-Forwarded-For` names the client; unset, nobody's is believed |
 | `RAG_API_HOST`, `RAG_API_PORT` | `127.0.0.1`, `8000` | `--host` and `--port` override them |
 | `RAG_API_MAX_CONCURRENT` | `1` | answers streamed at once |
 | `RAG_API_METRICS_PORT` | unset | when set, the [metrics](#metrics) for Prometheus, on the API's host and this port |
 
-- **Without a token, the server listens only on this machine.** `rag-serve` refuses any
-  other `--host`, and the server refuses requests whose `Host` header is not loopback,
-  which stops DNS rebinding.
-- **With a token, use plain HTTP only on a network you trust.** The token travels in
-  cleartext until Phase 3 adds TLS, and `rag-serve` warns about it when it listens beyond
-  this machine. Use a long random token, for example `openssl rand -hex 32`.
+**Keys.** Each caller gets a key of its own, with a name and scopes, so one can be revoked
+without the others:
+
+```bash
+export RAG_API_KEYS_FILE=$PWD/var/api-keys.json
+uv run rag-keys add laptop --scope query,ingest   # prints the token, once
+uv run rag-keys add bot --scope query
+uv run rag-keys list                              # names, scopes and dates; never a token
+uv run rag-keys revoke bot                        # a running server refuses it within 5 s
+```
+
+- **A key is sent as `Authorization: Bearer <token>`.** The file keeps only each token's
+  sha256, so a lost token is revoked and replaced, never recovered. `rag-keys` exits 0 when
+  done, 1 when there was nothing to do (a name taken, or one the file does not hold), 2 when it
+  cannot run.
+- **Scopes:** `query` asks questions and lists the documents; `ingest` starts and reads ingest
+  jobs. The docs and the schema take any valid key; the health probes take none. A key
+  without the route's scope gets `403`.
+- **The file lives in `var/`,** which S3-9's compose stack will mount as a folder: a file
+  mounted on its own would keep its old version in the container after `rag-keys` replaced
+  it. A running
+  server reads it again within 5 s of a change. One that is missing or does not parse is
+  refused whole: every key gets `503`, and `GET /v1/health` is `503` and says why, until it
+  parses again; `RAG_API_TOKEN` still works.
+- **Logs and traces carry the key's name** (`api_key`, `rag.api_key.name`), never its token.
+
+**What a refused request gets,** before any answer starts:
+
+| Status | When |
+| --- | --- |
+| `401` | a key is configured, and the request carries no valid one |
+| `403` | the key lacks the route's scope; or the request comes from a web page (`Origin`); or, with no key configured, its `Host` is not loopback |
+| `413` | its body is over 64 KiB, checked before it is read or parsed |
+| `429` | a rate limit, with `Retry-After` (below) |
+| `503` | the keys file cannot be used (`Retry-After: 5`); or, for a question, the server is busy, a dependency is down, or there is no index |
+
+- **Without a credential, the server listens only on this machine.** With neither a keys file
+  nor a token, `rag-serve` refuses any other `--host`, and the server refuses requests whose
+  `Host` header is not loopback, which stops DNS rebinding.
+- **Rate limits.** Each key may make `RAG_API_RATE_LIMIT` requests a minute (a minute's worth
+  at once, then one per refill), and without any key configured, each client address. Ten
+  failed authentications a minute from one address get `429` after that, which slows token
+  guessing; a valid key from the same address is never refused for them. The health probes
+  are never limited, and each asks Qdrant and Ollama at most once per 5 s, however often they
+  are polled.
+- **The client's address** is the connection's own unless it comes from an address in
+  `RAG_API_TRUSTED_PROXIES`: then it is the one that proxy names in `X-Forwarded-For`. Set it
+  to the proxy's own address, never a network range; uvicorn's own `FORWARDED_ALLOW_IPS` is
+  ignored.
+- **Use plain HTTP only on a network you trust.** A key travels in cleartext without TLS,
+  and `rag-serve` warns about it when it listens beyond this machine; S3-9's compose stack will
+  put Caddy, with TLS, in front.
 - **Browsers are refused.** Any request with an `Origin` header gets `403`, and every POST
   must be `application/json`. So a web page you visit cannot reach the server, even on
   localhost. Scripts, `curl` and the CLI send no `Origin`.
 
-Serving another machine on your network, with a token:
+Serving another machine on your network, with a key:
 
 ```bash
-export RAG_API_TOKEN=$(openssl rand -hex 32)
+export RAG_API_KEYS_FILE=$PWD/var/api-keys.json
+TOKEN=$(uv run rag-keys add desktop --scope query)
 uv run rag-serve --host 0.0.0.0
-# from the other machine, with the same token:
-curl -N -X POST http://<server>:8000/v1/query -H "Authorization: Bearer $RAG_API_TOKEN" \
+# from the other machine, with that token:
+curl -N -X POST http://<server>:8000/v1/query -H "Authorization: Bearer $TOKEN" \
      -H 'content-type: application/json' -d '{"question": "What is GLIDER?"}'
 ```
+
+**Several replicas** (NFR-5). Any replica answers any request: the index is served through
+Qdrant's alias, read on every request; the ingest jobs are rows in `var/jobs.sqlite3`; the keys
+are the file; and what a replica caches can be rebuilt from those. So replicas that share
+Qdrant and one `var/` behave as one service, with these limits:
+
+- **Ingestion runs on one host,** since the writer lock and the job records live in its `var/`.
+- **The answer slots and the rate limits are each replica's own:** two replicas allow twice
+  `RAG_API_MAX_CONCURRENT` answers, and a key twice its rate.
+- **One Ollama queues every replica's answers,** so more replicas pay off only once the model
+  server scales too.
 
 Ctrl-C stops `rag-serve`: answers in flight get up to 5 seconds, then it exits 0. A
 second Ctrl-C in those seconds does not hurry it, though uvicorn offers one: the 5
@@ -363,7 +432,7 @@ seconds still run out, then the server's own shutdown (which reports an ingest j
 abandons) is skipped, and uvicorn logs the cancelled tasks as errors. It still exits 0.
 A SIGTERM stops it the same way as one Ctrl-C, and the process then ends by that signal
 (status 143), as service managers expect. It exits 2, with the reason, when it cannot
-start: invalid settings, a non-loopback host without a token, a configuration error,
+start: invalid settings, a non-loopback host without a credential, a configuration error,
 Qdrant or Ollama not answering, or the port in use, the metrics' included.
 
 ## Configuration
@@ -621,8 +690,8 @@ key. Off unless the variable is set; a port in use stops `rag-serve` with exit 2
 | `gen_ai_client_token_usage` | the input and output tokens of each answer, by provider and model, as the OpenTelemetry GenAI conventions name them |
 | `rag_answers_total{outcome}` | answers whose stream began: `answered`, `failed` (an `error` event after the 200), or `cancelled` (the client left) |
 | `rag_fallback_answers_total` | answers the hosted fallback gave: their question and chunks left this machine |
-| `rag_refusals_total{code, reason}` | questions refused before their first byte: `503` `busy`, `dependency_down` or `no_index` |
-| `rag_ingest_runs_total{status}`, `rag_ingest_chunks_total` | the API's ingest jobs, by how they ended, and the chunks they embedded |
+| `rag_refusals_total{code, reason}` | questions refused before their first byte: `503` `busy`, `dependency_down`, `no_index` or `keys_unreadable`; `500` `error`, an unexpected one; `401` `unauthenticated`, `403` `scope`, `413` `too_large`, `429` `rate_limited` or `auth_limited` |
+| `rag_ingest_runs_total{status}`, `rag_ingest_chunks_total` | the API's ingest jobs, by how they ended (an abandoned one as `failed`, counted by the replica that finds it), and the chunks they embedded |
 | `rag_breaker_state{breaker, state}` | 1 for each breaker's current state (`qdrant`, `llm`, `fallback`), as `/v1/health` reports them |
 | `rag_index_documents` | the documents in the index served, 0 while none is |
 
@@ -685,7 +754,7 @@ day's 10%, or three days' 10%.
 
 | Alert | Fires when |
 | --- | --- |
-| `RagAvailabilityFastBurn`, `…SlowBurn` | more than 1% of questions fail, over 30 days: refused with 503, or ending in an `error` event; cancelled ones count on neither side |
+| `RagAvailabilityFastBurn`, `…SlowBurn` | more than 1% of questions fail, over 30 days: refused with a 5xx (a 503, or an unexpected 500), or ending in an `error` event; cancelled ones, and the 401, 403, 413 and 429 refusals, which are the client's or the limits' policy, count on neither side |
 | `RagRetrievalLatencyFastBurn`, `…SlowBurn` | more than 5% of retrievals take over 0.3 s (NFR-1) |
 | `RagSourcesLatencyFastBurn`, `…SlowBurn` | more than 5% of `sources` events take over 2 s (NFR-2a), a client that left after 2 s without them counted as slow; expect the ticket on a CPU host until S3-11's measures land |
 | `RagFirstTokenLatencyFastBurn`, `…SlowBurn` | more than 5% of first tokens take over 300 s (NFR-2b): this CPU's class, so a GPU host edits the bucket. A client that left after 300 s without one counts as slow, so a hung model whose users give up still pages; one that left sooner counts on neither side |
@@ -809,7 +878,8 @@ config.yaml        component library + pipeline assembly
 compose.yaml       Qdrant, the vector store (`docker compose up -d qdrant`)
 .env.example       the variables a shell sets, names only: copy it to .env (not tracked)
 corpus/            your documents; everything in here gets ingested
-var/               paths.state: the writer lock (not tracked)
+var/               paths.state: the writer lock, the ingest jobs' database and the API keys
+                   file (not tracked)
 src/rag_qa/
   config.py        loads config.yaml and resolves its paths
   schema.py        what a valid config is; checked at load
@@ -831,7 +901,8 @@ src/rag_qa/
   answering.py     one answer as a stream of events, for the CLI, the API and evaluation
   observability/   structured logs for every command, the metrics rag-serve serves, and the
                    traces sent to a collector when one is named
-  api/             the rag-serve command: the HTTP API, its ingest jobs and its checks
+  api/             the rag-serve command: the HTTP API, its keys and limits, its ingest jobs
+                   and its checks; and the rag-keys command
   evaluation/      the rag-eval command: retrieval scores (tier 1), and generation
                    scored by RAGAs offline, then checked against the floors (tier 2)
 eval/              the golden set, the floors, the judge's Modelfile and the committed
