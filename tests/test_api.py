@@ -955,7 +955,7 @@ def test_a_job_that_cannot_run_fails_with_rag_ingests_exit_code(
     # cannot hold the flock on ingest()'s behalf.
     error.args = (str(error.args[0]).format(corpus=scratch_config.paths.data),)
 
-    def failing_ingest(config: RagConfig, *, rebuild: bool) -> IngestReport:
+    def failing_ingest(config: RagConfig, *, rebuild: bool, **_: Any) -> IngestReport:
         raise error
 
     monkeypatch.setattr("rag_qa.api.jobs.ingest", failing_ingest)
@@ -970,7 +970,7 @@ def test_a_second_ingest_job_while_one_runs_is_refused_with_409(
 ) -> None:
     release = threading.Event()
 
-    def slow_ingest(config: RagConfig, *, rebuild: bool) -> IngestReport:
+    def slow_ingest(config: RagConfig, *, rebuild: bool, **_: Any) -> IngestReport:
         release.wait(10)
         return IngestReport(found=1)
 
@@ -992,7 +992,9 @@ def test_a_second_ingest_job_while_one_runs_is_refused_with_409(
 def test_an_unknown_job_is_404_and_only_the_last_jobs_are_kept(
     scratch_config: RagConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("rag_qa.api.jobs.ingest", lambda config, *, rebuild: IngestReport(found=1))
+    monkeypatch.setattr(
+        "rag_qa.api.jobs.ingest", lambda config, *, rebuild, **_: IngestReport(found=1)
+    )
     with serve(scratch_config, tmp_path) as (client, _):
         assert client.get("/v1/ingest/nope").status_code == 404
         ids = []
@@ -1348,19 +1350,22 @@ def test_a_slot_is_released_even_when_closing_its_stream_fails(
 def test_a_failure_to_serve_what_a_job_published_never_fails_the_job(
     scratch_config: RagConfig, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    monkeypatch.setattr("rag_qa.api.jobs.ingest", lambda config, *, rebuild: IngestReport(found=1))
+    monkeypatch.setattr(
+        "rag_qa.api.jobs.ingest", lambda config, *, rebuild, **_: IngestReport(found=1)
+    )
 
     async def failing_refresh() -> None:
         raise RuntimeError("cannot reopen")
 
-    async def scenario() -> api_jobs.IngestJob:
+    async def scenario() -> api_jobs.IngestJob | None:
         jobs = api_jobs.IngestJobs(scratch_config, after=failing_refresh)
-        job = jobs.start(rebuild=False)
+        started = await jobs.start(rebuild=False)
         while jobs.running is not None or jobs._tasks:
             await asyncio.sleep(0.01)
-        return job
+        return await jobs.get(started.job_id)
 
     job = asyncio.run(scenario())
+    assert job is not None
     assert (job.status, job.exit_code) == ("succeeded", 0)
     assert f"Could not serve what ingest job {job.job_id} published" in caplog.text
 
@@ -1375,7 +1380,7 @@ def test_stopping_the_server_abandons_a_running_job_and_says_so(
     # does not wait for it.
     release = threading.Event()
 
-    def stuck_ingest(config: RagConfig, *, rebuild: bool) -> IngestReport:
+    def stuck_ingest(config: RagConfig, *, rebuild: bool, **_: Any) -> IngestReport:
         release.wait(10)
         return IngestReport(found=1)
 

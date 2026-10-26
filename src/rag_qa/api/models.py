@@ -144,7 +144,9 @@ class IngestAccepted(BaseModel):
 
 class IngestJobOut(BaseModel):
     """``GET /v1/ingest/{job_id}``. ``exit_code`` is what ``rag-ingest`` would have
-    returned, and ``log`` the run's log lines, path-free."""
+    returned, and ``log`` the run's log lines, path-free. ``abandoned`` is true for a job whose
+    process died before it ended (S3-8, DEC-23): its ``status`` is then ``failed``, and its
+    ``exit_code`` and ``report`` are ``null``."""
 
     job_id: str
     status: JobStatus
@@ -153,3 +155,4 @@ class IngestJobOut(BaseModel):
     exit_code: int | None
     report: IngestReportOut | None
     log: list[str]
+    abandoned: bool

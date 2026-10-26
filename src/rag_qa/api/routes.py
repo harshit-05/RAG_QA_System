@@ -65,7 +65,7 @@ from rag_qa import resilience
 from rag_qa.answering import AnswerEvent, Done, Sources, Token, answered_line, stream_answer
 from rag_qa.api import auth
 from rag_qa.api.auth import ApiKey, KeyRing
-from rag_qa.api.jobs import IngestJob, JobRunningError
+from rag_qa.api.jobs import KEEP, IngestJob, JobRunningError
 from rag_qa.api.limits import AUTH_FAILURES_PER_MINUTE, Limits, client_key
 from rag_qa.api.models import (
     BreakerHealth,
@@ -552,7 +552,7 @@ async def query(
 
 
 def job_out(job: IngestJob) -> IngestJobOut:
-    report = None if job.report is None else IngestReportOut(**asdict(job.report))
+    report = None if job.report is None else IngestReportOut.model_validate(job.report)
     return IngestJobOut(
         job_id=job.job_id,
         status=job.status,
@@ -561,6 +561,7 @@ def job_out(job: IngestJob) -> IngestJobOut:
         exit_code=job.exit_code,
         report=report,
         log=list(job.log),
+        abandoned=job.abandoned,
     )
 
 
@@ -579,7 +580,7 @@ async def start_ingest(
     """Start an ingest job, as ``rag-ingest`` (``--rebuild`` with ``rebuild: true``)."""
     caller: ApiKey = request.state.caller
     try:
-        job = serving.jobs.start(rebuild=body.rebuild, api_key=caller.name or None)
+        job = await serving.jobs.start(rebuild=body.rebuild, api_key=caller.name or None)
     except JobRunningError as e:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -593,10 +594,13 @@ async def start_ingest(
 async def ingest_status(
     job_id: str, serving: Annotated[Serving, Depends(get_serving)]
 ) -> IngestJobOut:
-    """An ingest job: its status, ``rag-ingest``'s exit code, the report and the log."""
-    job = serving.jobs.get(job_id)
+    """An ingest job, whichever replica ran it: its status, ``rag-ingest``'s exit code, the
+    report and the log; ``abandoned`` when its process died before it ended (DEC-23)."""
+    job = await serving.jobs.get(job_id)
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such ingest job (the last 20 are kept)")
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"no such ingest job (the last {KEEP} are kept)"
+        )
     return job_out(job)
 
 
