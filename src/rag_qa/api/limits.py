@@ -52,8 +52,9 @@ from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-#: The largest request body accepted, in bytes. A question and its sources fit in a fraction of
-#: it: the request model allows 2,000 characters of question and 50 document names.
+#: The largest request body accepted, in bytes. The request model's largest ASCII request, 2,000
+#: characters of question and 50 document names of 1,024, is about 53 KB and fits (a test pins
+#: it). Names of multi-byte characters can pass it: a source must be a path the index holds.
 MAX_BODY_BYTES: Final = 64 * 1024
 
 #: What a body over the limit is told: fixed text, the same for both ways of finding out.
@@ -66,7 +67,8 @@ def declared_length(scope: Scope) -> int | None:
     for name, value in scope.get("headers", ()):
         if name == b"content-length":
             text = value.decode("latin-1").strip()
-            return int(text) if text.isdigit() else None
+            # ASCII only: str.isdigit() also accepts '²', which int() then refuses.
+            return int(text) if text.isascii() and text.isdigit() else None
     return None
 
 

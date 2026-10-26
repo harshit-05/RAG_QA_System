@@ -229,6 +229,62 @@ def test_a_broken_file_fails_closed_until_it_parses_again(
     assert ring.problem is None
 
 
+def test_a_read_the_system_refused_is_tried_again_at_the_next_look(
+    keys_file: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A full table of open files or an I/O error says nothing about the file: held closed until
+    # the file changed, every key would stay refused (S3-8's first review).
+    clock = Clock()
+    tokens = write_keys(keys_file, bot="query")
+    ring = KeyRing(keys_file, None, clock=clock)
+    os.utime(keys_file, ns=(1, 1))  # a new signature, so the file is read
+    refused = [OSError(24, "Too many open files")] * 2
+    real = Path.read_text
+
+    def flaky(self: Path, *args: Any, **kwargs: Any) -> str:
+        if self == keys_file and refused:
+            raise refused.pop()
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    caplog.set_level(logging.INFO, logger="rag_qa.api.auth")
+    clock.now += 5
+    assert ring.match(tokens["bot"]) is None
+    assert ring.problem == "the keys file cannot be read"
+    clock.now += 5
+    assert ring.match(tokens["bot"]) is None  # refused again: tried again, not held
+    assert caplog.text.count("cannot be used") == 1  # and said once
+    clock.now += 5
+    assert ring.match(tokens["bot"]) is not None  # the system lets it be read: no edit needed
+    assert ring.problem is None
+    assert "Read the keys file" in caplog.text
+
+
+def test_a_file_that_is_unchanged_is_not_read_again(
+    keys_file: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    clock = Clock()
+    write_keys(keys_file, bot="query")
+    ring = KeyRing(keys_file, None, clock=clock)
+    caplog.set_level(logging.WARNING, logger="rag_qa.api.auth")
+    reads: list[Path] = []
+    real = auth.read_keys
+    monkeypatch.setattr(auth, "read_keys", lambda path: reads.append(path) or real(path))
+    for _ in range(3):
+        clock.now += 5
+        ring.refresh()
+    assert reads == []
+    keys_file.write_text("{half a file")  # broken, and then left alone
+    clock.now += 5
+    ring.refresh()
+    assert "cannot be used" in caplog.text
+    caplog.clear()
+    for _ in range(3):
+        clock.now += 5
+        ring.refresh()
+    assert len(reads) == 1 and "cannot be used" not in caplog.text
+
+
 def test_a_missing_file_at_start_up_holds_no_key_and_is_a_warning(
     keys_file: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

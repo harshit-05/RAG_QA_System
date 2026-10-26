@@ -8,6 +8,7 @@ sent over a real socket, with ``Content-Length`` and chunked.
 """
 
 import asyncio
+import json
 from collections.abc import Iterable
 from typing import Any
 
@@ -26,6 +27,7 @@ from rag_qa.api.limits import (
     client_key,
     declared_length,
 )
+from rag_qa.api.models import MAX_QUESTION_CHARS, MAX_SOURCE_CHARS, MAX_SOURCES, QueryRequest
 
 
 def scope(*headers: tuple[bytes, bytes], path: str = "/v1/query") -> Scope:
@@ -84,11 +86,30 @@ def run(
 
 @pytest.mark.parametrize(
     ("value", "length"),
-    [(b"10", 10), (b" 65536 ", 65536), (b"", None), (b"-1", None), (b"1e3", None)],
+    [
+        (b"10", 10),
+        (b" 65536 ", 65536),
+        (b"", None),
+        (b"-1", None),
+        (b"1e3", None),
+        (b"\xb2", None),  # '²' is a digit to str.isdigit(), and int() refuses it
+    ],
 )
 def test_the_declared_length_is_a_whole_number_or_nothing(value: bytes, length: int | None) -> None:
     assert declared_length(scope((b"content-length", value))) == length
     assert declared_length(scope()) is None
+
+
+def test_the_request_model_s_largest_ascii_request_fits_the_limit() -> None:
+    # The comment on MAX_BODY_BYTES says so; the model's bounds move on their own.
+    body = json.dumps(
+        {
+            "question": "q" * MAX_QUESTION_CHARS,
+            "sources": ["s" * MAX_SOURCE_CHARS] * MAX_SOURCES,
+        }
+    )
+    QueryRequest.model_validate_json(body)
+    assert len(body.encode()) < MAX_BODY_BYTES
 
 
 def test_a_declared_length_over_the_limit_is_413_and_the_app_never_runs() -> None:

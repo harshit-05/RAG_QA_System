@@ -15,7 +15,9 @@ keeps its old inode when the host replaces it, and the container would never see
 
 **A file that cannot be used fails closed:** missing, unreadable, not JSON or not a keys file,
 it holds no key at all until it parses again, and :attr:`KeyRing.problem` says why, in fixed
-text that never names the path (it goes over HTTP). ``RAG_API_TOKEN`` keeps working.
+text that never names the path (it goes over HTTP). ``RAG_API_TOKEN`` keeps working. A file that
+does not parse stays closed until it changes; one the operating system would not let be read is
+tried again at every look, since nothing is wrong with it (S3-8's first review).
 
 **The check** (:meth:`KeyRing.match`) hashes the presented token and compares the digest with
 every key's through ``hmac.compare_digest``, on bytes, with no early exit: every failure takes
@@ -98,6 +100,12 @@ class KeysFileError(ValueError):
     health reports it."""
 
 
+class KeysFileUnreadableError(KeysFileError):
+    """The operating system would not let the file be read (a full table of open files, an I/O
+    error). Unlike a file that does not parse, nothing about the file is wrong, so whoever
+    reads it tries again at its next look (:meth:`KeyRing.refresh`)."""
+
+
 def _key(entry: object, at: int) -> ApiKey:
     where = f"the keys file's key {at + 1}"
     if not isinstance(entry, dict) or set(entry) != {"name", "scopes", "sha256", "created"}:
@@ -159,7 +167,9 @@ def read_keys(path: Path) -> tuple[ApiKey, ...]:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         raise KeysFileError("the keys file does not exist") from None
-    except (OSError, UnicodeDecodeError):
+    except OSError:
+        raise KeysFileUnreadableError("the keys file cannot be read") from None
+    except UnicodeDecodeError:  # the file's own content: reading it again changes nothing
         raise KeysFileError("the keys file cannot be read") from None
     return parse(text)
 
@@ -228,16 +238,24 @@ class KeyRing:
         try:
             keys = read_keys(self.path)
         except KeysFileError as e:
+            # A read the system refused says nothing about the file: forget its signature, so
+            # the next look reads it again, instead of holding every key closed until the file
+            # changes. Said once, not at every look.
+            again = isinstance(e, KeysFileUnreadableError)
+            repeated = again and self.problem == str(e)
+            if again:
+                self._signature = None
             self._keys = ()
             self.problem = str(e)
-            # The server log may name the path; HTTP gets the fixed text alone.
-            logger.warning(
-                "The keys file %s cannot be used: %s. Every key is refused with 503 until it "
-                "can%s.",
-                self.path,
-                self.problem,
-                "; RAG_API_TOKEN still works" if self._token is not None else "",
-            )
+            if not repeated:
+                # The server log may name the path; HTTP gets the fixed text alone.
+                logger.warning(
+                    "The keys file %s cannot be used: %s. Every key is refused with 503 until "
+                    "it can%s.",
+                    self.path,
+                    self.problem,
+                    "; RAG_API_TOKEN still works" if self._token is not None else "",
+                )
             return
         if self.problem is not None or self._keys != keys:
             count = len(keys)
