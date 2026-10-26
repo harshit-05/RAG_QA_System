@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done 2026-10-26 (PR #26, awaiting its merge). Plan approved 2026-10-25 (below, "Plan"); on Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-25 (`845133b` … `0815ac1`). The first review (2026-10-25, on `0815ac1`) found one false claim (a span's exception text), six gaps in what the tests would catch and two smaller things; the second (2026-10-26, on `0a11270`) found an alert that paged a healthy idle server, and a check that gated no merge, for the maintainer. The fixes are on the PR (`cc11d55` … `98ddc6e`). CI is green on `98ddc6e` (run 40235082842: `check`, `eval-retrieval`, `deploy-config`). The maintainer adds `deploy-config` to `main`'s ruleset after the merge. |
+| **Status** | Done 2026-10-26 (PR #26, merged 2026-10-26 as `e6e1f26`; CI green on `main` after it, run 40238581649). Plan approved 2026-10-25 (below, "Plan"); on Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-25 (`845133b` … `0815ac1`). The first review (2026-10-25, on `0815ac1`) found one false claim (a span's exception text), six gaps in what the tests would catch and two smaller things; the second (2026-10-26, on `0a11270`) found an alert that paged a healthy idle server, and a check that gated no merge, for the maintainer. The fixes are on the PR (`cc11d55` … `98ddc6e`). CI is green on `98ddc6e` (run 40235082842: `check`, `eval-retrieval`, `deploy-config`) and on the close-out record, `492b66f` (run 40237334537). The maintainer added `deploy-config` to `main`'s ruleset after the merge (2026-10-26). An answer abandoned before its first token was invisible to every alert: being fixed after the merge, on `fix/s3-7b-abandoned-answers` ("After the merge"). |
 | **Closes** | NFR-10 (traces); DEC-22 (traces and alerts); DEC-24's `deploy-config` job |
 | **Depends on** | S3-7 |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -472,3 +472,24 @@ For the maintainer:
   an idle server paged.
 - **`deploy-config` joins `main`'s ruleset at this story's merge,** not at S3-9 (DEC-24): the
   maintainer, at the second review.
+
+## After the merge: answers abandoned before their first token (2026-10-26)
+
+The second review's nit that NFR-2b's SLI leaves out answers cancelled before their first
+token is a blind spot, not only a bias. Three exclusions combine: the availability SLI drops
+cancelled answers; `rag_ttft_seconds` is observed only at a first token; and a cancel calls
+`tried.abandoned()` ("nothing learned about the service"), so the breaker never trips. Only a
+client that waits out Ollama's 600 s read timeout produces a failure. So a hung model whose
+users give up first is a whole outage no alert sees: a promtool probe of `rules.yml`, two hours
+of questions all cancelled before a first token, kept `RagAvailabilityFastBurn`, `…SlowBurn`,
+`RagFirstTokenLatencyFastBurn`, `…SlowBurn`, `RagBreakerOpen` and `RagTargetDown` quiet. A
+retrieval that hangs is the same for the `sources` SLI.
+
+**The maintainer's decision (2026-10-26):** fix it before S3-8, on
+`fix/s3-7b-abandoned-answers`, the `sources` stage included. A histogram of how long an answer
+had waited when its client left before its first token; each SLI counts those past its
+objective as slow, and leaves younger ones out of both sides. (Filled at the fix's close-out.)
+
+The same probe found one more thing, for the backlog: on a quiet host (a question every 20
+minutes), one failed answer pages `RagAvailabilityFastBurn`, since with so few events one
+failure is 14.4 times the budget.

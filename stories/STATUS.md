@@ -5,13 +5,27 @@
 
 ## Now
 
-**Next action: once CI is green on the close-out record, merge PR #26 with a merge commit;
-then add `deploy-config` to `main`'s ruleset (the second review's PUT); then S3-8,**
-plan-first, on `feat/s3-8-api-hardening`. The PR body and the merge message name the breaking
-change: a malformed `OTEL_EXPORTER_OTLP_ENDPOINT` exits 2 in `rag-serve`, `rag-query` and
-`rag-ingest`.
+**Next action: the fix for answers abandoned before their first token, on
+`fix/s3-7b-abandoned-answers`; then S3-8,** plan-first, on `feat/s3-8-api-hardening`. The
+maintainer chose the fix first (2026-10-26). An answer whose client leaves before its first
+token counts in no SLI and trips no breaker, so a hung model whose users give up is invisible
+to every alert: a promtool probe of S3-7b's rules ran two hours of it, and nothing fired. A
+histogram of how long such answers had waited lets the first-token and `sources` SLIs count
+those past their objective as slow. It closes the NFR-2b backlog line, and its detail goes in
+S3-7b's story, as `fix/s2-1-cancel-race`'s went in S2-1's.
 
-**S3-7b is done (2026-10-26, PR #26).** Detail in the story.
+**S3-7b is merged** (2026-10-26, PR #26, merge commit `e6e1f26`). CI was green on the PR's last
+head, `492b66f`, the close-out record (run 40237334537), and is green on `main` after the
+merge: CI run 40238581649 (`check`, `deploy-config` and `eval-retrieval`) and Dependency Graph
+run 40238587194. The PR's title and the merge message carry the breaking change, the merge's
+`BREAKING-CHANGE:` trailer parseable. **`deploy-config` is a required check since the
+merge:** the maintainer's PUT to ruleset 25561360 (2026-10-26, the second review's recipe)
+added it beside `check` and `eval-retrieval`, still on a branch up to date with `main`. The
+live index is unchanged: the `rag_qa` alias names
+`rag_qa--gen-20261019T153834837765Z-7f20891e`, and S3-2's parity baseline is still
+`~/dev/rag-s3-2/contexts-qdrant.json` (sha256 `5a36e2f9…a074cbc`).
+
+**S3-7b was done before its merge (2026-10-26).** Detail in the story.
 
 - **What it built:** OpenTelemetry traces over OTLP/HTTP from `rag-serve`, `rag-query` and
   `rag-ingest`, on only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, from a provider of their
@@ -297,13 +311,12 @@ IDENTICAL.
 **`main` is protected** by ruleset 25561360 (applied 2026-10-21, ahead of S3-9).
 
 - **What it enforces:** no deletion and no force-push; a pull request for every change, with
-  0 approvals; and `check` and `eval-retrieval` from GitHub Actions (integration 15368)
-  passing, on a branch up to date with `main`. Squash and rebase merges are disabled in the
-  repository settings, so a merge commit is the only method.
-- **§11's rule that a red stage blocks a merge now holds** for the two existing jobs. S3-7b
-  adds a third, `deploy-config`, which the ruleset does not require yet: its second review
-  hands over a PUT that adds it after S3-7b's merge. S3-9 adds `container` the same way, and
-  never creates a second ruleset.
+  0 approvals; and `check`, `eval-retrieval` and, since 2026-10-26, `deploy-config` from
+  GitHub Actions (integration 15368) passing, on a branch up to date with `main`. Squash and
+  rebase merges are disabled in the repository settings, so a merge commit is the only method.
+- **§11's rule that a red stage blocks a merge now holds** for all three jobs. `deploy-config`
+  joined after S3-7b's merge, by the maintainer's PUT (S3-7b's second review's recipe). S3-9
+  adds `container` the same way, and never creates a second ruleset.
 - **Records go on the story's branch.** `main` takes no direct push, so a close-out after
   the merge (S1-8's and S2-3's precedent) needs a pull request of its own. Record the merge
   of one story on the next story's branch, as S3-5 does for S3-4.
@@ -1174,8 +1187,8 @@ The final story of each phase performs the tag + version bump at close-out.
 - [x] Resolve DEC-1 / DEC-2 — done in the Phase 0 arch pass, 2026-09-18.
 
 - [x] **A ruleset on `main`** — ruleset 25561360, applied 2026-10-21 ("Now"). It requires
-      `check` and `eval-retrieval`; S3-7b's second review's recipe extends it with
-      `deploy-config` after that story's merge, and S3-9's with `container`.
+      `check`, `eval-retrieval` and `deploy-config` (the last since 2026-10-26, after S3-7b's
+      merge); S3-9's recipe adds `container`.
 
 - [x] **Phase 2 (S2-5b): somewhere to run tier-2 scoring.** Done 2026-10-11: a Colab T4,
   with Ollama pinned to 0.22.1 and outputs on Google Drive. That is about 35 min per
@@ -1694,7 +1707,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Done 2026-10-22 (PR #23, merged 2026-10-22) |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Done 2026-10-23 (PR #24, merged 2026-10-23) |
 | [S3-7](phase-3/S3-7-observability.md) | Structured logs, metrics and the capacity benchmarks | NFR-10 (logs, metrics), NFR-1, NFR-2 (a), NFR-3, DEC-22 (logs, metrics) | S3-6 | Done 2026-10-25 (PR #25, merged 2026-10-25) |
-| [S3-7b](phase-3/S3-7b-traces-alerts.md) | Traces and alerts | NFR-10 (traces), DEC-22 (traces, alerts) | S3-7 | Done 2026-10-26 (PR #26) |
+| [S3-7b](phase-3/S3-7b-traces-alerts.md) | Traces and alerts | NFR-10 (traces), DEC-22 (traces, alerts) | S3-7 | Done 2026-10-26 (PR #26, merged 2026-10-26) |
 | [S3-8](phase-3/S3-8-api-hardening.md) | API keys, rate limits and a stateless query tier | NFR-5, DEC-23 | S3-7b | Todo |
 | [S3-9](phase-3/S3-9-containers.md) | Containers, compose, TLS and CI scanning | §11 (CI, containers, config), §8.3, §9 LLM05, DEC-24 | S3-8 | Todo |
 | [S3-10](phase-3/S3-10-backup-restore.md) | Backup and restore | §11 (backup and DR), DEC-25 | S3-9 | Todo |
@@ -1912,11 +1925,20 @@ diffed this backlog against `main`'s: no line was dropped.
   metric, there being no HTTP status counter. S3-8 adds refusals of its own (401, 413, 429)
   and touches the middleware: count the 5xx there, or say in the README that the SLI does not.
 
-- **Before NFR-2b's alert is trusted — answers cancelled before their first token** (S3-7b's
-  second review). A client that gives up after 300 s records no first token and counts on
-  neither side of the SLI, so slower answers make it look better. Counting such a cancel as
-  slow needs its age at the cancel. Decide it with NFR-2b's times (DEC-27 (b): S3-11 reports
-  a T4's; S3-12's amend session settles the SLO).
+- **Being fixed on `fix/s3-7b-abandoned-answers` — answers cancelled before their first
+  token** (S3-7b's second review; the maintainer, 2026-10-26, "Now"). A client that gives up
+  records no first token and counts in no SLI, and the cancel teaches the breaker nothing, so
+  a hung model whose users leave first is invisible to every alert (S3-7b's story, "After the
+  merge"). A histogram of how long such answers had waited; the first-token and `sources`
+  SLIs count those past their objective as slow.
+
+- **Before the alerts get a real receiver — one failed answer pages a quiet host** (a
+  promtool probe at S3-7b's merge). With a question every 20 minutes, a single failed answer
+  is 14.4 times the 1% budget over both the 1 h and the 5 m window, so
+  `RagAvailabilityFastBurn` pages at once. The SRE workbook's remedies: a minimum request
+  count beside the burn rate, or synthetic traffic (here a whole CPU generation per probe).
+  The receiver is null today (`deploy/alertmanager/alertmanager.yml`), so no page reaches
+  anyone yet.
 
 - **Whichever story next runs `tests/test_fallback_openai.py` — a stale assertion** (found in
   S3-7b). `test_the_fallback_streams_the_answer_and_sends_what_the_entry_says` asserts that
