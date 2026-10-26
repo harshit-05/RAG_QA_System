@@ -615,7 +615,8 @@ key. Off unless the variable is set; a port in use stops `rag-serve` with exit 2
 | `rag_retrieval_seconds` | one retrieval's query embedding and vector search, the rerank left out: what NFR-1 bounds (p95 under 0.3 s) |
 | `rag_rerank_seconds` | one retrieval's rerank |
 | `rag_sources_seconds` | from a question to its `sources` event: what NFR-2a bounds (p95 under 2 s, with the model idle) |
-| `rag_ttft_seconds` | from a question to its first token (NFR-2b), cancelled answers included |
+| `rag_ttft_seconds` | from a question to its first token (NFR-2b), answers cancelled after it included |
+| `rag_abandoned_seconds{waiting_for}` | how long a question had waited when its client left before the first token, by what it still waited for: `sources`, or `first_token` after them. The latency alerts count those past their objective as slow |
 | `rag_answer_seconds` | from a question to the end of its complete answer |
 | `gen_ai_client_token_usage` | the input and output tokens of each answer, by provider and model, as the OpenTelemetry GenAI conventions name them |
 | `rag_answers_total{outcome}` | answers whose stream began: `answered`, `failed` (an `error` event after the 200), or `cancelled` (the client left) |
@@ -686,8 +687,8 @@ day's 10%, or three days' 10%.
 | --- | --- |
 | `RagAvailabilityFastBurn`, `…SlowBurn` | more than 1% of questions fail, over 30 days: refused with 503, or ending in an `error` event; cancelled ones count on neither side |
 | `RagRetrievalLatencyFastBurn`, `…SlowBurn` | more than 5% of retrievals take over 0.3 s (NFR-1) |
-| `RagSourcesLatencyFastBurn`, `…SlowBurn` | more than 5% of `sources` events take over 2 s (NFR-2a); expect the ticket on a CPU host until S3-11's measures land |
-| `RagFirstTokenLatencyFastBurn`, `…SlowBurn` | more than 5% of first tokens take over 300 s (NFR-2b): this CPU's class, so a GPU host edits the bucket |
+| `RagSourcesLatencyFastBurn`, `…SlowBurn` | more than 5% of `sources` events take over 2 s (NFR-2a), a client that left after 2 s without them counted as slow; expect the ticket on a CPU host until S3-11's measures land |
+| `RagFirstTokenLatencyFastBurn`, `…SlowBurn` | more than 5% of first tokens take over 300 s (NFR-2b): this CPU's class, so a GPU host edits the bucket. A client that left after 300 s without one counts as slow, so a hung model whose users give up still pages; one that left sooner counts on neither side |
 | `RagBreakerOpen` | a dependency's breaker has not closed for 5 minutes and keeps opening again, its probes failing; one left half-open by an idle server after its dependency came back does not fire. For the model's, while the hosted fallback answers, a ticket that says answers leave the host |
 | `RagIngestFailed` | an API ingest job failed in the last hour |
 | `RagTargetDown` | a replica has not answered its scrape for 5 minutes |
