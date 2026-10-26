@@ -10,8 +10,11 @@
 # Reading the series: "0+10x420" is 421 samples, 0, 10, ... 4200, one per interval; a segment
 # that follows starts at the next value, so a counter never stalls for a sample between two
 # phases. The latency series give a histogram's count and its bucket at the objective: what
-# the bucket does not count is slow. The availability series give the answers by outcome and
-# the 503 refusals; cancelled answers count on neither side.
+# the bucket does not count is slow. Beside them, the answers abandoned before their event
+# (rag_abandoned_seconds, S3-7b's fix), flat at 0 where a scenario has none: the SLI adds
+# them, and a missing series would empty it, as the app's every label set at 0 never does.
+# The availability series give the answers by outcome and the 503 refusals; cancelled
+# answers count on neither side.
 #
 # The rules are evaluated every 5 minutes, so alerts change state only then, and every eval
 # time is a multiple of 5 minutes: promtool evaluates all 41 rules at every step, and at one
@@ -43,8 +46,8 @@ tests:
         values: '0+1x120'
       - series: 'rag_refusals_total{job="rag",instance="app:9464",code="429",reason="rate_limited"}'
         values: '0+3x120'
-      # Latency: 4 a minute, 3 at or under the objective: a quarter are slow. The bucket beside
-      # it is never read.
+      # Latency: 4 a minute, 3 at or under the objective: a quarter are slow (retrieval), before
+      # the abandoned answers below. The bucket beside it is never read.
       - series: 'rag_retrieval_seconds_count{job="rag",instance="app:9464"}'
         values: '0+4x120'
       - series: 'rag_retrieval_seconds_bucket{job="rag",instance="app:9464",le="0.3"}'
@@ -63,6 +66,23 @@ tests:
         values: '0+3x120'
       - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="450.0"}'
         values: '0+4x120'
+      # Abandoned before their event (S3-7b's fix), a minute: 3 waiting for their sources, 1 under
+      # 2 s and 2 under 300 s; 3 waiting for their first token after them, all past 300 s. A
+      # wait past the objective is slow, a shorter one counts on neither side. Sources: 1 slow
+      # of 4 seen, and 2 abandoned past 2 s: 3 of 6. First token: 1 of 4, and 1 + 3 abandoned
+      # past 300 s: 5 of 8. Each value differs from what a wrong stage, objective or side gives.
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="sources"}'
+        values: '0+3x120'
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="sources",le="2.0"}'
+        values: '0+1x120'
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="sources",le="300.0"}'
+        values: '0+2x120'
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="first_token"}'
+        values: '0+3x120'
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="first_token",le="2.0"}'
+        values: '0x120'
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="first_token",le="300.0"}'
+        values: '0x120'
     promql_expr_test:
       - expr: rag:availability_errors:ratio_rate30m
         eval_time: 60m
@@ -78,12 +98,12 @@ tests:
         eval_time: 60m
         exp_samples:
           - labels: 'rag:sources_slow:ratio_rate30m{job="rag"}'
-            value: 0.25
+            value: 0.5
       - expr: rag:ttft_slow:ratio_rate30m
         eval_time: 60m
         exp_samples:
           - labels: 'rag:ttft_slow:ratio_rate30m{job="rag"}'
-            value: 0.25
+            value: 0.625
 
   # --- availability: 99% over 30 days -----------------------------------------------------
   - name: availability, fast burn through 1 h and 5 m - a 15-minute outage after 7 good hours
@@ -303,6 +323,10 @@ tests:
         values: *fast1_count
       - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="2.0"}'
         values: *fast1_bucket
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="sources"}'
+        values: &never '0x1000'
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="sources",le="2.0"}'
+        values: *never
     alert_rule_test:
       - eval_time: 450m
         alertname: RagSourcesLatencyFastBurn
@@ -328,6 +352,10 @@ tests:
         values: *fast2_count
       - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="2.0"}'
         values: *fast2_bucket
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="sources"}'
+        values: *never
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="sources",le="2.0"}'
+        values: *never
     alert_rule_test:
       - eval_time: 600m
         alertname: RagSourcesLatencyFastBurn
@@ -348,6 +376,10 @@ tests:
         values: *slow1_count
       - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="2.0"}'
         values: *slow1_bucket
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="sources"}'
+        values: *never
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="sources",le="2.0"}'
+        values: *never
     alert_rule_test:
       - eval_time: 24h
         alertname: RagSourcesLatencySlowBurn
@@ -372,6 +404,10 @@ tests:
         values: *slow2_count
       - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="2.0"}'
         values: *slow2_bucket
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="sources"}'
+        values: *never
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="sources",le="2.0"}'
+        values: *never
     alert_rule_test:
       - eval_time: 24h
         alertname: RagSourcesLatencySlowBurn
@@ -386,6 +422,10 @@ tests:
         values: *burst_count
       - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="2.0"}'
         values: *burst_bucket
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="sources"}'
+        values: *never
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="sources",le="2.0"}'
+        values: *never
     alert_rule_test:
       - eval_time: 26h
         alertname: RagSourcesLatencySlowBurn
@@ -402,6 +442,10 @@ tests:
         values: *fast1_count
       - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
         values: *fast1_bucket
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="first_token"}'
+        values: *never
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="first_token",le="300.0"}'
+        values: *never
     alert_rule_test:
       - eval_time: 450m
         alertname: RagFirstTokenLatencyFastBurn
@@ -427,6 +471,10 @@ tests:
         values: *fast2_count
       - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
         values: *fast2_bucket
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="first_token"}'
+        values: *never
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="first_token",le="300.0"}'
+        values: *never
     alert_rule_test:
       - eval_time: 600m
         alertname: RagFirstTokenLatencyFastBurn
@@ -447,6 +495,10 @@ tests:
         values: *slow1_count
       - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
         values: *slow1_bucket
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="first_token"}'
+        values: *never
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="first_token",le="300.0"}'
+        values: *never
     alert_rule_test:
       - eval_time: 24h
         alertname: RagFirstTokenLatencySlowBurn
@@ -471,6 +523,10 @@ tests:
         values: *slow2_count
       - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
         values: *slow2_bucket
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="first_token"}'
+        values: *never
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="first_token",le="300.0"}'
+        values: *never
     alert_rule_test:
       - eval_time: 24h
         alertname: RagFirstTokenLatencySlowBurn
@@ -485,12 +541,102 @@ tests:
         values: *burst_count
       - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
         values: *burst_bucket
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="first_token"}'
+        values: *never
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="first_token",le="300.0"}'
+        values: *never
     alert_rule_test:
       - eval_time: 26h
         alertname: RagFirstTokenLatencySlowBurn
         exp_alerts: []
       - eval_time: 26h
         alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts: []
+
+  # --- answers abandoned before their event (S3-7b's fix) ---------------------------------
+  - name: NFR-2b, a hung model whose clients leave after 5 minutes pages within the half hour
+    interval: 1m
+    input_series:
+      # An hour of first tokens, all under 300 s; then none, and every client leaves after
+      # more than 300 s. Before the fix nothing fired: the cancels counted in no SLI.
+      - series: 'rag_ttft_seconds_count{job="rag",instance="app:9464"}'
+        values: '0+2x60 120+0x60'
+      - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
+        values: '0+2x60 120+0x60'
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="first_token"}'
+        values: '0x60 2+2x59'
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="first_token",le="300.0"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 60m # answering
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts: []
+      - eval_time: 75m # 15 minutes hung: 20% of the history, under 30%; 25% of the hour
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts: []
+      - eval_time: 95m # 35 minutes: 37% of the history, and all of the last 30 minutes
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: page }
+            exp_annotations: *ttft_fast
+
+  - name: NFR-2a, a hung retrieval whose clients leave pages within the half hour, NFR-2b not
+    interval: 1m
+    input_series:
+      # An hour of sources events under 2 s; then none, every client leaving after more than
+      # 2 s and less than 300: slow for NFR-2a, and for NFR-2b no first token known late.
+      - series: 'rag_sources_seconds_count{job="rag",instance="app:9464"}'
+        values: '0+10x60 600+0x60'
+      - series: 'rag_sources_seconds_bucket{job="rag",instance="app:9464",le="2.0"}'
+        values: '0+10x60 600+0x60'
+      - series: 'rag_ttft_seconds_count{job="rag",instance="app:9464"}'
+        values: '0+10x60 600+0x60'
+      - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
+        values: '0+10x60 600+0x60'
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="sources"}'
+        values: '0x60 10+10x59'
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="sources",le="2.0"}'
+        values: '0x120'
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="sources",le="300.0"}'
+        values: '0x60 10+10x59'
+    alert_rule_test:
+      - eval_time: 75m
+        alertname: RagSourcesLatencyFastBurn
+        exp_alerts: []
+      - eval_time: 95m
+        alertname: RagSourcesLatencyFastBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: page }
+            exp_annotations: *sources_fast
+      - eval_time: 95m # they left before 300 s: no first-token page on top
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts: []
+
+  - name: NFR-2b, clients that leave before 300 s count on neither side
+    interval: 5m
+    input_series:
+      # Every first token under 300 s, and three times as many clients leaving sooner: the SLI
+      # stays at 0, where counting them as slow would page at once (75%).
+      - series: 'rag_ttft_seconds_count{job="rag",instance="app:9464"}'
+        values: '0+10x100'
+      - series: 'rag_ttft_seconds_bucket{job="rag",instance="app:9464",le="300.0"}'
+        values: '0+10x100'
+      - series: 'rag_abandoned_seconds_count{job="rag",instance="app:9464",waiting_for="first_token"}'
+        values: '0+30x100'
+      - series: 'rag_abandoned_seconds_bucket{job="rag",instance="app:9464",waiting_for="first_token",le="300.0"}'
+        values: '0+30x100'
+    promql_expr_test:
+      - expr: rag:ttft_slow:ratio_rate1h
+        eval_time: 5h
+        exp_samples:
+          - labels: 'rag:ttft_slow:ratio_rate1h{job="rag"}'
+            value: 0
+    alert_rule_test:
+      - eval_time: 5h
+        alertname: RagFirstTokenLatencyFastBurn
+        exp_alerts: []
+      - eval_time: 5h
+        alertname: RagFirstTokenLatencySlowBurn
         exp_alerts: []
 
   # --- the causes -------------------------------------------------------------------------

@@ -199,13 +199,12 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
   - **The ruleset recipe,** for the maintainer to run: a `gh api` call that requires
     `check`, `eval-retrieval`, `deploy-config` and `container` on `main`. The repository is
     public, so the free plan has rulesets (checked in design review 1).
-    - **It extends ruleset 25561360** (applied 2026-10-21, which already requires `check` and
-      `eval-retrieval`) with `deploy-config` and `container`, by a PUT to that ruleset. It
-      never creates a second ruleset (STATUS.md, "Now").
-    - **`deploy-config` may be required already:** S3-7b's second review (2026-10-26) handed
-      over a PUT that adds it after S3-7b's merge. A PUT replaces the whole list, so build
-      S3-9's from the ruleset as it then is (`gh api …/rulesets/25561360`), and check that
-      all four names come back.
+    - **It extends ruleset 25561360** (applied 2026-10-21, which requires `check`,
+      `eval-retrieval` and, since S3-7b's merge, `deploy-config`) with `container`, by a PUT
+      to that ruleset. It never creates a second ruleset (STATUS.md, "Now").
+    - **`deploy-config` is required already:** the maintainer's PUT after S3-7b's merge
+      (2026-10-26) added it. A PUT replaces the whole list, so build S3-9's from the ruleset
+      as it then is (`gh api …/rulesets/25561360`), and check that all four names come back.
 - **README:** a "Deployment" section covering:
   - `cp .env.example .env`, keys (`rag-keys`), `docker compose up -d`, the HTTPS address;
   - a host shell loads `.env` before a CLI talks to the stack, `set -a; . ./.env; set +a`

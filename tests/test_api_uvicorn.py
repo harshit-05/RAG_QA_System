@@ -117,6 +117,21 @@ def answers(outcome: str) -> float:
     return metrics.REGISTRY.get_sample_value("rag_answers_total", {"outcome": outcome}) or 0.0
 
 
+def abandoned() -> dict[str, float]:
+    """``rag_abandoned_seconds_count`` now, by what the answer waited for (S3-7b's fix)."""
+    return {
+        waiting_for: metrics.REGISTRY.get_sample_value(
+            "rag_abandoned_seconds_count", {"waiting_for": waiting_for}
+        )
+        or 0.0
+        for waiting_for in (metrics.WAITING_FOR_SOURCES, metrics.WAITING_FOR_FIRST_TOKEN)
+    }
+
+
+def moved(before: dict[str, float]) -> dict[str, float]:
+    return {waiting_for: count - before[waiting_for] for waiting_for, count in abandoned().items()}
+
+
 def within(seconds: float, condition: Callable[[], bool]) -> bool:
     """Whether ``condition`` holds, polled until ``seconds`` have passed."""
     deadline = time.monotonic() + seconds
@@ -138,6 +153,7 @@ def test_a_drop_while_the_model_reads_the_prompt_closes_its_stream(
     # can notice it (uvicorn reports ASGI spec 2.3).
     model = StreamingFakeChatModel(prefill_s=10.0)
     serving = fake_serving(fake_config, model)
+    before = abandoned()
     sock = ask(serve(start_server, fake_config, serving))
     read_until(sock, b"event: sources")
     assert within(CLOSE_WITHIN_S, lambda: model.log == ["start"])
@@ -147,6 +163,8 @@ def test_a_drop_while_the_model_reads_the_prompt_closes_its_stream(
     )
     assert model.log == ["start", "closed"]  # no token generated
     assert within(CLOSE_WITHIN_S, lambda: serving.slots.in_use == 0)
+    # Abandoned while it waited for its first token: the SLI's only trace of it (S3-7b's fix).
+    assert within(CLOSE_WITHIN_S, lambda: moved(before) == {"sources": 0, "first_token": 1})
 
 
 @pytest.mark.usefixtures("either_way")
@@ -156,6 +174,7 @@ def test_a_drop_mid_stream_closes_the_models_stream(
     model = StreamingFakeChatModel(tokens=[f"t{i} " for i in range(400)], gap_s=0.01)
     serving = fake_serving(fake_config, model)
     cancelled = answers("cancelled")
+    before = abandoned()
     sock = ask(serve(start_server, fake_config, serving))
     read_until(sock, b"event: token", count=3)
     sock.close()
@@ -164,6 +183,7 @@ def test_a_drop_mid_stream_closes_the_models_stream(
     assert within(CLOSE_WITHIN_S, lambda: serving.slots.in_use == 0)
     # Counted once, as cancelled (S3-7): the metrics' observation awaits nothing.
     assert within(CLOSE_WITHIN_S, lambda: answers("cancelled") == cancelled + 1)
+    assert moved(before) == {"sources": 0, "first_token": 0}  # its first token had come
 
 
 def test_a_dropped_answer_s_spans_end_its_chat_cancelled_its_server_span_unset(
@@ -247,12 +267,15 @@ def test_a_drop_before_the_first_event_frees_the_slot_and_the_next_retrieval_wai
     model = StreamingFakeChatModel()
     serving = fake_serving(fake_config, model, retrieve=RunnableLambda(slow_retrieval))
     port = serve(start_server, fake_config, serving)
+    before = abandoned()
 
     first = ask(port, "first")
     time.sleep(0.2)  # its retrieval is running in a worker thread now
     first.close()
     assert within(0.5, lambda: serving.slots.in_use == 0)  # freed before its retrieval ends
     assert spans == []
+    # Abandoned while it waited for its sources (S3-7b's fix).
+    assert moved(before) == {"sources": 1, "first_token": 0}
 
     second = httpx.post(f"http://127.0.0.1:{port}/v1/query", json={"question": "second"})
     assert second.status_code == 200  # a slot, not a 503
@@ -350,14 +373,17 @@ def test_a_drop_while_an_event_waits_to_be_sent_still_closes_the_stream(
     no_garbage_collection: None,
 ) -> None:
     cancelled = answers("cancelled")
+    before = abandoned()
     model, serving = drop_while_an_event_waits(start_server, fake_config, blocked_sends)
     assert within(CLOSE_WITHIN_S, lambda: model.closed), (
         "the model's stream stayed open after a drop between events"
     )
     assert within(CLOSE_WITHIN_S, lambda: serving.slots.in_use == 0)
     # The slot's close ends the stream at its yield (GeneratorExit, not a cancel): it still
-    # counts once, as cancelled (S3-7).
+    # counts once, as cancelled (S3-7). The blocked event is the first token, which the route
+    # had already observed: not abandoned (S3-7b's fix).
     assert within(CLOSE_WITHIN_S, lambda: answers("cancelled") == cancelled + 1)
+    assert moved(before) == {"sources": 0, "first_token": 0}
 
 
 @pytest.mark.xfail(

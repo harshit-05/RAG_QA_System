@@ -2703,6 +2703,21 @@ _As built in S3-7b (2026-10-25), from its approved plan (the story's "Plan", D1â
 - **The `deploy-config` job** runs `promtool check config`, `promtool test rules` and `amtool
   check-config`, from the images DEC-24 pins.
 
+_Fixed after S3-7b's merge (2026-10-26, `fix/s3-7b-abandoned-answers`):_
+
+- **An answer abandoned before its first token was invisible to every alert.** The
+  availability SLI leaves cancelled answers out, `rag_ttft_seconds` is observed only at a
+  first token, and a cancel teaches the breaker nothing (`tried.abandoned()`), so a hung model
+  whose clients leave before Ollama's 600 s read timeout moved no SLI: a promtool probe of the
+  merged rules kept every alert quiet through two hours of it.
+- **The fix:** `rag_abandoned_seconds{waiting_for}`, how long such an answer had waited, and
+  for what (`sources`, or `first_token` after them), observed in `Slot.release()`, the one
+  place every ending passes once, with no new `await`. The `sources` and first-token SLIs
+  count those past their objective as slow, since their event would have come later still,
+  and leave younger ones out of both sides: the event is unknown, and a client that leaves
+  at 30 s has not missed a 300 s objective. The first-token SLI reads both stages. Answers
+  refused before their stream began stay out, as in `rag_answers_total`.
+
 **DEC-23 â€” The API beyond localhost: named, scoped keys, rate limits, a body-size limit,
 durable job records and a stateless query tier** (NFR-5; DEC-18's Phase 3 half).
 

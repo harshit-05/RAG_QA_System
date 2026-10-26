@@ -47,6 +47,7 @@ import inspect
 import logging
 import math
 import threading
+import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
 from typing import Any
@@ -239,9 +240,11 @@ class Slot:
     (:meth:`release`) and the request's teardown (:meth:`aclose`).
 
     **How the answer ended is counted at that one release** (S3-7): ``outcome`` is set by
-    the route once its answer begins, and moved as it ends. A drop between events ends the
-    route's own generator nowhere but in garbage collection, while the teardown always
-    releases, so this is the one place every ending passes exactly once.
+    the route once its answer begins (:meth:`begin`), and moved as it ends. A drop between
+    events ends the route's own generator nowhere but in garbage collection, while the
+    teardown always releases, so this is the one place every ending passes exactly once. An
+    answer cancelled while it still waited for its sources or its first token is also
+    counted there with how long it had waited (``rag_abandoned_seconds``, S3-7b's fix).
     """
 
     def __init__(self, pool: "SlotPool") -> None:
@@ -250,10 +253,22 @@ class Slot:
         self._answer: AsyncGenerator[Any, None] | None = None
         #: ``rag_answers_total``'s outcome, once the answer began: ``None`` before.
         self.outcome: str | None = None
+        #: What the answer still waits for, moved by the route as its events go out:
+        #: ``metrics.WAITING_FOR_SOURCES``, then ``WAITING_FOR_FIRST_TOKEN``, then ``None``.
+        self.waiting_for: str | None = None
+        self._received_at = 0.0
 
     def hold(self, answer: AsyncGenerator[Any, None]) -> None:
         """The answer stream to close when the request ends (:meth:`aclose`)."""
         self._answer = answer
+
+    def begin(self, received_at: float) -> None:
+        """The answer's stream begins, for a question that arrived at ``received_at``
+        (``time.perf_counter()``): cancelled unless it ends otherwise, and waiting for its
+        sources."""
+        self.outcome = metrics.CANCELLED
+        self.waiting_for = metrics.WAITING_FOR_SOURCES
+        self._received_at = received_at
 
     def release(self) -> None:
         if not self._released:
@@ -261,6 +276,10 @@ class Slot:
             self._pool.in_use -= 1
             if self.outcome is not None:
                 metrics.ANSWERS.labels(outcome=self.outcome).inc()
+            if self.outcome == metrics.CANCELLED and self.waiting_for is not None:
+                metrics.ABANDONED_SECONDS.labels(waiting_for=self.waiting_for).observe(
+                    time.perf_counter() - self._received_at
+                )
 
     async def aclose(self) -> None:
         """The request's teardown: close the answer stream if it is still open, then

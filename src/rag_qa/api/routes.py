@@ -383,17 +383,18 @@ async def query(
     # From the request's arrival: this body starts only after the dependencies, the alias read
     # in served_pipeline among them, and the client waited for those too.
     received: float = request.state.received_at
-    first_token = True
-    # Cancelled unless it ends otherwise; the slot counts it at its one release, which every
-    # ending reaches, a drop between events included (Slot's docstring).
-    slot.outcome = metrics.CANCELLED
+    # Cancelled, and waiting for its sources, unless it gets further; the slot counts it at
+    # its one release, which every ending reaches, a drop between events included (Slot's
+    # docstring).
+    slot.begin(received)
     try:
         async for event in answer:
             if isinstance(event, Sources):
                 metrics.SOURCES_SECONDS.observe(time.perf_counter() - received)
+                slot.waiting_for = metrics.WAITING_FOR_FIRST_TOKEN
             elif isinstance(event, Token):
-                if first_token:
-                    first_token = False
+                if slot.waiting_for is not None:  # the first token
+                    slot.waiting_for = None
                     metrics.TTFT_SECONDS.observe(time.perf_counter() - received)
             else:
                 slot.outcome = metrics.ANSWERED
