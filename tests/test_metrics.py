@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 import pytest
 from conftest import (
+    UNLIMITED,
     MakeConfig,
     StreamingFakeChatModel,
     StubCrossEncoder,
@@ -94,7 +95,7 @@ def tokens(provider: str, model: str, kind: str) -> tuple[str, dict[str, str]]:
 
 @contextmanager
 def served(config: RagConfig, serving: Serving) -> Iterator[TestClient]:
-    app = create_app(config, ServerSettings(), serving=serving)
+    app = create_app(config, ServerSettings(rate_limit=UNLIMITED), serving=serving)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         yield client
 
@@ -187,6 +188,11 @@ def test_every_label_set_is_there_at_zero_and_no_created_series() -> None:
         'rag_refusals_total{code="503",reason="no_index"}',
         'rag_refusals_total{code="413",reason="too_large"}',
         'rag_refusals_total{code="500",reason="error"}',
+        'rag_refusals_total{code="401",reason="unauthenticated"}',
+        'rag_refusals_total{code="403",reason="scope"}',
+        'rag_refusals_total{code="429",reason="rate_limited"}',
+        'rag_refusals_total{code="429",reason="auth_limited"}',
+        'rag_refusals_total{code="503",reason="keys_unreadable"}',
         'rag_ingest_runs_total{status="failed"}',
         'rag_abandoned_seconds_count{waiting_for="sources"}',
         'rag_abandoned_seconds_count{waiting_for="first_token"}',
@@ -405,7 +411,7 @@ def test_an_unexpected_error_before_the_answer_counts_as_a_500_once(
         raise RuntimeError("a bug")
 
     serving.refresh = broken  # type: ignore[method-assign]
-    app = create_app(fake_config, ServerSettings(), serving=serving)
+    app = create_app(fake_config, ServerSettings(rate_limit=UNLIMITED), serving=serving)
     with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as client:
         assert client.post("/v1/query", json={"question": "q"}).status_code == 500
         assert client.get("/v1/documents").status_code == 500  # not a question
@@ -494,7 +500,9 @@ def test_an_ingest_job_moves_the_runs_and_the_chunks(
         ("rag_ingest_chunks_total", {}),
         ("rag_index_documents", {}),
     )
-    with TestClient(create_app(config, ServerSettings()), base_url="http://127.0.0.1") as client:
+    with TestClient(
+        create_app(config, ServerSettings(rate_limit=UNLIMITED)), base_url="http://127.0.0.1"
+    ) as client:
         started = client.post("/v1/ingest", json={"rebuild": False}).json()
         job = _wait(client, started["job_id"])
         # The job ends, then the server reopens what it published: wait for that.
@@ -604,7 +612,9 @@ def test_an_ingest_jobs_log_lines_carry_its_job_id(
     monkeypatch.setenv("RAG_LOG_FORMAT", "json")
     logs.configure_logging()
     config = load_config(make_config(use_fakes))
-    with TestClient(create_app(config, ServerSettings()), base_url="http://127.0.0.1") as client:
+    with TestClient(
+        create_app(config, ServerSettings(rate_limit=UNLIMITED)), base_url="http://127.0.0.1"
+    ) as client:
         started = client.post("/v1/ingest", json={"rebuild": False}).json()
         _wait(client, started["job_id"])
     lines = [json.loads(x) for x in capsys.readouterr().err.splitlines() if x.startswith("{")]

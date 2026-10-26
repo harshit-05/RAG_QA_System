@@ -423,6 +423,11 @@ def make_config(tmp_path: Path) -> MakeConfig:
 #: them goes through the same build path as the real components.
 FAKE_EMBEDDER = {"_target_": "langchain_core.embeddings.DeterministicFakeEmbedding", "size": 8}
 FAKE_ANSWER = "Station Kestrel houses forty staff."
+
+#: A rate limit no test reaches (S3-8): what an app gets in a test that polls a job or sends
+#: many requests, since the test client's requests all come from one address. The limits' own
+#: tests set theirs (``test_api_auth.py``).
+UNLIMITED = 1_000_000
 FAKE_LLM = {
     "_target_": "langchain_core.language_models.fake_chat_models.FakeListChatModel",
     "responses": [FAKE_ANSWER],

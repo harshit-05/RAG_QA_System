@@ -5,17 +5,19 @@ two ``OTEL_*`` ones our code reads itself; the OpenTelemetry SDK reads its other
 empty variable counts as unset, so ``RAG_DATA_PATH= rag-ingest`` means "use the config
 file's value", as it always has.
 
-Six groups: :class:`EnvSettings`, the overrides every command reads;
+Seven groups: :class:`EnvSettings`, the overrides every command reads;
 :class:`StoreSettings`, the ``RAG_QDRANT_*`` ones the vector store reads (DEC-19);
 :class:`FallbackSettings`, the hosted fallback's key (DEC-21); :class:`LogSettings`, the log
 format every command reads (DEC-22); :class:`TraceSettings`, whether and as what a command
-sends its traces (DEC-22, S3-7b); and :class:`ServerSettings`, the ``RAG_API_*`` settings
-only ``rag-serve`` reads (DEC-18). ``config.yaml`` stays about the pipeline, and a secret
+sends its traces (DEC-22, S3-7b); :class:`ServerSettings`, the ``RAG_API_*`` settings
+only ``rag-serve`` reads (DEC-18); and :class:`KeysFileSettings`, the one of them
+``rag-keys`` reads (DEC-23). ``config.yaml`` stays about the pipeline, and a secret
 never lives in it: a component key named like one is refused at load
 (:meth:`rag_qa.schema.Components.check_api_keys`).
 """
 
 import ipaddress
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AnyHttpUrl, Field, SecretStr, ValidationError, field_validator
@@ -153,9 +155,20 @@ class TraceSettings(BaseSettings):
     service_name: str | None = None
 
 
-#: The prefix of the HTTP server's settings: ``RAG_API_TOKEN``, ``RAG_API_MAX_CONCURRENT``,
-#: ``RAG_API_HOST``, ``RAG_API_PORT``, ``RAG_API_METRICS_PORT``, ``RAG_API_TRUSTED_PROXIES``.
+#: The prefix of the HTTP server's settings: ``RAG_API_TOKEN``, ``RAG_API_KEYS_FILE``,
+#: ``RAG_API_RATE_LIMIT``, ``RAG_API_MAX_CONCURRENT``, ``RAG_API_HOST``, ``RAG_API_PORT``,
+#: ``RAG_API_METRICS_PORT``, ``RAG_API_TRUSTED_PROXIES``.
 ENV_API_PREFIX = "RAG_API_"
+ENV_API_KEYS_FILE = f"{ENV_API_PREFIX}KEYS_FILE"
+
+
+class KeysFileSettings(BaseSettings):
+    """The keys file alone (DEC-23, S3-8): what ``rag-keys`` reads, without the server's other
+    settings. Like :class:`EnvSettings`, read on every use, never at import."""
+
+    model_config = SettingsConfigDict(env_prefix=ENV_API_PREFIX, env_ignore_empty=True, frozen=True)
+
+    keys_file: Path | None = None
 
 
 def proxy_addresses(value: str) -> tuple[str, ...]:
@@ -178,18 +191,24 @@ def proxy_addresses(value: str) -> tuple[str, ...]:
 class ServerSettings(BaseSettings):
     """The HTTP server's settings (DEC-18), from the environment only.
 
-    ``token`` unset means no authentication, which ``rag-serve`` allows on a loopback host
-    only. ``max_concurrent`` is how many answers stream at once; a CPU host generates one at
-    a time. ``host`` and ``port`` are the defaults ``rag-serve --host/--port`` override.
-    ``metrics_port`` is where Prometheus scrapes the metrics, on the API's own host: a
-    listener of its own, off unless set (DEC-22, S3-7). ``trusted_proxies`` are the addresses
-    whose ``X-Forwarded-For`` names the client (:func:`proxy_addresses`); unset, nobody's is
-    believed, loopback's included (DEC-23, S3-8).
+    ``keys_file`` names the API keys (:mod:`rag_qa.api.auth`, DEC-23), and ``token`` is one
+    more key, named ``token``, with every scope. With neither there is no authentication,
+    which ``rag-serve`` allows on a loopback host only (:attr:`has_credential`).
+    ``rate_limit`` is the requests a minute each key may make, or each address when there is
+    no credential (:mod:`rag_qa.api.limits`). ``max_concurrent`` is how many answers stream
+    at once; a CPU host generates one at a time. ``host`` and ``port`` are the defaults
+    ``rag-serve --host/--port`` override. ``metrics_port`` is where Prometheus scrapes the
+    metrics, on the API's own host: a listener of its own, off unless set (DEC-22, S3-7).
+    ``trusted_proxies`` are the addresses whose ``X-Forwarded-For`` names the client
+    (:func:`proxy_addresses`); unset, nobody's is believed, loopback's included (DEC-23,
+    S3-8).
     """
 
     model_config = SettingsConfigDict(env_prefix=ENV_API_PREFIX, env_ignore_empty=True, frozen=True)
 
     token: SecretStr | None = None
+    keys_file: Path | None = None
+    rate_limit: int = Field(default=60, ge=1)
     max_concurrent: int = Field(default=1, ge=1)
     host: str = Field(default="127.0.0.1", min_length=1)
     port: int = Field(default=8000, ge=1, le=65535)
@@ -201,6 +220,14 @@ class ServerSettings(BaseSettings):
     @classmethod
     def check_trusted_proxies(cls, value: str | None) -> str | None:
         return None if value is None else ",".join(proxy_addresses(value))
+
+    @property
+    def has_credential(self) -> bool:
+        """Whether any credential is configured, a keys file or the token. Without one, the
+        server listens on loopback only and answers only to a loopback ``Host`` (DEC-23, design
+        review 2: a keys file alone counts, or the Host check would refuse every request through
+        a proxy under a public name)."""
+        return self.token is not None or self.keys_file is not None
 
     @property
     def proxies(self) -> list[str]:

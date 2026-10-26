@@ -6,9 +6,11 @@ shutdown, on the loop that used them. The server starts without an index, or wit
 config cannot use: it reports not-ready until an ingest gives it one.
 
 Two refusals apply to every route, through the app's own dependencies: requests from a
-web page (``Origin``) and, with no token set, a ``Host`` that is not loopback. The
-interactive docs are re-added as ordinary routes, so they sit behind the token too. The
-first dependency gives each request's log lines an ID of their own (S3-7).
+web page (``Origin``) and, with no credential configured, a ``Host`` that is not loopback. The
+interactive docs are re-added as ordinary routes, so they sit behind a key too. The first
+dependency gives each request's log lines an ID of their own (S3-7). The keys and the rate
+limits (DEC-23, S3-8) live on ``app.state``: :class:`rag_qa.api.auth.KeyRing`, which reads the
+keys file, and :class:`rag_qa.api.limits.Limits`, the buckets, both this replica's own.
 
 While it serves, the metrics read each breaker's state and the documents served at every
 scrape (:func:`rag_qa.observability.metrics.watch`, S3-7).
@@ -39,7 +41,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rag_qa import __version__
 from rag_qa.api import routes
-from rag_qa.api.limits import BodyLimit
+from rag_qa.api.auth import KeyRing
+from rag_qa.api.limits import BodyLimit, Limits
 from rag_qa.api.state import Serving
 from rag_qa.observability import metrics, tracing
 from rag_qa.schema import RagConfig
@@ -101,6 +104,10 @@ def create_app(
         ],
     )
     app.state.settings = settings
+    # Who may ask, and how often (DEC-23, S3-8): read here, so a keys file that cannot be used
+    # is a warning in the log at start-up, before the first request.
+    app.state.keys = KeyRing(settings.keys_file, settings.token)
+    app.state.limits = Limits(settings.rate_limit)
     # The last added is the outermost: the body limit runs first.
     app.add_middleware(CountServerErrors)
     app.add_middleware(BodyLimit, refused=count_too_large)
@@ -114,14 +121,9 @@ def create_app(
     return app
 
 
-def asks_a_question(scope: Scope) -> bool:
-    """Whether a request is ``POST /v1/query``: what ``rag_refusals_total`` counts (S3-7)."""
-    return scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == "/v1/query"
-
-
 def count_too_large(scope: Scope) -> None:
     """Count a question whose body was over the limit (:class:`BodyLimit`'s ``refused``)."""
-    if asks_a_question(scope):
+    if routes.asks_a_question(scope):
         metrics.refused(metrics.BODY_TOO_LARGE)
 
 
@@ -140,7 +142,7 @@ class CountServerErrors:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if not asks_a_question(scope):
+        if not routes.asks_a_question(scope):
             await self.app(scope, receive, send)
             return
         started = False

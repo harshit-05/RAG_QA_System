@@ -1,4 +1,5 @@
-"""What bounds a request before the API works on it (S3-8, DEC-23): the body size.
+"""What bounds a request before the API works on it (S3-8, DEC-23): the body size, and the
+rate limits' token buckets.
 
 :class:`rag_qa.api.limits.BodyLimit` is driven here over raw ASGI messages, so the chunks of a
 streamed body, and a disconnect between them, arrive exactly as a test sets them. Through the
@@ -14,7 +15,17 @@ import pytest
 from fastapi import HTTPException
 from starlette.types import Message, Receive, Scope, Send
 
-from rag_qa.api.limits import MAX_BODY_BYTES, TOO_LARGE, BodyLimit, declared_length
+from rag_qa.api.limits import (
+    AUTH_FAILURES_PER_MINUTE,
+    MAX_BODY_BYTES,
+    MAX_BUCKETS,
+    TOO_LARGE,
+    BodyLimit,
+    Buckets,
+    Limits,
+    client_key,
+    declared_length,
+)
 
 
 def scope(*headers: tuple[bytes, bytes], path: str = "/v1/query") -> Scope:
@@ -132,3 +143,85 @@ def test_anything_but_http_goes_by_unread() -> None:
 
     run(app, {"type": "lifespan"}, [])
     assert seen == ["lifespan"]
+
+
+# --- the rate limits ---------------------------------------------------------------------------
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_a_bucket_passes_a_minute_s_burst_then_one_request_per_refill() -> None:
+    clock = Clock()
+    buckets = Buckets(60, clock=clock)
+    assert [buckets.take("k") for _ in range(60)] == [None] * 60
+    wait = buckets.take("k")
+    assert wait == pytest.approx(1.0)  # 60 a minute: one back each second
+    clock.now += 0.5
+    assert buckets.take("k") == pytest.approx(0.5)
+    clock.now += 0.5
+    assert buckets.take("k") is None
+    clock.now += 3600  # it refills to a minute's worth, never more
+    assert [buckets.take("k") for _ in range(61)].count(None) == 60
+
+
+def test_each_key_has_its_own_bucket() -> None:
+    buckets = Buckets(1, clock=Clock())
+    assert (buckets.take("a"), buckets.take("b")) == (None, None)
+    assert buckets.take("a") == pytest.approx(60.0)
+
+
+def test_a_full_table_evicts_a_full_bucket_before_the_least_recently_used() -> None:
+    # Evicting a full bucket loses nothing: a new one is full. A drained one evicted would hand
+    # its caller a fresh minute (DEC-23, design review 2).
+    clock = Clock()
+    buckets = Buckets(2, size=3, clock=clock)
+    for key in ("old", "drained"):
+        buckets.take(key)
+        buckets.take(key)  # both drained
+    clock.now += 1
+    buckets.take("recent")  # one token left, a few seconds from full
+    clock.now += 30
+    # At +31 s: "old" and "drained" have refilled one token of two, "recent" is full again.
+    buckets.take("new")
+    assert "recent" not in buckets
+    assert all(key in buckets for key in ("old", "drained", "new"))
+    # With none full, the least recently used goes.
+    buckets.take("new")
+    buckets.take("drained")
+    buckets.take("newer")
+    assert "old" not in buckets and len(buckets) == 3
+
+
+def test_the_table_never_holds_more_than_its_size() -> None:
+    clock = Clock()
+    buckets = Buckets(10, clock=clock)
+    for n in range(MAX_BUCKETS + 500):
+        buckets.take(f"10.0.{n // 256}.{n % 256}")
+    assert len(buckets) == MAX_BUCKETS == 10_000
+
+
+@pytest.mark.parametrize(
+    ("host", "key"),
+    [
+        ("192.0.2.7", "192.0.2.7"),
+        ("2001:db8:1:2:3:4:5:6", "2001:db8:1:2::/64"),
+        ("2001:db8:1:2:ffff::1", "2001:db8:1:2::/64"),  # the same /64: one bucket
+        ("::ffff:192.0.2.7", "192.0.2.7"),  # IPv4-mapped: the IPv4 client it is
+        ("testclient", "testclient"),
+        (None, "-"),
+    ],
+)
+def test_a_client_is_counted_by_its_address_and_ipv6_by_its_64(host: str | None, key: str) -> None:
+    assert client_key(host) == key
+
+
+def test_the_api_s_tables_and_their_rates() -> None:
+    limits = Limits(60)
+    assert (limits.keys.capacity, limits.addresses.capacity) == (60, 60)
+    assert limits.failures.capacity == AUTH_FAILURES_PER_MINUTE == 10

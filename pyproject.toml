@@ -45,6 +45,7 @@ rag-ingest = "rag_qa.ingest:main"
 rag-query = "rag_qa.cli:main"
 rag-eval = "rag_qa.evaluation.cli:main"
 rag-serve = "rag_qa.api.server:main"
+rag-keys = "rag_qa.api.keys_cli:main"
 
 [project.optional-dependencies]
 # Tier 2 of the quality bar (FR-7, DEC-15): `rag-eval score`, run offline, never in CI.

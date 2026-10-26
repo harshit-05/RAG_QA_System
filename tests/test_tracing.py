@@ -38,6 +38,7 @@ from conftest import (
     FAKE_ANSWER,
     RERANK_CANDIDATES,
     RERANK_TOP_N,
+    UNLIMITED,
     FakeCollector,
     MakeConfig,
     SpanRecorder,
@@ -285,7 +286,9 @@ def test_the_rerank_span_says_its_cut_only_when_the_reranker_has_one() -> None:
 
 
 def serve(config: RagConfig, **kw: Any) -> TestClient:
-    return TestClient(create_app(config, ServerSettings(), **kw), base_url="http://127.0.0.1")
+    return TestClient(
+        create_app(config, ServerSettings(rate_limit=UNLIMITED), **kw), base_url="http://127.0.0.1"
+    )
 
 
 @pytest.fixture
@@ -415,7 +418,7 @@ def test_the_health_probes_make_no_span(fake_config: RagConfig, traced: Traced) 
 
 def test_an_untraced_app_has_no_otel_middleware(fake_config: RagConfig) -> None:
     serving = fake_serving(fake_config, StreamingFakeChatModel())
-    app = create_app(fake_config, ServerSettings(), serving=serving)
+    app = create_app(fake_config, ServerSettings(rate_limit=UNLIMITED), serving=serving)
     stack, seen = app.build_middleware_stack(), []
     while stack is not None:
         seen.append(type(stack).__module__)
@@ -511,7 +514,9 @@ def everything(span: ReadableSpan) -> str:
 
 def raising_app(config: RagConfig, message: str) -> TestClient:
     app = create_app(
-        config, ServerSettings(), serving=fake_serving(config, StreamingFakeChatModel())
+        config,
+        ServerSettings(rate_limit=UNLIMITED),
+        serving=fake_serving(config, StreamingFakeChatModel()),
     )
 
     @app.get("/boom")
@@ -664,7 +669,8 @@ def test_the_api_flushes_its_spans_when_its_lifespan_ends_without_main_s_finally
     assert tracing.configure("rag-test")
     serving = fake_serving(fake_config, StreamingFakeChatModel())
     with TestClient(
-        create_app(fake_config, ServerSettings(), serving=serving), base_url="http://127.0.0.1"
+        create_app(fake_config, ServerSettings(rate_limit=UNLIMITED), serving=serving),
+        base_url="http://127.0.0.1",
     ) as client:
         assert client.post("/v1/query", json={"question": "q"}).status_code == 200
         assert fake_collector.requests == []  # nothing sent yet: the processor is waiting

@@ -35,6 +35,7 @@ import ollama
 import pytest
 from conftest import (
     FAKE_ANSWER,
+    UNLIMITED,
     FakeOllama,
     MakeConfig,
     StreamingFakeChatModel,
@@ -61,8 +62,8 @@ from starlette.datastructures import State
 from starlette.requests import Request
 
 from rag_qa import resilience
+from rag_qa.api import auth, routes
 from rag_qa.api import jobs as api_jobs
-from rag_qa.api import routes
 from rag_qa.api import state as api_state
 from rag_qa.api.app import create_app
 from rag_qa.api.jobs import KEEP
@@ -94,10 +95,12 @@ def serve(
     serving: Serving | None = None,
     *,
     token: str | None = None,
+    keys_file: Path | None = None,
 ) -> Iterator[tuple[TestClient, Serving]]:
     """A running app, its lifespan included, and a client that fails any response that
     names ``private`` (the folder holding the corpus and the index)."""
-    app = create_app(config, ServerSettings(token=token), serving=serving)
+    settings = ServerSettings(token=token, keys_file=keys_file, rate_limit=UNLIMITED)
+    app = create_app(config, settings, serving=serving)
 
     def scan(response: httpx.Response) -> None:
         response.read()
@@ -588,6 +591,52 @@ def test_every_route_but_the_health_probes_needs_the_token(
         "/openapi.json",
         *HEALTH,
     }
+
+
+#: Each route's scope (DEC-23): the docs and the schema need a valid key and no scope; the
+#: health probes need nothing.
+ROUTE_SCOPES = {
+    ("POST", "/v1/query"): "query",
+    ("GET", "/v1/documents"): "query",
+    ("POST", "/v1/ingest"): "ingest",
+    ("GET", "/v1/ingest/x"): "ingest",
+    ("GET", "/docs"): None,
+    ("GET", "/redoc"): None,
+    ("GET", "/openapi.json"): None,
+    ("GET", "/v1/health"): None,
+    ("GET", "/v1/health/live"): None,
+}
+
+
+def test_every_route_without_its_scope_is_refused_with_403(
+    fake_config: RagConfig, tmp_path: Path
+) -> None:
+    # Fail closed, as above: a route added later without its scope's dependency turns this red,
+    # since its key without the other scope would get through, or the table would be short.
+    keys = tmp_path / "var" / "api-keys.json"
+    keys.parent.mkdir(exist_ok=True)
+    tokens = {scope: secrets.token_urlsafe(32) for scope in ("query", "ingest")}
+    keys.write_text(
+        auth.dump(
+            auth.ApiKey(f"only-{scope}", frozenset({scope}), auth.digest(token), "2026-10-26")
+            for scope, token in tokens.items()
+        )
+    )
+    serving = fake_serving(fake_config, StreamingFakeChatModel())
+    with serve(fake_config, tmp_path, serving, keys_file=keys) as (client, _):
+        requests = route_requests(client.app)  # type: ignore[arg-type]
+        assert set(requests) == set(ROUTE_SCOPES)
+        for (method, path), needed in ROUTE_SCOPES.items():
+            for scope, token in tokens.items():
+                status = client.request(
+                    method, path, headers={"Authorization": f"Bearer {token}"}
+                ).status_code
+                if needed is not None and needed != scope:
+                    assert status == 403, (method, path, scope)
+                else:
+                    assert status not in (401, 403), (method, path, scope, status)
+        assert serving.slots.in_use == 0
+        assert serving.jobs.running is None
 
 
 @pytest.mark.parametrize(

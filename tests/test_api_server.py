@@ -70,7 +70,8 @@ def test_a_non_loopback_host_without_a_token_is_refused_before_the_config_loads(
     status = server.main(["--host", "0.0.0.0", "--config", "/nonexistent/config.yaml"])
     err = capsys.readouterr().err
     assert status == server.EXIT_CANNOT_START
-    assert "refusing to listen on 0.0.0.0 without a token" in err
+    assert "refusing to listen on 0.0.0.0 without a credential" in err
+    assert "RAG_API_KEYS_FILE" in err and "RAG_API_TOKEN" in err
     assert "Traceback" not in err
     assert ran == []
 
@@ -251,8 +252,28 @@ def test_with_a_token_a_non_loopback_host_runs_and_warns_about_cleartext(
     with caplog.at_level(logging.WARNING, logger="rag_qa"):
         assert server.main(["--config", str(path), "--host", "0.0.0.0"]) == server.EXIT_OK
     assert ran[0].host == "0.0.0.0"
-    assert "travels in cleartext" in caplog.text
+    assert "travel in cleartext" in caplog.text
     assert "s3cret" not in caplog.text
+
+
+def test_with_a_keys_file_alone_a_non_loopback_host_runs_and_a_broken_file_is_a_warning(
+    make_config: MakeConfig,
+    fake_ollama: FakeOllama,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    ran: list[uvicorn.Config],
+    tmp_path: Path,
+) -> None:
+    # "No credential" means no keys file and no token (DEC-23, design review 2). A keys file
+    # that cannot be used is no reason to stay down: it fails closed, and health says why.
+    missing = tmp_path / "var" / "api-keys.json"
+    monkeypatch.setenv("RAG_API_KEYS_FILE", str(missing))
+    path = ollama_config(make_config, fake_ollama.url)
+    with caplog.at_level(logging.WARNING, logger="rag_qa"):
+        assert server.main(["--config", str(path), "--host", "0.0.0.0"]) == server.EXIT_OK
+    assert ran[0].host == "0.0.0.0"
+    assert "travel in cleartext" in caplog.text
+    assert "the keys file does not exist" in caplog.text
 
 
 @pytest.mark.parametrize(("raised", "started"), [(True, False), (False, False)])

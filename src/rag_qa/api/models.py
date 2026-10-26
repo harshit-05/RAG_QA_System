@@ -72,14 +72,23 @@ class BreakerHealth(BaseModel):
     retry_after_s: int | None
 
 
+class KeysHealth(BaseModel):
+    """The API keys file (DEC-23, S3-8): whether it can be used, and if not why, never its
+    path."""
+
+    ready: bool
+    detail: str
+
+
 class Health(BaseModel):
-    """``GET /v1/health``: 200 when ready, 503 when not. ``breakers`` holds ``qdrant``,
-    ``llm`` and, with a hosted fallback configured, ``fallback``: named by role, never by
-    address (DEC-18)."""
+    """``GET /v1/health``: 200 when ready, 503 when not. ``keys`` is ``null`` unless a keys
+    file is set. ``breakers`` holds ``qdrant``, ``llm`` and, with a hosted fallback
+    configured, ``fallback``: named by role, never by address (DEC-18)."""
 
     status: Literal["ready", "not ready"]
     index: IndexHealth
     llm: LlmHealth
+    keys: KeysHealth | None
     breakers: dict[str, BreakerHealth]
 
 

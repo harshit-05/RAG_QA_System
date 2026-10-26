@@ -68,6 +68,7 @@ class IngestJob:
 
     job_id: str
     rebuild: bool
+    api_key: str | None = None  # the name of the key that started it (S3-8), never a token
     status: JobStatus = "queued"
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -114,13 +115,14 @@ class IngestJobs:
     def get(self, job_id: str) -> IngestJob | None:
         return self._jobs.get(job_id)
 
-    def start(self, *, rebuild: bool) -> IngestJob:
+    def start(self, *, rebuild: bool, api_key: str | None = None) -> IngestJob:
         """Start a job now and return it. Raises :class:`JobRunningError` while one runs.
+        ``api_key`` is the name of the key that asked, which the job's log lines carry.
 
         Call it on the server's event loop; the job reports back to it."""
         if self._running is not None:
             raise JobRunningError(self._running)
-        job = IngestJob(job_id=uuid.uuid4().hex, rebuild=rebuild)
+        job = IngestJob(job_id=uuid.uuid4().hex, rebuild=rebuild, api_key=api_key)
         self._jobs[job.job_id] = job
         while len(self._jobs) > KEEP:
             self._jobs.popitem(last=False)  # the oldest; the running job is the newest
@@ -147,7 +149,8 @@ class IngestJobs:
     def _work(self, job: IngestJob, *, parent: Context | None = None) -> None:
         """The run itself, in the job's thread, under ``parent``, the request's context while
         tracing is on. Never raises: every ending is recorded."""
-        logs.bind(job_id=job.job_id)  # this thread's own context: every line of the run
+        # This thread's own context, which the request's never reaches: every line of the run.
+        logs.bind(job_id=job.job_id, **({} if job.api_key is None else {"api_key": job.api_key}))
         job.started_at = datetime.now(UTC)
         job.status = "running"
         handler = _JobLog(job.log, threading.get_ident())

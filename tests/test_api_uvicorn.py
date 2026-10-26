@@ -501,3 +501,21 @@ def test_a_loopback_client_cannot_name_its_own_address(
     # A proxy named by its address is believed.
     trusted = start_server(client_probe(), ServerSettings(trusted_proxies="127.0.0.1"))
     assert seen_as(trusted, "203.0.113.7") == "203.0.113.7"
+
+
+def test_spoofed_forwarded_addresses_draw_on_the_real_address_s_failure_bucket(
+    start_server: Start, fake_config: RagConfig
+) -> None:
+    # The verification's case (DEC-23, design review 2): eleven wrong tokens within a minute,
+    # each naming a fresh X-Forwarded-For, from loopback. Every one counts against 127.0.0.1,
+    # so the eleventh is 429; under uvicorn's default, each would have had a bucket of its own.
+    serving = fake_serving(fake_config, StreamingFakeChatModel())
+    port = start_server(create_app(fake_config, ServerSettings(token="s3cret"), serving=serving))
+    codes = [
+        httpx.get(
+            f"http://127.0.0.1:{port}/v1/ingest/x",
+            headers={"Authorization": "Bearer wrong", "X-Forwarded-For": f"203.0.113.{n}"},
+        ).status_code
+        for n in range(11)
+    ]
+    assert codes == [401] * 10 + [429]

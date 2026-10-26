@@ -30,6 +30,9 @@
   client, in a fresh interpreter: any module may import it. And with tracing off (S3-7b), no
   command loads the OTLP exporter or any instrumentation, nor sets a global tracer provider,
   and ``tracing`` imports no SDK.
+* DEC-23 (S3-8): ``rag-keys`` (``rag_qa.api.keys_cli``) and the keys it reads
+  (``rag_qa.api.auth``) load no web framework and no model stack, in a fresh interpreter, so
+  making a key is instant on any host.
 """
 
 import ast
@@ -115,6 +118,26 @@ def test_observability_loads_no_model_stack(module: str) -> None:
     }
     loaded = modules_loaded_by(module)
     assert sorted(m for m in loaded if m.split(".")[0] in stack) == []
+
+
+@pytest.mark.parametrize("module", ["rag_qa.api.auth", "rag_qa.api.keys_cli"])
+def test_the_keys_load_no_web_framework_and_no_model_stack(module: str) -> None:
+    heavy = {
+        "fastapi",
+        "starlette",
+        "uvicorn",
+        "langchain_core",
+        "torch",
+        "sentence_transformers",
+        "transformers",
+        "qdrant_client",
+    }
+    loaded = modules_loaded_by(module)
+    assert sorted(m for m in loaded if m.split(".")[0] in heavy) == []
+    # Nor the rest of the API, which the package's own __init__ would bring in if it grew one.
+    assert sorted(m for m in loaded if m.startswith("rag_qa.api.")) == sorted(
+        {"rag_qa.api.auth", module}
+    )
 
 
 COMMANDS = ["rag_qa.cli", "rag_qa.ingest", "rag_qa.api.server", "rag_qa.evaluation.cli"]
