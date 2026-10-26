@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | In progress. Plan approved 2026-10-26 (below, "Plan"); on Opus 5.5 at max effort (Deviation). |
+| **Status** | Done 2026-10-26, before its PR. Plan approved 2026-10-26 (below, "Plan"); on Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-26 (`115e85a` … `2aef8d7`, then the live run's two fixes and this record). Every Verification command ran but the last: `gh pr checks` waits for the PR, since CI runs on pull requests and on `main` only. |
 | **Closes** | NFR-5; DEC-23; backlog: multi-user auth and rate limiting (API deployment hardening), request size and health-check load, statelessness |
 | **Depends on** | S3-7b (S3-7 was split in its plan, 2026-10-23) |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -162,6 +162,38 @@ uv run rag-keys revoke bot                                 # bot's token: 401 wi
 gh pr checks
 ```
 
+## Verification record (2026-10-26)
+
+Rows 1 and 4–7 ran on the final tree, the live run's fixes included. Rows 2, 3 and 8–18 ran
+in the maintainer's terminal on `2aef8d7`, logged with `tee -i` under `~/dev/rag-s3-8/`
+(`retrieval.log`, `serve-1.log`, `serve-2.log`, `contexts.json`), and Ollama's side in its
+journal. The client's own output (the `curl` lines, `rag-keys`) was not captured; each row
+below is read from the server's access log, which records every status and the key's name.
+The live run used a scratch index, `RAG_QDRANT_COLLECTION=s3_8_live`, deleted afterwards.
+
+| # | Command | Result |
+| --- | --- | --- |
+| 1 | `uv run rag-eval check` | exit 0: the six parts `ok`, every floor met; "The committed run matches this checkout" |
+| 2 | `RAG_LOG_FORMAT=console uv run rag-eval retrieval --contexts-out ~/dev/rag-s3-8/contexts.json` | 0.950 (19 of 20) / 0.796 / 0.858, every floor met; 25 questions' contexts written |
+| 3 | `diff ~/dev/rag-s3-2/contexts-qdrant.json ~/dev/rag-s3-8/contexts.json` | IDENTICAL; both `5a36e2f9d00bbdaf49edaf07b8ba6af6f0e2ed52a5cf4c2e16c39aa66a074cbc` |
+| 4 | `HF_HOME=$(mktemp -d) HF_HUB_OFFLINE=1 uv run pytest --cov=rag_qa -q` | 1711 passed, 18 skipped, 5 xfailed; coverage 98.28% |
+| 5 | `uv run ruff check && uv run ruff format --check && uv run mypy` | all checks passed; 85 files formatted; no issues in 41 source files |
+| 6 | the lock: `uv lock --check`; `git diff main -- uv.lock` | resolves 194; no line differs from `main`'s: no dependency added, none moved, pypdf 6.19.0. `rag-keys` is an entry point only |
+| 7 | `promtool test rules` and `check config`, CI's pinned Prometheus image | SUCCESS on both rule-test files; 41 rules. Two mutants of the SLI's selector (503 alone, every code) each failed a scenario |
+| 8 | `rag-keys add laptop --scope query,ingest`, `add bot --scope query`, `list` | the server read "2 keys" from `var/api-keys.json`; no token in any log line (`grep -c 'token\|Bearer'` 0 in both logs) |
+| 9 | `rag-serve` with the keys file (`serve-1.log`) | started with the file missing: a warning, "Every key is refused with 503 until it can"; read once it existed |
+| 10 | no token | `GET /v1/documents` 401 |
+| 11 | laptop's ingest job, building the scratch index | 202, then `Published s3_8_live--gen-20261026T170857383393Z-eb33e4f9: 3 documents, 1708 chunks` (26.9 chunks/s); every job line carries `api_key=laptop` and its `job_id` |
+| 12 | bot's token: `POST /v1/query`, then `POST /v1/ingest` | 200, cut by the client after 3 s ("Answer cancelled: its client disconnected"); Ollama answered the chat 499 after 2.17 s, "client connection closed before server finished loading, aborting load". Then 403 |
+| 13 | a wrong token 11 times within a minute | ten 401, then 429 (17:13:25) |
+| 14 | five more, 17 s later, each with a fresh `X-Forwarded-For` | 401, 401, 429, 429, 429: the real address's bucket had earned back 2.8 tokens in 17 s, and the spoofed addresses drew on it. Believed, each would have had a fresh bucket: five 401s |
+| 15 | a 1 MB body without a token, with `Content-Length`, then chunked | 413, 413 |
+| 16 | 200 `GET /v1/health` at once | 200 answers, all 200, none 429, within 0.1 s (17:14:01.645 to .743 UTC); Ollama's journal: one `GET /api/tags` (22:44:01 local), the start-ups' checks apart |
+| 17 | `kill -9` of rag-serve's python during a `rebuild: true` job, then a restart (`serve-2.log`) | the job was running (its log lines come from inside the writer lock). After the restart: "Serving index s3_8_live--gen-…-eb33e4f9", the published one, unchanged; `GET /v1/ingest/<job>` 200, "Ingest job 33812d46… was abandoned", once |
+| 18 | `rag-keys revoke bot`, then bot's token | 401 at the next request, the file read again ("1 keys", a slip: Discovered) |
+| 19 | the scratch index deleted, the test keys removed | `rag_qa`'s two generations and its alias on `…7f20891e` unchanged; `var/` holds `ingest.lock`, `jobs.sqlite3` and the dead job's lock file (Discovered) |
+| 20 | `gh pr checks` | not yet: no PR (CI runs on pull requests) |
+
 ## Review notes for the human
 
 - **`auth.py`:** constant-time comparison on hashes, the same answer for every failure, no
@@ -222,8 +254,66 @@ the golden questions, so `rag-eval check` stays 0 and the contexts IDENTICAL to 
 
 ## Discovered
 
-(Filled during implementation.)
+- **Two of the suite's tests polled a job through default settings** (found by the mutation
+  sweep's control run). The test client's requests all come from one address, and a loopback
+  server with no key now limits it to 60 a minute: a job that took over a second turned the
+  poll into a 429, and the test into a `KeyError`. `conftest.UNLIMITED` is now the rate of every
+  app a test polls (`test_api.py`, `test_metrics.py`, `test_tracing.py`); the limits' own
+  tests set theirs. Caveat 42.
+- **"1 keys."** (the live run, row 18): the keys file's read line did not agree in number, as
+  S2-8's and S3-7's plural slips did not. Fixed, with a test.
+- **A dead job's lock file stayed behind** (the live run, row 19): its process could not remove
+  it, and the prune would only after 100 more jobs. Whoever writes the abandoned verdict now
+  removes it: the lock is free, and no other job has its ID. The one left by the live run, in
+  this host's `var/jobs/`, predates the fix; `rm` it, or let the prune take it.
+- **The cancel reached Ollama while the model loaded** (row 12): "client connection closed
+  before server finished loading, aborting load", a 499 after 2.17 s. DEC-14's cancel holds
+  through the new dependencies, and a question cut that early leaves Ollama nothing to finish.
+- **uvicorn's access line carries the key's name** (rows 11–18): it is logged in the request's
+  own task, after the response, so it inherits the context `authenticate` bound. Every access
+  line names the key that made it, a 401's none.
+- **Two guards close the race design review 2 measured, and each is enough alone:** the second
+  read of the row, and the verdict written only over an unfinished status. Removing either
+  alone changes nothing a client sees (an equivalent mutant); removing both fails the race
+  test. Both are kept, as DEC-23 has them.
+- **A body that is not valid JSON still gets its 422 before authentication,** now over at most
+  64 KiB, and draws on no bucket: FastAPI parses before any dependency. An unauthenticated
+  client can make the server parse 64 KiB as often as it likes. Bounded, and DEC-23 did not
+  ask for more; the backlog has the line (STATUS.md).
+- **The mutation sweeps:** 17 mutants of the keys and limits, 11 of the job records and 7 of
+  the probes; every one caught but the equivalent one above. The first job sweep caught 5 of
+  10: three tests were vacuous (a probe of a folder that did not exist, a status read before
+  the job's thread began, a verdict never reached) and two guards had none. All five were
+  fixed before the commit.
+
+## Plan's backlog lines, as closed
+
+- **Closed: the availability SLI sees no unexpected 500** (S3-7b's second review). An
+  unexpected 500 on a question counts as `rag_refusals_total{code="500",reason="error"}`, and
+  the SLI reads `code=~"5.."`. The 401, 403, 413 and 429 refusals count on neither side.
+- **Moved to S3-9 (Q2):** the name-based no-secrets rule, and the Qdrant URL in a job's error
+  text. S3-9's story has both lines.
+- **Stays:** the stale `stream_options` assertion; this story did not run
+  `test_fallback_openai.py`.
 
 ## Deviation from plan
 
-(Filled at close-out.)
+- **The model:** Opus 5.5 at max effort, in place of Fable, which is unavailable (CLAUDE.md).
+- **Two breaking commits, not one** (D13): the body limit and the trusted proxies
+  (`f961a25`), and the rate limits (`bad1070`), each with its own `BREAKING-CHANGE:` trailer.
+- **The hermetic chunked-body test sends 80 KiB, whole,** not 1 MB: a server that answers
+  before an unread body ends may reset the connection under the client, and lose the 413 it
+  sent. The live run sent the megabyte both ways (row 15).
+- **An abandoned job counts as a failed run** (not in D11): once, by the replica whose write
+  changed its row, so `RagIngestFailed` fires after a crash mid-ingest; and that replica
+  removes its lock file (Discovered).
+- **`IngestJob` records the key that started it** (an `api_key` column), so the job's thread
+  can bind the name: the request's log context never reaches that thread (D3 said the thread
+  binds it).
+- **`KeysFileSettings`** in `settings.py`: `rag-keys` reads `RAG_API_KEYS_FILE` alone, so a
+  malformed `RAG_API_PORT` cannot stop it. **`trusted_proxies` is a string** in
+  `ServerSettings`, parsed by `proxy_addresses`: pydantic-settings reads a list from the
+  environment as JSON.
+- **The README's "Upgrading from v0.3" gains item 6,** the API's limits (not in D12).
+- **The close-out adds a fix commit** before the record: the live run's two findings
+  (Discovered).

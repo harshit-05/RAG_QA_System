@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | **Status** | Todo |
-| **Closes** | SRS §11 (CI: container build and vulnerability scan, merges blocked on red; containerization; config management); SRS §8.3 (environment overlays); SRS §9 LLM05 (the image scanned); DEC-24; backlog: the Docker image's install, its stop signal and a forced stop; the audit-gate policy; TLS; the retrieval deadline that is not a hard bound (moved from S3-7); the model loader's progress bar in JSON logs (S3-7) |
+| **Closes** | SRS §11 (CI: container build and vulnerability scan, merges blocked on red; containerization; config management); SRS §8.3 (environment overlays); SRS §9 LLM05 (the image scanned); DEC-24; backlog: the Docker image's install, its stop signal and a forced stop; the audit-gate policy; TLS; the retrieval deadline that is not a hard bound (moved from S3-7); the model loader's progress bar in JSON logs (S3-7); the name-based no-secrets rule and the Qdrant URL in a job's error text (moved from S3-8) |
 | **Depends on** | S3-8 |
 | **Model** | Opus 5.5 at max effort (Docker and CI surface new to this repository, with known traps: the torch variant, PID 1's signals, SSE through a proxy) |
 | **Plan-first** | yes |
@@ -112,6 +112,18 @@ compose, the overlay and TLS) against CI's scanning (the `container` job, Trivy,
   late in a slow retrieval, as under caveat 26's CPU contention.
   - **`.env.example`** (committed): every variable named, `UID` and `GID` included, no
     values. `.env` stays gitignored.
+- **Two lines moved from S3-8** (its plan, Q2; the maintainer, 2026-10-26).
+  - **The config's no-secrets rule is name-based** (S3-6's first review).
+    `Components.check_api_keys` refuses `api_key` and `*_api_key`, in any case and depth;
+    `default_headers: {Authorization: …}` or `{x-api-key: …}`, a hyphenated `api-key` and
+    `token` load, and so does a plain `http://` remote `base_url`, which sends the fallback's
+    key and the retrieved chunks in clear. The overlay (`RAG_CONFIG_OVERLAY`) brings configs
+    from deployments here: normalise hyphens, refuse those header names, and require `https`
+    unless the host is loopback; or say in the docs that the rule is best-effort.
+  - **The Qdrant URL in an ingest job's error text** (S3-2's second review). `describe_error`
+    passes `cannot use Qdrant at http://host:6333 (…)` through to `GET /v1/ingest/<job>`. Not
+    a path, so DEC-18 holds. Since S3-8 only an `ingest` key reads a job; once Qdrant sits on
+    compose's internal network, decide whether to redact the address.
 - **Signals** (the backlog line). With `init: true`, `docker stop` ends `rag-serve` with
   status 143, which stays. Check, and record here:
   - the status with and without the init;
