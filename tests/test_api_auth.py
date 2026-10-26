@@ -448,3 +448,14 @@ def test_a_question_refused_for_its_scope_counts_as_a_403(
     assert response.status_code == 403
     assert response.json() == {"detail": "this API key lacks the query scope"}
     assert refusals(metrics.NO_SCOPE) - before == 1  # the question; the document list is none
+
+
+@pytest.mark.parametrize(("names", "said"), [(["bot"], "1 key."), (["bot", "ops"], "2 keys.")])
+def test_reading_the_file_says_how_many_keys_in_number(
+    keys_file: Path, caplog: pytest.LogCaptureFixture, names: list[str], said: str
+) -> None:
+    # Found in S3-8's live run: "1 keys." (the plural slips S2-8 and S3-7 fixed elsewhere).
+    caplog.set_level(logging.INFO, logger="rag_qa.api.auth")
+    write_keys(keys_file, **dict.fromkeys(names, "query"))
+    KeyRing(keys_file, None)
+    assert caplog.messages[-1].endswith(f": {said}")

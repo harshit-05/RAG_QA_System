@@ -178,6 +178,7 @@ def test_a_job_whose_process_was_killed_reads_failed_and_abandoned_once(state: P
     assert (job.status, job.abandoned, job.exit_code, job.report) == ("failed", True, None, None)
     assert job.finished_at is not None
     assert failed_runs() - before == 1
+    assert not store.lock_path("d" * 32).exists()  # the file the dead process left, removed
     assert store.get("d" * 32) == job  # the verdict is written: read again, it counts no more
     assert failed_runs() - before == 1
 
@@ -187,6 +188,7 @@ def test_a_dead_job_s_row_never_holds_the_409(state: Path) -> None:
     die_mid_job(state, "d" * 32)
     before = failed_runs()
     store.start("e" * 32, rebuild=False, api_key=None).release()  # no 409
+    assert not store.lock_path("d" * 32).exists()
     dead = store.get("d" * 32)
     assert dead is not None and (dead.status, dead.abandoned) == ("failed", True)
     assert failed_runs() - before == 1  # judged once, by the start

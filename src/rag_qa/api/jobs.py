@@ -163,8 +163,11 @@ def _job(row: sqlite3.Row) -> IngestJob:
     )
 
 
-def _abandoned(job_id: str) -> None:
-    """Report the verdict this replica wrote on a dead job: once, by whoever wrote it."""
+def _abandoned(job_id: str, lock_path: Path) -> None:
+    """Report the verdict this replica wrote on a dead job, once, by whoever wrote it, and
+    remove the lock file its process could not: free, and never taken again, since no other job
+    has its ID (found in S3-8's live run)."""
+    lock_path.unlink(missing_ok=True)
     logger.warning(
         "Ingest job %s was abandoned: the process running it ended before it did. The live "
         "index changed only if it had published; the next ingest cleans up what it left.",
@@ -300,7 +303,7 @@ class JobStore:
             lock.release()
             raise
         for job in dead:
-            _abandoned(job)
+            _abandoned(job, self.lock_path(job))
         return lock
 
     def _prune(self, db: sqlite3.Connection) -> None:
@@ -329,7 +332,7 @@ class JobStore:
             again = self._row(db, job_id)  # it may have ended between the read and the probe
             if again is not None and again["status"] in UNFINISHED:
                 if self._abandon(db, job_id):  # autocommit: written already
-                    _abandoned(job_id)
+                    _abandoned(job_id, self.lock_path(job_id))
                 again = self._row(db, job_id)
             return None if again is None else _job(again)
 

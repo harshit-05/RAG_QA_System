@@ -240,7 +240,10 @@ class KeyRing:
             )
             return
         if self.problem is not None or self._keys != keys:
-            logger.info("Read the keys file %s: %d keys.", self.path, len(keys))
+            count = len(keys)
+            logger.info(
+                "Read the keys file %s: %d %s.", self.path, count, "key" if count == 1 else "keys"
+            )
         self._keys = keys
         self.problem = None
 
