@@ -368,10 +368,12 @@ uv run rag-keys revoke bot                        # a running server refuses it 
   without the route's scope gets `403`.
 - **The file lives in `var/`,** which S3-9's compose stack will mount as a folder: a file
   mounted on its own would keep its old version in the container after `rag-keys` replaced
-  it. A running
-  server reads it again within 5 s of a change. One that is missing or does not parse is
-  refused whole: every key gets `503`, and `GET /v1/health` is `503` and says why, until it
-  parses again; `RAG_API_TOKEN` still works.
+  it. A running server reads it again within 5 s of a change. One that is missing or does not
+  parse is refused whole: every key gets `503`, and `GET /v1/health` is `503` and says why,
+  never which key (the server log says that), until it parses again; `RAG_API_TOKEN` still
+  works.
+- **Back the file up with `var/`.** It holds only hashes, so a copy gives away no token, but
+  without it every key must be made again and handed out anew.
 - **Logs and traces carry the key's name** (`api_key`, `rag.api_key.name`), never its token.
 
 **What a refused request gets,** before any answer starts:
@@ -691,7 +693,7 @@ key. Off unless the variable is set; a port in use stops `rag-serve` with exit 2
 | `rag_answers_total{outcome}` | answers whose stream began: `answered`, `failed` (an `error` event after the 200), or `cancelled` (the client left) |
 | `rag_fallback_answers_total` | answers the hosted fallback gave: their question and chunks left this machine |
 | `rag_refusals_total{code, reason}` | questions refused before their first byte: `503` `busy`, `dependency_down`, `no_index` or `keys_unreadable`; `500` `error`, an unexpected one; `401` `unauthenticated`, `403` `scope`, `413` `too_large`, `429` `rate_limited` or `auth_limited` |
-| `rag_ingest_runs_total{status}`, `rag_ingest_chunks_total` | the API's ingest jobs, by how they ended (an abandoned one as `failed`, counted by the replica that finds it), and the chunks they embedded |
+| `rag_ingest_runs_total{status}`, `rag_ingest_chunks_total` | the API's ingest jobs, by how they ended (an abandoned one as `failed`, counted once, by the replica that finds it: the next to start, or the first asked about it), and the chunks they embedded |
 | `rag_breaker_state{breaker, state}` | 1 for each breaker's current state (`qdrant`, `llm`, `fallback`), as `/v1/health` reports them |
 | `rag_index_documents` | the documents in the index served, 0 while none is |
 

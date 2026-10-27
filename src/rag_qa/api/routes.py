@@ -265,12 +265,14 @@ async def authenticate(request: Request) -> None:
             UNAUTHENTICATED,
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # Named before its bucket is drawn on, so a key's own 429 says whose it is (S3-8's second
+    # review).
+    logs.bind(api_key=key.name)
+    tracing.annotate({tracing.API_KEY_NAME: key.name})
     wait = limits.keys.take(key.name)
     if wait is not None:
         limited(request, metrics.RATE_LIMITED, wait, "this key")
     request.state.caller = key
-    logs.bind(api_key=key.name)
-    tracing.annotate({tracing.API_KEY_NAME: key.name})
 
 
 #: Why a key is refused while the keys file cannot be used: fixed text, never its path.
@@ -704,8 +706,8 @@ async def readiness(
 
 def keys_health(keys: KeyRing) -> KeysHealth | None:
     """The keys file as ``GET /v1/health`` reports it, ``None`` while none is set. It is
-    looked at again first, at most every 5 s. Fixed text, never the path (DEC-18), nor how
-    many keys it holds: health answers anyone."""
+    looked at again first, at most every 5 s. Fixed text, never the path (DEC-18), nor a key's
+    name, its place or how many keys it holds: health answers anyone (S3-8's second review)."""
     if keys.path is None:
         return None
     keys.refresh()

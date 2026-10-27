@@ -16,6 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +134,19 @@ def test_a_probe_never_creates_the_lock_file(state: Path) -> None:
     assert not path.exists()
 
 
+def test_a_probe_never_takes_another_probe_for_the_lock_s_owner(state: Path) -> None:
+    # Two replicas reading a dead job at once probe its lock together (S3-8's second review):
+    # an exclusive probe took the other's lock for the owner's.
+    path = JobStore(state).lock_path("a" * 32)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()  # the file a dead job's process left
+    with open(path, "rb") as other:
+        fcntl.flock(other.fileno(), fcntl.LOCK_SH)  # another probe, mid-way
+        assert not held(path)
+        fcntl.flock(other.fileno(), fcntl.LOCK_EX)  # an owner
+        assert held(path)
+
+
 def test_the_log_is_appended_line_by_line_and_read_by_any_replica(state: Path) -> None:
     one, two = JobStore(state), JobStore(state)
     one.start("a" * 32, rebuild=False, api_key=None)
@@ -192,6 +206,51 @@ def test_a_dead_job_s_row_never_holds_the_409(state: Path) -> None:
     dead = store.get("d" * 32)
     assert dead is not None and (dead.status, dead.abandoned) == ("failed", True)
     assert failed_runs() - before == 1  # judged once, by the start
+
+
+def test_a_start_is_not_refused_while_another_replica_probes_a_dead_job(state: Path) -> None:
+    # The 409 a pair of exclusive probes gave (S3-8's second review): 42 of 300 starts while
+    # another process probed the dead job's lock in a loop.
+    store = JobStore(state)
+    die_mid_job(state, "d" * 32)
+    with open(store.lock_path("d" * 32), "rb") as other:
+        fcntl.flock(other.fileno(), fcntl.LOCK_SH)  # another replica's probe, mid-way
+        store.start("e" * 32, rebuild=False, api_key=None).release()  # no 409
+    dead = store.get("d" * 32)
+    assert dead is not None and (dead.status, dead.abandoned) == ("failed", True)
+
+
+async def nothing() -> None:
+    return None
+
+
+def test_a_replica_judges_a_dead_job_as_it_starts_though_nobody_asks(jobs_config: Any) -> None:
+    # A crash mid-ingest, and no client asks again (S3-8's second review): the replica that
+    # starts next counts it, so RagIngestFailed fires, and removes the lock file it left.
+    state = jobs_config.paths.state
+    die_mid_job(state, "d" * 32)
+    before = failed_runs()
+    jobs = api_jobs.IngestJobs(jobs_config, after=nothing)
+    assert failed_runs() - before == 1
+    assert not jobs.store.lock_path("d" * 32).exists()
+    with closing(sqlite3.connect(state / "jobs.sqlite3")) as db:
+        assert db.execute("SELECT status, abandoned FROM jobs").fetchall() == [("failed", 1)]
+    job = jobs.store.get("d" * 32)
+    assert job is not None and (job.status, job.abandoned) == ("failed", True)
+    assert failed_runs() - before == 1  # judged once
+
+
+def test_a_replica_starting_beside_a_live_job_leaves_it_running(jobs_config: Any) -> None:
+    store = JobStore(jobs_config.paths.state)
+    lock = store.start("a" * 32, rebuild=False, api_key=None)
+    store.running("a" * 32)
+    before = failed_runs()
+    api_jobs.IngestJobs(jobs_config, after=nothing)
+    job = store.get("a" * 32)
+    assert job is not None and (job.status, job.abandoned) == ("running", False)
+    assert failed_runs() == before
+    assert store.lock_path("a" * 32).exists()
+    lock.release()
 
 
 def test_a_job_that_ends_between_the_read_and_the_probe_is_not_abandoned(

@@ -15,9 +15,10 @@ keeps its old inode when the host replaces it, and the container would never see
 
 **A file that cannot be used fails closed:** missing, unreadable, not JSON or not a keys file,
 it holds no key at all until it parses again, and :attr:`KeyRing.problem` says why, in fixed
-text that never names the path (it goes over HTTP). ``RAG_API_TOKEN`` keeps working. A file that
-does not parse stays closed until it changes; one the operating system would not let be read is
-tried again at every look, since nothing is wrong with it (S3-8's first review).
+text that names neither the path nor a key, nor counts them (it goes over HTTP, to anyone); the
+server log says which key is wrong (S3-8's second review). ``RAG_API_TOKEN`` keeps working. A
+file that does not parse stays closed until it changes; one the operating system would not let
+be read is tried again at every look, since nothing is wrong with it (S3-8's first review).
 
 **The check** (:meth:`KeyRing.match`) hashes the presented token and compares the digest with
 every key's through ``hmac.compare_digest``, on bytes, with no early exit: every failure takes
@@ -96,8 +97,14 @@ class ApiKey:
 
 
 class KeysFileError(ValueError):
-    """The keys file cannot be used. The message is fixed text with no path in it: the API's
-    health reports it."""
+    """The keys file cannot be used. The message is fixed text with no path, no key's name and
+    no key's place in it: the API's health reports it to anyone. :attr:`detail` adds which key
+    is wrong, for the server log and ``rag-keys`` (S3-8's second review)."""
+
+    def __init__(self, problem: str, where: str | None = None) -> None:
+        super().__init__(problem)
+        #: The problem, and which key it is in when it is one key's.
+        self.detail = problem if where is None else f"{problem}: {where}"
 
 
 class KeysFileUnreadableError(KeysFileError):
@@ -106,10 +113,14 @@ class KeysFileUnreadableError(KeysFileError):
     reads it tries again at its next look (:meth:`KeyRing.refresh`)."""
 
 
+#: What health says of a file with one key that is not valid: never which one.
+INVALID_KEY: Final = "the keys file holds a key that is not valid"
+
+
 def _key(entry: object, at: int) -> ApiKey:
-    where = f"the keys file's key {at + 1}"
+    where = f"key {at + 1}"
     if not isinstance(entry, dict) or set(entry) != {"name", "scopes", "sha256", "created"}:
-        raise KeysFileError(f"{where} is not a name, scopes, sha256 and created")
+        raise KeysFileError(INVALID_KEY, f"{where} is not a name, scopes, sha256 and created")
     name, scopes, sha256, created = (
         entry["name"],
         entry["scopes"],
@@ -117,17 +128,19 @@ def _key(entry: object, at: int) -> ApiKey:
         entry["created"],
     )
     if not isinstance(name, str) or name_problem(name) is not None:
-        raise KeysFileError(f"{where} has no valid name")
+        raise KeysFileError(INVALID_KEY, f"{where} has no valid name")
     if (
         not isinstance(scopes, list)
         or not scopes
         or not all(isinstance(s, str) and s in SCOPES for s in scopes)
     ):
-        raise KeysFileError(f"{where} ({name}) has no valid scopes: some of {', '.join(SCOPES)}")
+        raise KeysFileError(
+            INVALID_KEY, f"{where} ({name}) has no valid scopes: some of {', '.join(SCOPES)}"
+        )
     if not isinstance(sha256, str) or re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
-        raise KeysFileError(f"{where} ({name}) has no valid sha256")
+        raise KeysFileError(INVALID_KEY, f"{where} ({name}) has no valid sha256")
     if not isinstance(created, str):
-        raise KeysFileError(f"{where} ({name}) has no valid created")
+        raise KeysFileError(INVALID_KEY, f"{where} ({name}) has no valid created")
     return ApiKey(name, frozenset(scopes), bytes.fromhex(sha256), created)
 
 
@@ -248,12 +261,12 @@ class KeyRing:
             self._keys = ()
             self.problem = str(e)
             if not repeated:
-                # The server log may name the path; HTTP gets the fixed text alone.
+                # The server log may name the path and the key; HTTP gets the fixed text alone.
                 logger.warning(
                     "The keys file %s cannot be used: %s. Every key is refused with 503 until "
                     "it can%s.",
                     self.path,
-                    self.problem,
+                    e.detail,
                     "; RAG_API_TOKEN still works" if self._token is not None else "",
                 )
             return

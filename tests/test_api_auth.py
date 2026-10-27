@@ -15,15 +15,16 @@ import secrets
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
+import structlog
 from conftest import StreamingFakeChatModel, Traced, fake_serving
 from fastapi.testclient import TestClient
 from opentelemetry.trace import SpanKind
 from pydantic import SecretStr
 
-from rag_qa.api import auth
+from rag_qa.api import auth, routes
 from rag_qa.api.app import create_app
 from rag_qa.api.auth import ApiKey, KeyRing, KeysFileError
 from rag_qa.api.state import Serving
@@ -140,8 +141,12 @@ def test_a_keys_file_that_does_not_parse_says_why_without_its_path(
     keys_file.write_text(text)
     with pytest.raises(KeysFileError) as raised:
         auth.read_keys(keys_file)
-    assert problem in str(raised.value)
-    assert str(keys_file.parent) not in str(raised.value)
+    # The detail, for the server log and rag-keys, says which key; the message, which health
+    # answers anyone with, names none and no key's place (S3-8's second review).
+    assert problem in raised.value.detail
+    assert raised.value.detail.startswith(str(raised.value))
+    assert "bot" not in str(raised.value) and "key 1" not in str(raised.value)
+    assert str(keys_file.parent) not in raised.value.detail
 
 
 def test_a_missing_or_unreadable_keys_file_says_so(keys_file: Path) -> None:
@@ -365,6 +370,27 @@ def test_a_broken_keys_file_refuses_keys_with_503_and_health_says_why(
     assert refusals(metrics.KEYS_UNREADABLE) - before == 1
 
 
+def test_health_and_the_503_name_no_key_of_a_broken_file_and_the_log_does(
+    fake_config: RagConfig, keys_file: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Health answers anyone (S3-8's second review): which key is wrong, its name and its place,
+    # is the server log's alone.
+    caplog.set_level(logging.WARNING, logger="rag_qa.api.auth")
+    keys_file.parent.mkdir(parents=True)
+    good = ApiKey("laptop", frozenset({"query"}), auth.digest(TOKEN), "x").entry()
+    bad = good | {"name": "ci-deploy-bot", "scopes": ["admin"]}
+    keys_file.write_text(json.dumps({"version": 1, "keys": [good, good | {"name": "bot"}, bad]}))
+    with serve(fake_config, keys_file=keys_file) as client:
+        health = client.get("/v1/health")
+        refused = client.get("/v1/documents", headers=bearer(TOKEN))
+    assert (health.status_code, refused.status_code) == (503, 503)
+    assert health.json()["keys"]["detail"].startswith(auth.INVALID_KEY)
+    for response in (health, refused):
+        assert "ci-deploy-bot" not in response.text and "key 3" not in response.text
+        assert "laptop" not in response.text
+    assert "key 3 (ci-deploy-bot) has no valid scopes" in caplog.text
+
+
 def test_health_reports_a_usable_keys_file_and_none_without_one(
     fake_config: RagConfig, keys_file: Path
 ) -> None:
@@ -473,6 +499,30 @@ def test_each_key_has_its_own_bucket(fake_config: RagConfig, keys_file: Path) ->
     assert limited.status_code == 429 and int(limited.headers["retry-after"]) == 20
     assert "this key may make 3 a minute" in limited.json()["detail"]
     assert refusals(metrics.RATE_LIMITED) == before  # no question was refused
+
+
+def test_a_key_s_own_429_is_named_in_its_log_context_and_on_its_span(
+    fake_config: RagConfig, keys_file: Path, traced: Traced, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The key is named before its bucket is drawn on (S3-8's second review): uvicorn's access
+    # line and the server span of a key's own 429 say whose it was.
+    tokens = write_keys(keys_file, bot="ingest")
+    bound: list[object] = []
+    real = routes.limited
+
+    def limited(request: Any, reason: str, wait: float, whose: str) -> NoReturn:
+        bound.append(structlog.contextvars.get_contextvars().get("api_key"))
+        real(request, reason, wait, whose)
+
+    monkeypatch.setattr(routes, "limited", limited)
+    with serve(fake_config, keys_file=keys_file, rate_limit=1) as client:
+        codes = [
+            client.get("/v1/ingest/x", headers=bearer(tokens["bot"])).status_code for _ in range(2)
+        ]
+    assert codes == [404, 429]
+    assert bound == ["bot"]
+    servers = [s for s in traced.spans() if s.kind is SpanKind.SERVER]
+    assert [dict(s.attributes or {}).get(tracing.API_KEY_NAME) for s in servers] == ["bot", "bot"]
 
 
 def test_without_a_credential_each_address_is_limited(fake_config: RagConfig) -> None:

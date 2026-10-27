@@ -209,7 +209,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _revoke(path, args.name)
     except KeysFileError as e:
         print(
-            f"Error: {e} ({path}): fix it, or move it aside and add the keys again.",
+            f"Error: {e.detail} ({path}): fix it, or move it aside and add the keys again.",
             file=sys.stderr,
         )
         return EXIT_CANNOT_RUN

@@ -2826,9 +2826,10 @@ _As built in S3-8 (2026-10-26), from its approved plan (the story's "Plan", D1â€
   `{"version": 1, "keys": [...]}`; a name is `[a-z0-9][a-z0-9_-]{0,63}`, and `token` is
   reserved for `RAG_API_TOKEN`. `KeyRing` looks at the file at most every 5 s and reads it
   again when its signature moved; a file that cannot be used holds no key, its problem is fixed
-  text (never the path), keys get 503 with `Retry-After: 5`, and readiness is 503 with a `keys`
-  entry (the maintainer's choice at the plan). A wrong token presented while the file is broken
-  draws on the failure bucket too, or guesses at `RAG_API_TOKEN` would meet unthrottled 503s.
+  text (never the path, a key's name or a count: the server log says which key is wrong), keys
+  get 503 with `Retry-After: 5`, and readiness is 503 with a `keys` entry (the maintainer's
+  choice at the plan). A wrong token presented while the file is broken draws on the failure
+  bucket too, or guesses at `RAG_API_TOKEN` would meet unthrottled 503s.
   `rag-keys` writes under a `flock` on `<file>.lock`, through a 0600 temporary file and
   `os.replace`, the folder fsynced; it loads no web framework and no model stack.
 - **The dependency order on a route:** Origin 403; Host 403 (no credential only);
@@ -2855,8 +2856,10 @@ _As built in S3-8 (2026-10-26), from its approved plan (the story's "Plan", D1â€
   callback. Each guard against the race design review 2 measured, the second read and the
   conditional verdict, is enough alone; both are kept, and a test removes them together. An
   abandoned job counts once in `rag_ingest_runs_total{status="failed"}`, by the replica whose
-  write changed its row, so `RagIngestFailed` fires after a crash mid-ingest too. The last 100
-  jobs are kept.
+  write changed its row, and every replica judges the unfinished jobs as it starts (S3-8's
+  second review), so `RagIngestFailed` fires after a crash mid-ingest too, though no client asks
+  for the job again. A lock probe takes a shared lock, so two replicas probing one dead job never
+  take each other for its owner. The last 100 jobs are kept.
 - **The health probes:** `state.Probe`, a shared task behind `asyncio.shield`, cached for 5 s;
   an exception is not cached. Readiness reads the alias and the model's server through one
   each; a question never does.

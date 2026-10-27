@@ -38,8 +38,10 @@ folder answers for any job, and the 409 holds whichever replica is asked
 - **What it reports** (S3-7): the job's log lines carry its ``job_id``, and the key that started
   it (S3-8). Each job counts in ``rag_ingest_runs_total`` by how it ended, its embedded chunks in
   ``rag_ingest_chunks_total``; an abandoned one counts as failed, once, on the replica that
-  finds it, since the process it ran in can count nothing. A ``rag-ingest`` run outside the
-  server has no metrics listener: it reports in its log.
+  finds it, since the process it ran in can count nothing. Every replica judges the unfinished
+  jobs as it starts (:meth:`JobStore.judge_unfinished`), so a crash mid-ingest is counted when
+  the server comes back, though no client asks for the job (S3-8's second review). A
+  ``rag-ingest`` run outside the server has no metrics listener: it reports in its log.
 - **Its trace** (S3-7b): while tracing is on, the job's ``rag.ingest`` span is the child of the
   ``POST /v1/ingest`` request that started it, in that request's trace, though it ends minutes
   after the request does. A job abandoned at shutdown never ends its spans: they go with it.
@@ -206,13 +208,18 @@ class JobLock:
 
 def held(path: Path) -> bool:
     """Whether a job's lock is held now, by any process: this one's other threads included,
-    since a ``flock`` belongs to the open file. Never creates the file: a missing one is free."""
+    since a ``flock`` belongs to the open file. Never creates the file: a missing one is free.
+
+    The probe asks for a shared lock: the owner's exclusive one refuses it, and another probe's
+    does not. Two exclusive probes of a dead job's lock, two replicas reading it at once, would
+    each take the other for its owner, and a start would answer 409 (S3-8's second review).
+    """
     try:
         fd = os.open(path, os.O_RDONLY)
     except FileNotFoundError:
         return False
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
     except BlockingIOError:
         return True
     finally:
@@ -336,6 +343,19 @@ class JobStore:
                 again = self._row(db, job_id)
             return None if again is None else _job(again)
 
+    def judge_unfinished(self) -> None:
+        """Judge every unfinished job as :meth:`get` does, in its order: what a replica does as
+        it starts, so a job whose process died is counted, and its lock file removed, though no
+        client asks for it again (S3-8's second review). A live job's lock is held: it is left
+        as it is."""
+        with self._connect() as db:
+            unfinished = [
+                row["job_id"]
+                for row in db.execute(f"SELECT job_id FROM jobs WHERE {_STILL_UNFINISHED}")
+            ]
+        for job_id in unfinished:
+            self.get(job_id)
+
     def started(self, job_id: str) -> None:
         """The job's thread began."""
         with self._connect() as db:
@@ -405,6 +425,8 @@ class IngestJobs:
         self._config = config
         self._after = after
         self.store = JobStore(config.paths.state)
+        # What a crash left: built in the lifespan's thread (Serving.build), off the event loop.
+        self.store.judge_unfinished()
         self._running: IngestJob | None = None  # this replica's own, while its thread runs
         self._tasks: set[asyncio.Task[None]] = set()  # held, so none is garbage-collected
 
