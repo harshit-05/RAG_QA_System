@@ -2,7 +2,7 @@
 
 | | |
 | --- | --- |
-| **Status** | Done 2026-10-26, before its PR. Plan approved 2026-10-26 (below, "Plan"); on Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-26 (`115e85a` … `2aef8d7`, then the live run's two fixes and this record). Every Verification command ran but the last: `gh pr checks` waits for the PR, since CI runs on pull requests and on `main` only. |
+| **Status** | Done 2026-10-26 (PR #28, awaiting its merge). Plan approved 2026-10-26 (below, "Plan"); on Opus 5.5 at max effort (Deviation). Built and committed on 2026-10-26 (`115e85a` … `2aef8d7`, then the live run's two fixes and the close-out record, `646e888`). The first review (2026-10-27, on `646e888`) found one defect, a refused read of the keys file that held every key closed, and three smaller things; the second (2026-10-27, on `bc2d892`) found no blocker and five things, among them a crash mid-ingest counted only once a client asked. The fixes are on the PR (`4a1a820`, `5caa9a7`). CI is green on `a6ed789`, the second review's record (run 40471130129: `check`, `deploy-config`, `eval-retrieval`). |
 | **Closes** | NFR-5; DEC-23; backlog: multi-user auth and rate limiting (API deployment hardening), request size and health-check load, statelessness |
 | **Depends on** | S3-7b (S3-7 was split in its plan, 2026-10-23) |
 | **Model** | fable (runs on Opus 5.5 at max effort while Fable is unavailable; record it under Deviation) |
@@ -192,7 +192,7 @@ The live run used a scratch index, `RAG_QDRANT_COLLECTION=s3_8_live`, deleted af
 | 17 | `kill -9` of rag-serve's python during a `rebuild: true` job, then a restart (`serve-2.log`) | the job was running (its log lines come from inside the writer lock). After the restart: "Serving index s3_8_live--gen-…-eb33e4f9", the published one, unchanged; `GET /v1/ingest/<job>` 200, "Ingest job 33812d46… was abandoned", once |
 | 18 | `rag-keys revoke bot`, then bot's token | 401 at the next request, the file read again ("1 keys", a slip: Discovered) |
 | 19 | the scratch index deleted, the test keys removed | `rag_qa`'s two generations and its alias on `…7f20891e` unchanged; `var/` holds `ingest.lock`, `jobs.sqlite3` and the dead job's lock file (Discovered) |
-| 20 | `gh pr checks` | not yet: no PR (CI runs on pull requests) |
+| 20 | `gh pr checks` (PR #28) | green on `646e888`, the close-out record (run 40370275154), on `bc2d892`, the first review's (run 40384658394), and on `a6ed789`, the second review's (run 40471130129): `check` 5m27s, `deploy-config` 23s, `eval-retrieval` 2m43s |
 
 ## Review notes for the human
 

@@ -6,8 +6,13 @@
 ## Now
 
 **Next action: S3-8's merge commit on PR #28** (`feat/s3-8-api-hardening`), once CI is green on
-the second review's commits; then S3-9. The PR's title and the merge message carry the breaking
-changes (`f961a25`, `bad1070`). `gh pr checks` is the one Verification command left.
+this record; then S3-9. The PR's title and the merge message carry the breaking changes
+(`f961a25`, `bad1070`). The second review's live check (`kill -9` mid-job, a restart, the
+failed-runs counter scraped before any request) was optional, and was not run.
+
+**S3-8's PR is green** (2026-10-27): CI passed on `a6ed789`, the second review's record (run
+40471130129: `check` 5m27s, `deploy-config` 23s, `eval-retrieval` 2m43s), as on `646e888`
+(run 40370275154) and `bc2d892` (run 40384658394). Every Verification command has now run.
 
 **S3-8's second review is done (2026-10-27, on `bc2d892`).** Detail in the story ("Second
 review"). No blocker; five things, fixed on the PR:
@@ -1787,7 +1792,7 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Done 2026-10-23 (PR #24, merged 2026-10-23) |
 | [S3-7](phase-3/S3-7-observability.md) | Structured logs, metrics and the capacity benchmarks | NFR-10 (logs, metrics), NFR-1, NFR-2 (a), NFR-3, DEC-22 (logs, metrics) | S3-6 | Done 2026-10-25 (PR #25, merged 2026-10-25) |
 | [S3-7b](phase-3/S3-7b-traces-alerts.md) | Traces and alerts | NFR-10 (traces), DEC-22 (traces, alerts) | S3-7 | Done 2026-10-26 (PR #26, merged 2026-10-26; a fix after it, PR #27, merged 2026-10-26) |
-| [S3-8](phase-3/S3-8-api-hardening.md) | API keys, rate limits and a stateless query tier | NFR-5, DEC-23 | S3-7b | Done 2026-10-26 (PR to open) |
+| [S3-8](phase-3/S3-8-api-hardening.md) | API keys, rate limits and a stateless query tier | NFR-5, DEC-23 | S3-7b | Done 2026-10-26 (PR #28, awaiting its merge) |
 | [S3-9](phase-3/S3-9-containers.md) | Containers, compose, TLS and CI scanning | §11 (CI, containers, config), §8.3, §9 LLM05, DEC-24 | S3-8 | Todo |
 | [S3-10](phase-3/S3-10-backup-restore.md) | Backup and restore | §11 (backup and DR), DEC-25 | S3-9 | Todo |
 | [S3-11](phase-3/S3-11-tier2-sweep.md) | The tier-2 sweep: measure every lever on a T4 | DEC-2, DEC-26 (the sweep), NFR-2 (a)'s levers | S3-5, S3-10 | Todo |
