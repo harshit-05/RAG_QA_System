@@ -102,8 +102,9 @@ README states what is lost and how long recovery takes. Design: ARCHITECTURE.md 
 ## Out of scope
 
 - Uploading to object storage from the code; Qdrant's own S3 snapshot storage.
-- Backing up the job database or the keys file. The README says to back the keys file up as
-  the secret it is.
+- Backing up the job database or the keys file. The README says to back the keys file up with
+  `var/` ("Access", since S3-8's second review): it holds hashes only, so a copy gives away no
+  token, and without it every key must be made again.
 
 ## Verification
 

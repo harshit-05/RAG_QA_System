@@ -271,7 +271,8 @@ the golden questions, so `rag-eval check` stays 0 and the contexts IDENTICAL to 
   through the new dependencies, and a question cut that early leaves Ollama nothing to finish.
 - **uvicorn's access line carries the key's name** (rows 11–18): it is logged in the request's
   own task, after the response, so it inherits the context `authenticate` bound. Every access
-  line names the key that made it, a 401's none.
+  line names the key that made it, a 401's none. (A key's own 429 named none until the second
+  review, which binds the name before the bucket: its fix 4.)
 - **Two guards close the race design review 2 measured, and each is enough alone:** the second
   read of the row, and the verdict written only over an unfinished status. Removing either
   alone changes nothing a client sees (an equivalent mutant); removing both fails the race
@@ -370,3 +371,84 @@ retrieval path, so the IDENTICAL contexts stand.
 
 **After the fixes:** 1715 passed, 18 skipped, 5 xfailed; coverage 98.26%; ruff, format and mypy
 clean; the lock unchanged.
+
+## Second review (2026-10-27, Opus 5.5 on `bc2d892`, PR #28)
+
+Reviewed as the second reviewer, against the PR's head, the first review's fix and record
+included, in scratch copies of it (never in the repository). The maintainer's Qdrant was not
+touched, and no model ran. No blocker. Five things were fixed on the PR: a gap in what the
+alerts claim, a disclosure the docs ruled out, a race, a log gap, and a stale line in a later
+story.
+
+**Reproduced as they were:**
+
+- The suite: 1715 passed, 18 skipped, 5 xfailed; 98.26%. In a copy that is not a git checkout,
+  two hygiene tests skip.
+- ruff, the format check and mypy are clean; `uv lock --check` passes, and `uv.lock` equals
+  `main`'s.
+- Every commit's trailers parse, the two `BREAKING-CHANGE:` ones included.
+
+**Fixed:**
+
+1. **A crash mid-ingest was counted only once a client asked about the job.** The probe: `kill -9`
+   of a process holding a job, then a fresh replica scraped before any request. It read `failed`
+   0, the row still `running`, and its lock file was left behind; only a `GET /v1/ingest/<id>` or
+   a new start judged it. ARCHITECTURE and this story's Deviation said `RagIngestFailed` fires
+   after a crash mid-ingest.
+   - The fix: every replica judges the unfinished jobs as it starts (`JobStore.judge_unfinished`,
+     called from `IngestJobs`, in the lifespan's thread), in `get()`'s own order, so a live job,
+     its lock held, is left alone.
+   - After it, the same probe reads `failed` 1 at the start, the row final, the lock file gone.
+   - Two tests: a dead job is counted once at the start; a live one is left running.
+2. **Health told anyone a key's name and its place.** With one malformed entry, `GET /v1/health`,
+   open and unthrottled, said "the keys file's key 3 (ci-deploy-bot) has no valid scopes…".
+   `keys_health`'s own docstring said it never tells how many keys the file holds.
+   - The fix: `KeysFileError`'s message is fixed text ("the keys file holds a key that is not
+     valid"). Its `detail`, which names the key, goes to the server log and to `rag-keys` alone.
+   - Tests: the parse cases find the key in the detail and not in the message; health and the
+     503 name neither the key nor its place, and the log does.
+3. **Two probes of a dead job's lock took each other for its owner.** `held()` asked for an
+   exclusive lock, so a probe that met another replica's probe read "held". With another process
+   probing in a loop, 14,614 of 20,000 probes of a free lock said "held", and 42 of 300 starts
+   answered 409 for a dead job. Real polls make the window microseconds wide.
+   - The fix, one flag: the probe asks for a shared lock, which the owner's exclusive one still
+     refuses. The same probe: 0 of 20,000, and 0 of 300.
+   - Two tests, neither timed.
+4. **A key's own 429 named no key** in its log lines or on its span: `authenticate` bound the
+   name after the bucket check. It binds it first now, so "every access line names the key that
+   made it" (Discovered) holds for a key's 429 too. A test reads the log context at the refusal,
+   and the 429's server span.
+5. **S3-10's story said the README asks to back the keys file up "as the secret it is".** It did
+   not, and the file holds hashes only. The README's "Keys" now says to back it up with `var/`
+   (a copy gives away no token; without it every key must be made again), and S3-10's line
+   points there.
+
+**Checked, nothing to fix:**
+
+- **The second read of a job's row** sees a commit made between the two reads, even with the
+  first cursor still alive: `fetchone` on a one-row result resets the statement, so the guard
+  does not rely on the cursor being freed (a probe on the PR's head).
+- **The scope test** walks the app's own routes, and **the spoofing tests** run the production
+  `uvicorn_config`.
+- **`BodyLimit`'s streamed 413** can only fire inside FastAPI's body read. After the last chunk,
+  uvicorn's `receive` returns only `http.disconnect`, and the routes that take no body never call
+  it.
+- **The cached probes** swallow their dependency's failure (`Serving.refresh`, `llm_reachable`),
+  so a dependency that is down is cached like one that is up.
+- **`start()`'s probe** cannot race a live job: `BEGIN IMMEDIATE` holds that job's `finish()` off
+  until the verdict is written.
+- **WAL with `synchronous=NORMAL`** keeps a commit through a `kill -9`.
+- **A replaced keys file always has a new inode:** the temporary file and the old one exist at
+  the same time.
+
+**After the fixes:**
+
+- The suite: 1721 passed, 18 skipped, 5 xfailed; coverage 98.26%. ruff, format and mypy are
+  clean, the lock is unchanged, and `rag-eval check` exits 0.
+- Four mutants, run after an unmutated control passed, all caught by their new tests: the
+  start-up judging removed, an exclusive probe, the detail back in the message, and the binding
+  after the bucket.
+- Only `api/` moved in `src/` since the live run (`2aef8d7`), none of it on the retrieval path,
+  so the IDENTICAL contexts stand.
+- An optional live check: `kill -9` of `rag-serve` mid-job, a restart, then
+  `rag_ingest_runs_total{status="failed"}` scraped before any request reads 1.

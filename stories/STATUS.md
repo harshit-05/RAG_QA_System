@@ -5,9 +5,25 @@
 
 ## Now
 
-**Next action: S3-8's second review on PR #28** (`feat/s3-8-api-hardening`), then a merge
-commit; then S3-9. The PR's title and the merge message carry the breaking changes (`f961a25`,
-`bad1070`). `gh pr checks` is the one Verification command left.
+**Next action: S3-8's merge commit on PR #28** (`feat/s3-8-api-hardening`), once CI is green on
+the second review's commits; then S3-9. The PR's title and the merge message carry the breaking
+changes (`f961a25`, `bad1070`). `gh pr checks` is the one Verification command left.
+
+**S3-8's second review is done (2026-10-27, on `bc2d892`).** Detail in the story ("Second
+review"). No blocker; five things, fixed on the PR:
+
+- **A crash mid-ingest** was counted, and `RagIngestFailed` fired, only once a client asked about
+  the job. Every replica now judges the unfinished jobs as it starts.
+- **Health, open to anyone,** named a malformed key and its place. Its text is fixed now; the
+  detail goes to the log alone.
+- **Two probes of a dead job's lock** took each other for its owner: a false 409, in 42 of 300
+  starts under a probing loop. The probe takes a shared lock.
+- **A key's own 429** named no key in its logs or on its span.
+- **S3-10's story** cited a README line on backing up the keys file that did not exist; it does
+  now.
+
+The suite: 1721 passed, 18 skipped, 5 xfailed; 98.26%. `rag-eval check` exits 0, and 4 mutants
+were caught.
 
 **S3-8's first review is done (2026-10-27, on `646e888`).** Detail in the story ("First
 review"). One defect, fixed on the PR: a read of the keys file the system refused (a full table
