@@ -14,8 +14,9 @@ listener: it reports in its log (DEC-22).
 
 **The SLOs** (S3-7b's alert rules). Each latency histogram has a bucket at its objective:
 ``rag_retrieval_seconds`` at 0.3 s (NFR-1), ``rag_sources_seconds`` at 2 s (NFR-2a),
-``rag_ttft_seconds`` at 300 s (NFR-2b, this CPU's class). Availability counts the 503s
-(:data:`REFUSALS`) and the answers that failed after their 200 (:data:`ANSWERS`).
+``rag_ttft_seconds`` at 300 s (NFR-2b, this CPU's class). Availability counts the 5xx
+refusals (:data:`REFUSALS`: the 503s, and an unexpected 500 since S3-8) and the answers that
+failed after their 200 (:data:`ANSWERS`); the 4xx refusals S3-8 adds count on neither side.
 
 **An answer whose client left before its first token** has no first token to observe, and
 availability leaves cancelled answers out, so a hung model whose users give up would move no
@@ -189,17 +190,48 @@ FALLBACK_ANSWERS: Final = Counter(
 )
 
 #: Why a question was refused before its first byte (DEC-18): no free slot, a breaker open on
-#: a dependency it needs (DEC-21), or no index the config can use.
+#: a dependency it needs (DEC-21), or no index the config can use; and since S3-8 (DEC-23) a
+#: body over the limit, no valid key, a key without the scope, a rate limit, too many failed
+#: authentications from its address, a keys file that cannot be used, or an unexpected error,
+#: the server's own 500.
 BUSY: Final = "busy"
 DEPENDENCY_DOWN: Final = "dependency_down"
 NO_INDEX: Final = "no_index"
+BODY_TOO_LARGE: Final = "too_large"
+UNAUTHENTICATED: Final = "unauthenticated"
+NO_SCOPE: Final = "scope"
+RATE_LIMITED: Final = "rate_limited"
+AUTH_LIMITED: Final = "auth_limited"
+KEYS_UNREADABLE: Final = "keys_unreadable"
+SERVER_ERROR: Final = "error"
+#: Each reason's status code. Availability counts the 5xx ones as bad, and the 4xx ones, the
+#: client's or the limits', on neither side (``deploy/prometheus/rules.yml``).
+REFUSAL_CODES: Final = {
+    BUSY: "503",
+    DEPENDENCY_DOWN: "503",
+    NO_INDEX: "503",
+    BODY_TOO_LARGE: "413",
+    UNAUTHENTICATED: "401",
+    NO_SCOPE: "403",
+    RATE_LIMITED: "429",
+    AUTH_LIMITED: "429",
+    KEYS_UNREADABLE: "503",
+    SERVER_ERROR: "500",
+}
 REFUSALS: Final = Counter(
     "rag_refusals",
     "Questions refused before their first byte, by status code and reason: 503 busy, "
-    "dependency_down or no_index. S3-8 adds the 429s.",
+    "dependency_down, no_index or keys_unreadable; 401 unauthenticated; 403 scope; 413 "
+    "too_large; 429 rate_limited or auth_limited; 500 error, an unexpected one.",
     labelnames=("code", "reason"),
     registry=REGISTRY,
 )
+
+
+def refused(reason: str) -> None:
+    """Count one question refused for ``reason``, under its code (:data:`REFUSAL_CODES`)."""
+    REFUSALS.labels(code=REFUSAL_CODES[reason], reason=reason).inc()
+
 
 # --- ingest jobs -----------------------------------------------------------------------------
 
@@ -222,8 +254,8 @@ for _outcome in (ANSWERED, FAILED, CANCELLED):
 # and silence the alert.
 for _waiting_for in (WAITING_FOR_SOURCES, WAITING_FOR_FIRST_TOKEN):
     ABANDONED_SECONDS.labels(waiting_for=_waiting_for)
-for _reason in (BUSY, DEPENDENCY_DOWN, NO_INDEX):
-    REFUSALS.labels(code="503", reason=_reason)
+for _reason, _code in REFUSAL_CODES.items():
+    REFUSALS.labels(code=_code, reason=_reason)
 for _status in ("succeeded", "failed"):
     INGEST_RUNS.labels(status=_status)
 

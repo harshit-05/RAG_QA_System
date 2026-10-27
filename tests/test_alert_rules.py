@@ -111,6 +111,24 @@ def test_each_latency_slo_reads_its_objective_s_bucket(histogram: str, objective
     assert read == {objective}
 
 
+def test_availability_reads_every_5xx_refusal_the_app_counts_and_no_4xx_one() -> None:
+    # S3-8: an unexpected 500 and an unreadable keys file are the service's faults; the 401s,
+    # 403s, 413s and 429s are the client's, or the limits' policy. A reason added to
+    # metrics.REFUSAL_CODES lands on the right side by its code alone.
+    read = {
+        labels
+        for where, name, labels in selectors()
+        if where == "rules.yml" and name == "rag_refusals_total"
+    }
+    assert read == {'{code=~"5.."}'}
+    (pattern,) = re.findall(r'code=~"([^"]*)"', read.pop())
+    codes = metrics.REFUSAL_CODES
+    assert {code[0] for code in codes.values()} == {"4", "5"}  # both sides are exercised
+    for reason, code in codes.items():
+        # PromQL anchors a regular expression at both ends.
+        assert bool(re.fullmatch(pattern, code)) == code.startswith("5"), (reason, code)
+
+
 def alert_cases() -> dict[str, tuple[bool, bool]]:
     """For each alert the tests name: whether one test fires it and one keeps it quiet."""
     cases: dict[str, tuple[bool, bool]] = {}

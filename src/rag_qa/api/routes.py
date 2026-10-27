@@ -5,19 +5,27 @@ only once the 200 headers are on their way, so a refusal from inside it would be
 late. Each check is therefore a dependency, and they run in this order:
 
 1. ``Origin`` present: 403, on every route (:func:`refuse_browsers`).
-2. With no token set, a ``Host`` that is not loopback: 403 (:func:`check_host`).
-3. With a token set, a missing or wrong bearer token: 401 (:func:`require_token`).
-   Every route needs it except the two health probes.
-4. ``POST /v1/query`` only: a dependency the answer needs is down, its breaker open, 503
+2. With no credential configured (no keys file, no token), a ``Host`` that is not loopback:
+   403 (:func:`check_host`).
+3. Who asks (:func:`authenticate`, DEC-23), on every route but the two health probes: with a
+   credential configured, no valid key, 401, or 429 once its address has failed too often;
+   a keys file that cannot be used, 503 with ``Retry-After``; then the key's own rate
+   limit, 429 with ``Retry-After``. With none, its address's rate limit.
+4. The route's scope (:func:`scope`): ``query`` for questions and the document list,
+   ``ingest`` for the ingest jobs; 403 without it. The docs and the schema need none.
+5. ``POST /v1/query`` only: a dependency the answer needs is down, its breaker open, 503
    with ``Retry-After`` (:func:`refuse_while_down`, DEC-21). It takes no slot.
-5. ``POST /v1/query`` only: no free slot, 503 with ``Retry-After`` (:func:`take_slot`).
-6. ``POST /v1/query`` only: no index the config can use, 503 (:func:`served_pipeline`).
-7. ``POST /v1/query`` only: a body that breaks the request model, then a source the served
+6. ``POST /v1/query`` only: no free slot, 503 with ``Retry-After`` (:func:`take_slot`).
+7. ``POST /v1/query`` only: no index the config can use, 503 (:func:`served_pipeline`).
+8. ``POST /v1/query`` only: a body that breaks the request model, then a source the served
    index does not hold, 422 (:func:`known_sources`).
 
-**The body comes in two steps** (S2-7's first review). FastAPI parses it before it runs any
-dependency, so a body that is not valid JSON gets its 422 ahead of the 403 and the 401
-above; nothing runs, but the body has been read before the token is checked. A body that
+**The body comes in three steps** (S2-7's first review, S3-8). Its size first: a body over
+64 KiB gets 413 before FastAPI reads it, ahead of everything above
+(:class:`rag_qa.api.limits.BodyLimit`, a middleware). FastAPI then parses it before it runs any
+dependency, so a body that is not valid JSON gets its 422 ahead of the 403s, the 401 and the
+429s above, and draws on no bucket;
+nothing runs, and the body read before the token is checked is at most 64 KiB. A body that
 parses but breaks the request model is validated after the dependencies, so that 422 is
 reported last. FastAPI also refuses a POST whose body is not ``application/json`` (strict
 content type), which is what a web page cannot send cross-site without a CORS preflight.
@@ -42,20 +50,23 @@ second review). All of it synchronous: the cancel paths await nothing new.
 
 import asyncio
 import logging
-import secrets
 import time
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import asdict
-from typing import Annotated, cast
+from typing import Annotated, NoReturn, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
+from starlette.types import Scope
 
 from rag_qa import resilience
 from rag_qa.answering import AnswerEvent, Done, Sources, Token, answered_line, stream_answer
-from rag_qa.api.jobs import IngestJob, JobRunningError
+from rag_qa.api import auth
+from rag_qa.api.auth import ApiKey, KeyRing
+from rag_qa.api.jobs import KEEP, IngestJob, JobRunningError
+from rag_qa.api.limits import AUTH_FAILURES_PER_MINUTE, Limits, client_key
 from rag_qa.api.models import (
     BreakerHealth,
     DocumentInfo,
@@ -66,10 +77,12 @@ from rag_qa.api.models import (
     IngestJobOut,
     IngestReportOut,
     IngestRequest,
+    KeysHealth,
     LlmHealth,
     QueryRequest,
 )
 from rag_qa.api.state import (
+    LLM_CHECK_TIMEOUT_S,
     NO_INDEX_YET,
     REINGEST,
     STORE_DOWN,
@@ -79,8 +92,8 @@ from rag_qa.api.state import (
     wait_s,
 )
 from rag_qa.chain import IncompatibleIndexError, NoIndexError, QueryPipeline
-from rag_qa.components import FALLBACK_SERVICE, llm_reachable, raised_by_fallback
-from rag_qa.observability import logs, metrics
+from rag_qa.components import FALLBACK_SERVICE, raised_by_fallback
+from rag_qa.observability import logs, metrics, tracing
 from rag_qa.observability.genai import model_identity
 from rag_qa.resilience import OPEN, BreakerOpenError, CircuitBreaker
 from rag_qa.settings import ServerSettings, is_loopback
@@ -91,9 +104,6 @@ logger = logging.getLogger(__name__)
 #: How long a busy server asks a client to wait before asking again, in seconds. An
 #: answer takes minutes on CPU; this is how often it is reasonable to check.
 RETRY_AFTER_S = 30
-
-#: Seconds Ollama has to answer the readiness check (ARCHITECTURE.md §2.4).
-LLM_CHECK_TIMEOUT_S = 2.0
 
 
 # --- dependencies: the refusals, in order -------------------------------------------------
@@ -165,41 +175,140 @@ def host_of(header: str) -> str:
 def check_host(
     request: Request, settings: Annotated[ServerSettings, Depends(get_settings)]
 ) -> None:
-    """Without a token, 403 for a ``Host`` that is not loopback: DNS rebinding.
+    """Without a credential, 403 for a ``Host`` that is not loopback: DNS rebinding.
 
     A web page can point its own domain at 127.0.0.1 and then call the server as
-    same-origin; the request still names that domain in ``Host``. With a token set, the
-    server may be reached by any name, and a rebound page has no token to send.
+    same-origin; the request still names that domain in ``Host``. With a keys file or a token,
+    the server may be reached by any name, a proxy's public one included, and a rebound page
+    has no key to send (DEC-23, design review 2).
     """
-    if settings.token is None and not is_loopback(host_of(request.headers.get("host", ""))):
+    if not settings.has_credential and not is_loopback(host_of(request.headers.get("host", ""))):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            "without RAG_API_TOKEN this server answers only to a loopback Host header",
+            "without RAG_API_KEYS_FILE or RAG_API_TOKEN this server answers only to a "
+            "loopback Host header",
         )
 
 
-def require_token(
-    request: Request, settings: Annotated[ServerSettings, Depends(get_settings)]
-) -> None:
-    """With a token set, 401 unless the request carries ``Authorization: Bearer <token>``.
+def asks_a_question(scope: Scope) -> bool:
+    """Whether a request is ``POST /v1/query``: what ``rag_refusals_total`` counts (S3-7)."""
+    return scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == "/v1/query"
 
-    Exactly that: the scheme in any case, one space, then the token, nothing stripped. The
-    comparison is constant-time and on bytes: ``secrets.compare_digest`` raises
-    ``TypeError`` for a non-ASCII ``str``, which would turn a hostile header into a 500.
-    Every failure gets the same answer, so none says which part was wrong.
+
+def refuse(
+    request: Request,
+    code: int,
+    reason: str,
+    detail: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> NoReturn:
+    """Refuse ``request`` with ``code``, counted under ``reason`` when it is a question."""
+    if asks_a_question(request.scope):
+        metrics.refused(reason)
+    raise HTTPException(code, detail, headers=headers)
+
+
+#: Who asks when no credential is configured: anyone on this machine, with every scope.
+ANONYMOUS = ApiKey(name="", scopes=frozenset(auth.SCOPES), sha256=b"", created="")
+
+UNAUTHENTICATED = "a valid API key is required (Authorization: Bearer <token>)"
+
+
+async def authenticate(request: Request) -> None:
+    """Who is asking, rate-limited (DEC-23, S3-8): ``request.state.caller``, or a refusal.
+
+    - **No credential configured** (no keys file and no token): every caller has every scope,
+      and is limited by its address.
+    - **Otherwise** a key is required, as ``Authorization: Bearer <token>``: the scheme in any
+      case, one space, then the token, nothing stripped. :meth:`rag_qa.api.auth.KeyRing.match`
+      compares the token's hash with every key's, on bytes. A request without a valid key
+      draws on its address's failure bucket: 401, or 429 once that is empty. Every 401 says
+      the same thing, so none says which part was wrong.
+    - **A keys file that cannot be used** refuses every bearer token but ``RAG_API_TOKEN`` with
+      503, as the 401 would, after drawing on the same failure bucket: otherwise wrong guesses
+      at the token would meet unthrottled 503s, and the right one a 200.
+    - **A valid key** draws on its own bucket (429), and its name, never its token, is bound
+      into the request's log lines (``api_key``) and set on its server span
+      (``rag.api_key.name``).
+
+    ``async``, so it runs in the request's own task, where the log binding and the span are.
     """
-    if settings.token is None:
+    keys: KeyRing = request.app.state.keys
+    limits: Limits = request.app.state.limits
+    address = client_key(request.client.host if request.client is not None else None)
+    if not keys.configured:
+        wait = limits.addresses.take(address)
+        if wait is not None:
+            limited(request, metrics.RATE_LIMITED, wait, "this address")
+        request.state.caller = ANONYMOUS
         return
     scheme, _, credentials = request.headers.get("authorization", "").partition(" ")
-    expected = settings.token.get_secret_value().encode("ascii")
-    if scheme.lower() != "bearer" or not secrets.compare_digest(
-        credentials.encode("utf-8"), expected
-    ):
-        raise HTTPException(
+    bearer = scheme.lower() == "bearer"
+    key = keys.match(credentials) if bearer else None
+    if key is None:
+        wait = limits.failures.take(address)
+        if wait is not None:
+            limited(request, metrics.AUTH_LIMITED, wait, "failed authentications from this address")
+        if bearer and keys.problem is not None:
+            refuse(
+                request,
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                metrics.KEYS_UNREADABLE,
+                KEYS_UNUSABLE,
+                headers={"Retry-After": str(wait_s(auth.RECHECK_S))},
+            )
+        refuse(
+            request,
             status.HTTP_401_UNAUTHORIZED,
-            "a valid bearer token is required (Authorization: Bearer <token>)",
+            metrics.UNAUTHENTICATED,
+            UNAUTHENTICATED,
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # Named before its bucket is drawn on, so a key's own 429 says whose it is (S3-8's second
+    # review).
+    logs.bind(api_key=key.name)
+    tracing.annotate({tracing.API_KEY_NAME: key.name})
+    wait = limits.keys.take(key.name)
+    if wait is not None:
+        limited(request, metrics.RATE_LIMITED, wait, "this key")
+    request.state.caller = key
+
+
+#: Why a key is refused while the keys file cannot be used: fixed text, never its path.
+KEYS_UNUSABLE = (
+    "the server's keys file cannot be used just now, so API keys are refused; ask again after "
+    "Retry-After"
+)
+
+
+def limited(request: Request, reason: str, wait: float, whose: str) -> NoReturn:
+    """429 with ``Retry-After``: ``whose`` bucket is empty for ``wait`` more seconds."""
+    settings = get_settings(request)
+    per_minute = AUTH_FAILURES_PER_MINUTE if reason == metrics.AUTH_LIMITED else settings.rate_limit
+    refuse(
+        request,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+        reason,
+        f"too many requests: {whose} may make {per_minute} a minute; ask again after Retry-After",
+        headers={"Retry-After": str(wait_s(wait))},
+    )
+
+
+def scope(name: str) -> Callable[[Request], Awaitable[None]]:
+    """A dependency: 403 unless the caller's key holds the scope ``name`` (DEC-23)."""
+
+    async def require(request: Request) -> None:
+        caller: ApiKey = request.state.caller
+        if name not in caller.scopes:
+            refuse(
+                request,
+                status.HTTP_403_FORBIDDEN,
+                metrics.NO_SCOPE,
+                f"this API key lacks the {name} scope",
+            )
+
+    return require
 
 
 def refuse_while_down(serving: Annotated[Serving, Depends(get_serving)]) -> None:
@@ -275,12 +384,16 @@ def known_sources(
 
 # --- routes -------------------------------------------------------------------------------
 
-#: The health probes: never behind the token, so a supervisor can always ask.
+#: The health probes: never behind a key, nor rate-limited, so a supervisor can always ask.
 health = APIRouter(prefix="/v1/health", tags=["health"])
-#: Everything else under /v1, behind the token when one is set.
-v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_token)])
-#: The interactive docs and the schema. Behind the token too: they describe the surface.
-docs = APIRouter(dependencies=[Depends(require_token)], include_in_schema=False)
+#: Everything else under /v1, behind a key when a credential is configured, each route with
+#: the scope it needs.
+v1 = APIRouter(prefix="/v1", dependencies=[Depends(authenticate)])
+#: The interactive docs and the schema: any valid key, since they describe the surface.
+docs = APIRouter(dependencies=[Depends(authenticate)], include_in_schema=False)
+#: Each scope's dependency (DEC-23).
+QUERY_SCOPE = Depends(scope(auth.QUERY))
+INGEST_SCOPE = Depends(scope(auth.INGEST))
 
 
 def error_message(error: Exception) -> str:
@@ -352,15 +465,26 @@ def answered(event: Done, pipeline: QueryPipeline, seconds: float) -> None:
     logger.info(answered_line(event), extra=asdict(event))
 
 
+#: What every route behind a key may answer before its own work (DEC-23, S3-8).
+REFUSED: dict[int | str, dict[str, object]] = {
+    401: {"description": "a credential is configured, and the request carried no valid key"},
+    403: {"description": "the key lacks this route's scope"},
+    413: {"description": "a body over 64 KiB"},
+    429: {"description": "a rate limit, with Retry-After"},
+    503: {"description": "the keys file cannot be used just now, with Retry-After"},
+}
+
+
 @v1.post(
     "/query",
     response_class=EventSourceResponse,
+    dependencies=[QUERY_SCOPE],
     responses={
-        401: {"description": "a token is set, and the request did not carry it"},
+        **REFUSED,
         422: {"description": "a malformed body, or a source the served index does not hold"},
         503: {
-            "description": "a dependency down or busy (both with Retry-After), or no index "
-            "the config can use"
+            "description": "a dependency down or busy (both with Retry-After), no index the "
+            "config can use, or the keys file unusable (with Retry-After)"
         },
     },
 )
@@ -428,7 +552,7 @@ async def query(
 
 
 def job_out(job: IngestJob) -> IngestJobOut:
-    report = None if job.report is None else IngestReportOut(**asdict(job.report))
+    report = None if job.report is None else IngestReportOut.model_validate(job.report)
     return IngestJobOut(
         job_id=job.job_id,
         status=job.status,
@@ -437,18 +561,26 @@ def job_out(job: IngestJob) -> IngestJobOut:
         exit_code=job.exit_code,
         report=report,
         log=list(job.log),
+        abandoned=job.abandoned,
     )
 
 
-@v1.post("/ingest", status_code=status.HTTP_202_ACCEPTED, responses={409: {}})
+@v1.post(
+    "/ingest",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[INGEST_SCOPE],
+    responses={**REFUSED, 409: {}},
+)
 async def start_ingest(
     body: IngestRequest,
+    request: Request,
     response: Response,
     serving: Annotated[Serving, Depends(get_serving)],
 ) -> IngestAccepted:
     """Start an ingest job, as ``rag-ingest`` (``--rebuild`` with ``rebuild: true``)."""
+    caller: ApiKey = request.state.caller
     try:
-        job = serving.jobs.start(rebuild=body.rebuild)
+        job = await serving.jobs.start(rebuild=body.rebuild, api_key=caller.name or None)
     except JobRunningError as e:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -458,18 +590,28 @@ async def start_ingest(
     return IngestAccepted(job_id=job.job_id, status=job.status)
 
 
-@v1.get("/ingest/{job_id}", responses={404: {}})
+@v1.get("/ingest/{job_id}", dependencies=[INGEST_SCOPE], responses={**REFUSED, 404: {}})
 async def ingest_status(
     job_id: str, serving: Annotated[Serving, Depends(get_serving)]
 ) -> IngestJobOut:
-    """An ingest job: its status, ``rag-ingest``'s exit code, the report and the log."""
-    job = serving.jobs.get(job_id)
+    """An ingest job, whichever replica ran it: its status, ``rag-ingest``'s exit code, the
+    report and the log; ``abandoned`` when its process died before it ended (DEC-23)."""
+    job = await serving.jobs.get(job_id)
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such ingest job (the last 20 are kept)")
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"no such ingest job (the last {KEEP} are kept)"
+        )
     return job_out(job)
 
 
-@v1.get("/documents", responses={503: {}})
+@v1.get(
+    "/documents",
+    dependencies=[QUERY_SCOPE],
+    responses={
+        **REFUSED,
+        503: {"description": "no index yet, or the keys file unusable (with Retry-After)"},
+    },
+)
 async def documents(serving: Annotated[Serving, Depends(get_serving)]) -> Documents:
     """The documents in the index being served, from its manifest."""
     await serving.refresh()
@@ -501,13 +643,18 @@ def breaker_health(breaker: CircuitBreaker) -> BreakerHealth:
 
 @health.get("", responses={503: {"model": Health}})
 async def readiness(
-    response: Response, serving: Annotated[Serving, Depends(get_serving)]
+    request: Request, response: Response, serving: Annotated[Serving, Depends(get_serving)]
 ) -> Health:
-    """Ready: an index the config can use is served and Qdrant's breaker is not open, and
-    the model's server answers within 2 s, or the hosted fallback can answer in its place
-    (its breaker not open). 503 otherwise, with what is missing. ``breakers`` reports each
-    dependency's breaker, by role (DEC-21)."""
-    await serving.refresh()
+    """Ready: an index the config can use is served and Qdrant's breaker is not open, the
+    model's server answers within 2 s, or the hosted fallback can answer in its place (its
+    breaker not open), and the keys file, when one is set, can be used. 503 otherwise, with
+    what is missing. ``breakers`` reports each dependency's breaker, by role (DEC-21).
+
+    Never rate-limited, and cheap (DEC-23): the alias and the model's server are each asked at
+    most once every 5 s, whoever polls (:class:`rag_qa.api.state.Probe`); the breakers and
+    the keys file are read as they are now."""
+    keys = keys_health(request.app.state.keys)
+    await serving.index_probe.get()
     served = serving.served
     pipeline = serving.pipeline
     if serving.store.breaker.state == OPEN:
@@ -526,7 +673,7 @@ async def readiness(
             documents=None,
             detail=served.problem or "serving",
         )
-    reachable = await llm_reachable(pipeline.llm, LLM_CHECK_TIMEOUT_S)
+    reachable = await serving.llm_probe.get()
     covered = (
         reachable is False
         and pipeline.fallback_llm is not None
@@ -545,10 +692,31 @@ async def readiness(
             }[reachable]
         ),
     )
-    ready = index.ready and llm.ready
+    ready = index.ready and llm.ready and (keys is None or keys.ready)
     response.status_code = status.HTTP_200_OK if ready else status.HTTP_503_SERVICE_UNAVAILABLE
     breakers = {role: breaker_health(b) for role, b in serving.breakers().items()}
-    return Health(status="ready" if ready else "not ready", index=index, llm=llm, breakers=breakers)
+    return Health(
+        status="ready" if ready else "not ready",
+        index=index,
+        llm=llm,
+        keys=keys,
+        breakers=breakers,
+    )
+
+
+def keys_health(keys: KeyRing) -> KeysHealth | None:
+    """The keys file as ``GET /v1/health`` reports it, ``None`` while none is set. It is
+    looked at again first, at most every 5 s. Fixed text, never the path (DEC-18), nor a key's
+    name, its place or how many keys it holds: health answers anyone (S3-8's second review)."""
+    if keys.path is None:
+        return None
+    keys.refresh()
+    if keys.problem is not None:
+        return KeysHealth(
+            ready=False,
+            detail=f"{keys.problem}: every API key is refused with 503 until it is fixed",
+        )
+    return KeysHealth(ready=True, detail="the keys file is read")
 
 
 @health.get("/live")

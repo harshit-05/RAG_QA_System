@@ -5,10 +5,73 @@
 
 ## Now
 
-**Next action: once CI is green on the close-out record, merge PR #27 with a merge commit;
-then S3-8,** plan-first, on `feat/s3-8-api-hardening`. Nothing in PR #27 is breaking.
+**Next action: S3-8's merge commit on PR #28** (`feat/s3-8-api-hardening`), once CI is green on
+this record; then S3-9. The PR's title and the merge message carry the breaking changes
+(`f961a25`, `bad1070`). The second review's live check (`kill -9` mid-job, a restart, the
+failed-runs counter scraped before any request) was optional, and was not run.
 
-**The fix for answers abandoned before their first token is done (2026-10-26, PR #27).** The
+**S3-8's PR is green** (2026-10-27): CI passed on `a6ed789`, the second review's record (run
+40471130129: `check` 5m27s, `deploy-config` 23s, `eval-retrieval` 2m43s), as on `646e888`
+(run 40370275154) and `bc2d892` (run 40384658394). Every Verification command has now run.
+
+**S3-8's second review is done (2026-10-27, on `bc2d892`).** Detail in the story ("Second
+review"). No blocker; five things, fixed on the PR:
+
+- **A crash mid-ingest** was counted, and `RagIngestFailed` fired, only once a client asked about
+  the job. Every replica now judges the unfinished jobs as it starts.
+- **Health, open to anyone,** named a malformed key and its place. Its text is fixed now; the
+  detail goes to the log alone.
+- **Two probes of a dead job's lock** took each other for its owner: a false 409, in 42 of 300
+  starts under a probing loop. The probe takes a shared lock.
+- **A key's own 429** named no key in its logs or on its span.
+- **S3-10's story** cited a README line on backing up the keys file that did not exist; it does
+  now.
+
+The suite: 1721 passed, 18 skipped, 5 xfailed; 98.26%. `rag-eval check` exits 0, and 4 mutants
+were caught.
+
+**S3-8's first review is done (2026-10-27, on `646e888`).** Detail in the story ("First
+review"). One defect, fixed on the PR: a read of the keys file the system refused (a full table
+of open files, an I/O error) held every key closed until the file changed, where the docs say
+"until it parses again"; it is now tried again at the next look. Also fixed: an untested
+"unchanged file is not read again", a `Content-Length` parsed with `isdigit()`, and a comment
+on the 64 KiB limit that overstated. The suite: 1715 passed, 18 skipped, 5 xfailed; 98.26%.
+
+**S3-8 is done (2026-10-26), before its PR.** Detail in the story.
+
+- **What it built:**
+  - **Keys:** named keys with the `query` and `ingest` scopes, in `RAG_API_KEYS_FILE` as
+    hashes only, made, listed and revoked by `rag-keys`; a server sees a change within 5 s,
+    and a file that cannot be used fails closed (503, readiness says why). `RAG_API_TOKEN`
+    is a key named `token`.
+  - **Limits:** per key, per address with no key, and 10 failed authentications a minute per
+    address; a 64 KiB body limit before parsing; `X-Forwarded-For` believed from
+    `RAG_API_TRUSTED_PROXIES` alone.
+  - **A stateless query tier (NFR-5):** job records in `var/jobs.sqlite3`, the 409 across
+    replicas, a dead job told by its own lock and read as abandoned; readiness probes cached
+    for 5 s, single-flight. Two apps over one store show it.
+  - **The availability SLI** reads every 5xx; the new 4xx refusals count on neither side.
+- **Nothing hashed moved:** `rag-eval check` exit 0, and the contexts IDENTICAL to S3-2's
+  (`5a36e2f9…`). No dependency was added; `uv.lock` does not differ from `main`'s, pypdf
+  6.19.0.
+- **The live run** (the maintainer's terminal, a scratch index since deleted): every
+  Verification line held, a `kill -9` mid-job included. It found two small things, both
+  fixed: "1 keys", and a dead job's lock file left behind.
+- **The suite:** 1711 passed, 18 skipped, 5 xfailed; coverage 98.28%. Mutation sweeps: 35
+  mutants, all caught but one equivalent (the story's "Discovered").
+- **On Opus 5.5 at max effort,** where the story routes to Fable. Breaking: two commits, the
+  body limit with the proxies, and the rate limits.
+
+**The fix after S3-7b is merged** (2026-10-26, PR #27, merge commit `12f4768`). CI was green on
+the PR's last head, `d3ed26a` (run 40283612574), and is green on `main` after the merge (run
+40284703179: `check`, `deploy-config`, `eval-retrieval`). No Dependency Graph run: #27 changed
+no dependency. The live check on the real API was optional, and was not run. Ruleset 25561360
+requires `check`, `deploy-config` (since 2026-10-26) and `eval-retrieval`; S3-9 adds
+`container`. The live index is unchanged: the `rag_qa` alias names
+`rag_qa--gen-20261019T153834837765Z-7f20891e`, and S3-2's parity baseline is still
+`~/dev/rag-s3-2/contexts-qdrant.json` (sha256 `5a36e2f9…a074cbc`).
+
+**The fix for answers abandoned before their first token was done (2026-10-26, PR #27).** The
 maintainer chose it before S3-8. Detail in S3-7b's story ("After the merge"), as
 `fix/s2-1-cancel-race`'s went in S2-1's.
 
@@ -1585,6 +1648,17 @@ Items 15 onward come from the Phase 2 architecture pass (2026-10-02):
       FastAPI 0.143's own telemetry switches on whenever a provider is set, a global one
       included, and marks every dropped client an error.
     - **Jaeger 2.22's query API is `/api/v3/`;** the older `/api/services` answers 404.
+42. **The API rate-limits its callers, loopback included** (S3-8).
+    - **In a test,** every request of FastAPI's test client comes from one address, and a
+      server with no key allows it 60 a minute. An app a test polls (an ingest job) or floods
+      takes `ServerSettings(rate_limit=UNLIMITED)` from `conftest.py`, or the poll turns into a
+      429 and the test into a `KeyError` once a job takes over a second. The limits' own tests
+      set theirs.
+    - **By hand,** a script that polls faster than once a second gets 429; raise
+      `RAG_API_RATE_LIMIT`. Ten failed authentications a minute from one address get 429 too,
+      so a recipe that shows a 401 first leaves the bucket short for a minute.
+    - **The keys file is `var/api-keys.json`** (`RAG_API_KEYS_FILE`); a live run's test keys
+      belong in it only for the run. Its job records stay in `var/jobs.sqlite3`.
 
 ## GPU offload notes (nothing *requires* GPU; Colab/Kaggle available)
 
@@ -1717,8 +1791,8 @@ fresh clone. Exit ⇒ tag `v1.0`, version 1.0.0. Design: ARCHITECTURE.md §3.1�
 | [S3-5](phase-3/S3-5-hybrid-retrieval.md) | Hybrid retrieval and source filters, measured by tier 1 | FR-3, DEC-20 | S3-4 | Done 2026-10-22 (PR #23, merged 2026-10-22) |
 | [S3-6](phase-3/S3-6-resilience.md) | Timeouts, retries, circuit breakers and the hosted fallback | NFR-6, DEC-9, DEC-21, SRS §2.4 | S3-2 | Done 2026-10-23 (PR #24, merged 2026-10-23) |
 | [S3-7](phase-3/S3-7-observability.md) | Structured logs, metrics and the capacity benchmarks | NFR-10 (logs, metrics), NFR-1, NFR-2 (a), NFR-3, DEC-22 (logs, metrics) | S3-6 | Done 2026-10-25 (PR #25, merged 2026-10-25) |
-| [S3-7b](phase-3/S3-7b-traces-alerts.md) | Traces and alerts | NFR-10 (traces), DEC-22 (traces, alerts) | S3-7 | Done 2026-10-26 (PR #26, merged 2026-10-26; a fix after it, PR #27) |
-| [S3-8](phase-3/S3-8-api-hardening.md) | API keys, rate limits and a stateless query tier | NFR-5, DEC-23 | S3-7b | Todo |
+| [S3-7b](phase-3/S3-7b-traces-alerts.md) | Traces and alerts | NFR-10 (traces), DEC-22 (traces, alerts) | S3-7 | Done 2026-10-26 (PR #26, merged 2026-10-26; a fix after it, PR #27, merged 2026-10-26) |
+| [S3-8](phase-3/S3-8-api-hardening.md) | API keys, rate limits and a stateless query tier | NFR-5, DEC-23 | S3-7b | Done 2026-10-26 (PR #28, awaiting its merge) |
 | [S3-9](phase-3/S3-9-containers.md) | Containers, compose, TLS and CI scanning | §11 (CI, containers, config), §8.3, §9 LLM05, DEC-24 | S3-8 | Todo |
 | [S3-10](phase-3/S3-10-backup-restore.md) | Backup and restore | §11 (backup and DR), DEC-25 | S3-9 | Todo |
 | [S3-11](phase-3/S3-11-tier2-sweep.md) | The tier-2 sweep: measure every lever on a T4 | DEC-2, DEC-26 (the sweep), NFR-2 (a)'s levers | S3-5, S3-10 | Todo |
@@ -1781,7 +1855,7 @@ S3-2's (design review 1).
 | DEC-20 | Hybrid retrieval: where the sparse vectors come from, how they are fused, how it is switched on | **Resolved 2026-10-14: our own BM25 encoder; Qdrant prefetch + RRF with an explicit constant; then the cross-encoder; tier 1 decides, S3-11 switches** | `rag_qa/sparse.py`, about 80 lines with no dependency; IDF applied by Qdrant. Rejected: fastembed's `Qdrant/bm25` (onnxruntime, a model download, a tokenizer that moves with releases) and Qdrant's own BM25 (needs `cloud_inference=True`, which local mode refuses; its tokenizer changes with the server). Qdrant's default RRF constant is 2, so `rrf_k` is always set (60). A `sources` filter by document path (API and CLI) is FR-3's metadata filtering. The real config sets no sparse encoder until S3-11b, so nothing hashed moves before the batched re-run. **Design review 1:** Qdrant's server breaks no RRF ties, so the fusion returns its whole union and our code cuts it, ties by point ID; S3-5 runs hybrid tier 1 twice. **Design review 2 (2026-10-16):** each prefetch still cut its own list on the server, which kept other tied points for each insertion order and after a restart. So the two branches run as separate searches, each cut by our code, and our code fuses them by RRF. S3-5's second run follows a restart. **As implemented (S3-5, 2026-10-21):** `Bm25Encoder` with NLTK's 153 English stopwords (less the apostrophe forms), soft hyphens joined, blake2b indices; `avg_len` 100.76, measured. A hybrid retriever must state `prefetch` and `rrf_k` (no code default, so the hashed dump says everything). The query half takes a `RetrievalQuery(question, sources)`. Tier 1: hybrid 1.000 / 0.833 / 0.933 against dense's 0.950 / 0.796 / 0.858, 2 wins and no loss; `rrf_k` 10 and `prefetch` 20 tie; `min_score` −4 loses no hit. Recommendation for S3-11: hybrid on, 60/40, −4. S3-5, S3-11, S3-11b. |
 | DEC-21 | NFR-6 and the hosted fallback | **Resolved 2026-10-14: timeouts, safe retries and circuit breakers on network calls; an opt-in OpenAI-compatible fallback, with one real check** (maintainer) | Ollama: connect 5 s, read 600 s; retries only before the first token. Qdrant: 10 s; every call retried (all idempotent). Our own breaker per dependency; open means 503 with `Retry-After` before the first byte. The fallback (`pipeline.query.fallback_llm`, a `fallback` extra with `langchain-openai`) answers only while Ollama's breaker is open or after a connection error before the first token; streamed itself, never `.with_fallbacks()`; its key from the environment only; never used by tier 2. It absorbs the backlog's reopen back-off. **Design review 1:** with a fallback configured, an open Ollama breaker routes to it, and the start-up checks warn instead of exiting 2; retry semantics are stated per call; the retry before the first token is a hand-written loop. **Design review 2 (2026-10-16):** Qdrant's breaker wraps each attempt, with one deadline per retrieval, since retrieval holds the retrieval lock; a 404 is never retried; the fallback sets `max_retries: 0` and a timeout, as the OpenAI SDK retries twice on its own. **Amended in S3-6's plan (2026-10-22, maintainer's proposal):** the key comes from one provider-neutral variable, `RAG_FALLBACK_API_KEY`, which our code passes to `ChatOpenAI`, not from the provider's own; `ChatOpenAI` would otherwise read `OPENAI_API_KEY` (human prerequisites, the S3-6 line). **As implemented (S3-6, 2026-10-23):** `rag_qa/resilience.py`: a breaker per client (the store's, the model's, the fallback's), open after 3 failed attempts in a row, one probe after 30 s; a failure is a connection error, a timeout, a 429 or a 5xx. Qdrant: 3 attempts through tenacity, full-jitter back-off, one `deadline_s: 15` per retrieval, a search's own timeout cut to what is left; a create that finds its collection, a delete answering `False` and a repeated switch count as done (checked on 1.19.2), and the switch's read-back never waits on the breaker. Ollama: `client_kwargs.timeout {connect: 5, read: 600, write: 30, pool: 30}`, made into httpx's `Timeout` at build and checked at load. The fallback, `components.llms.groq_fallback` (Groq's `openai/gpt-oss-120b`), must be another `ChatOpenAI` entry with a `base_url`, `max_retries: 0` and a timeout; it gets an HTTP client of its own (caveat 38). `Done.model` is the answering entry's reference. `rag-eval generate` runs the start-up check and builds no fallback. A component key named `api_key` or `*_api_key` is refused at load (breaking). The one real check passed on 2026-10-23. ARCHITECTURE.md DEC-21 has the as-built note. S3-6. |
 | DEC-22 | NFR-10: logs, traces, metrics, alerts | **Resolved 2026-10-14: structlog; OpenTelemetry spans we create ourselves; prometheus-client; burn-rate alerts; Jaeger** | No LangChain callback handlers: one that suspends reopens DEC-14's cancel window. Spans are never current across a `yield`, and end in a `finally`. Metrics on their own port. Alert rules tested by `promtool` in CI. NFR-1 by a 100k synthetic benchmark; NFR-3 reported by `rag-ingest`. **Design review 2 (2026-10-16):** it held. With the instrumentation off, excluded or full, a client dropped during 30 s of silence cancelled the stream within milliseconds, and every span ended. promtool runs from the Prometheus image, by digest. **Split in S3-7's plan (2026-10-23):** S3-7 builds the logs, the metrics, the token counts and the two benchmarks; S3-7b the traces, the alerts and the `deploy-config` job. The token counts join tier 2's answers file as fields left out while unset, so the committed run's identity, and `rag-eval check`, do not move. **As built in S3-7 (2026-10-25):** logs on stderr through one structlog formatter, JSON off a terminal (`RAG_LOG_FORMAT`), plain tracebacks in every format (rich's showed locals, the first review); 13 metrics on `RAG_API_METRICS_PORT`, an answer's times counted from its request's arrival (the second review) and its outcome once, at the slot's release; tokens from the last chunk's `usage_metadata`. NFR-1 held (p95 29.7 ms dense, 38.0 ms hybrid, 100k points, k=20); NFR-2a missed (2.09 s, then 2.02 s), its levers given to S3-11's stage 2; NFR-3 16.2 pages/s, 24.2 chunks/s, 2,695 points/s. **As built in S3-7b (2026-10-26):** traces over OTLP/HTTP from a provider of the commands' own, on only with `OTEL_EXPORTER_OTLP_ENDPOINT`, never in `rag-eval`; the contrib server span, FastAPI 0.143's own telemetry off; an exception scrubbed to its class at the exporter (the first review). Burn-rate alerts on availability and the three latencies; `RagBreakerOpen` only while the breaker keeps opening (the second review); `RagTargetMissing`, since DNS discovery drops exited replicas. DEC-14 held with tracing on. **Fixed after the merge (2026-10-26, PR #27):** an answer abandoned before its first token counts in the latency SLIs once it had waited past their objective (`rag_abandoned_seconds`), so a hung model whose users give up pages. ARCHITECTURE.md has the notes. S3-7, S3-7b. |
-| DEC-23 | The API beyond localhost (DEC-18's Phase 3 half) and NFR-5 | **Resolved 2026-10-14: named, scoped API keys (maintainer); token-bucket rate limits; a 64 KiB body limit; job records in SQLite; a stateless query tier; TLS at the proxy** | A keys file of sha256 hashes with scopes `query` and `ingest`, managed by `rag-keys`; `RAG_API_TOKEN` still works as one all-scope key. A job holds a lock of its own, so an unfinished row whose job lock is free reads as abandoned. Limits per replica, documented. **Design review 1:** the job's own lock replaces probing the writer lock, which could call a live job abandoned and make a starting writer exit 2; the health routes are exempt from rate limits; failed authentication is limited to 10 a minute per address. **Design review 2 (2026-10-16):** `X-Forwarded-For` is trusted from Caddy's own address only, since uvicorn trusts loopback by default; the rate tables are bounded; the keys file lives in `var/`, mounted as a folder, and fails closed; "no credential" means no key and no token; a streamed body over the limit raises `HTTPException(413)`; and the abandoned-job rule reads the row again after the probe. S3-8. |
+| DEC-23 | The API beyond localhost (DEC-18's Phase 3 half) and NFR-5 | **Resolved 2026-10-14: named, scoped API keys (maintainer); token-bucket rate limits; a 64 KiB body limit; job records in SQLite; a stateless query tier; TLS at the proxy** | A keys file of sha256 hashes with scopes `query` and `ingest`, managed by `rag-keys`; `RAG_API_TOKEN` still works as one all-scope key. A job holds a lock of its own, so an unfinished row whose job lock is free reads as abandoned. Limits per replica, documented. **Design review 1:** the job's own lock replaces probing the writer lock, which could call a live job abandoned and make a starting writer exit 2; the health routes are exempt from rate limits; failed authentication is limited to 10 a minute per address. **Design review 2 (2026-10-16):** `X-Forwarded-For` is trusted from Caddy's own address only, since uvicorn trusts loopback by default; the rate tables are bounded; the keys file lives in `var/`, mounted as a folder, and fails closed; "no credential" means no key and no token; a streamed body over the limit raises `HTTPException(413)`; and the abandoned-job rule reads the row again after the probe. **As built (S3-8, 2026-10-26):** keys in `var/api-keys.json`, hashes only, looked at every 5 s; a broken file fails closed with 503, and readiness says why (maintainer, at the plan); `rag-keys`; three bucket tables; `forwarded_allow_ips` always passed; `BodyLimit` and a count of unexpected 500s, the SLI on `code=~"5.."`; job records in SQLite with a lock per job, an abandoned one counted once as failed; readiness probes cached for 5 s. Nothing hashed moved. ARCHITECTURE.md DEC-23 has the as-built note. S3-8. |
 | DEC-24 | Containers, compose, overlays and CI scanning | **Resolved 2026-10-14: one image (uv, CPU torch, models baked in, offline), one compose file with Caddy for TLS and balancing, `RAG_CONFIG_OVERLAY`, Trivy run as a binary pinned by sha256** | Not `aquasecurity/trivy-action` (tags hijacked, CVE-2026-33634). SIGTERM ends `rag-serve` with 143 under an init, and that stays. The audit policy: ignores only for advisories with no fix, each with a reason and a date; a weekly run; the `eval` extra audited. A ruleset makes every stage block a merge. **Design review 1:** the `eval` extra has four advisories, not one. The `langchain` bump moves into S3-9 (maintainer) and clears two; diskcache's and ragas's have no fix, and are the policy's first ignores. The repository is public, so rulesets are available. **Design review 2 (2026-10-16):** a signature would not have caught Trivy's pipeline-built v0.69.4, so every pin is verified once, by provenance pinned to its workflow and tag, its source commit on `main`, and an age rule. promtool runs from the image, by digest, and the weekly run scans the third-party images. Compose runs one uid, Qdrant's unprivileged image, and Caddy as the only trusted proxy; the disconnect through Caddy held. **One exception to the audit policy (maintainer, 2026-10-22):** five pypdf 6.19.0 advisories with fixed releases are ignored in `ci.yml`, each with its reason, until S3-11b bumps pypdf with `CHUNKING_VERSION` 2 inside its one re-run, and at the latest until 2027-01-20, when the Audit step fails on its own. The fixed releases change 7 of the 25 golden contexts (caveat 37). **Extended on 2026-10-23 (maintainer, S3-6's CI):** three more pypdf advisories, published on 2026-10-22, under the same reasons and the same end; eight ignores in all. **Extended on 2026-10-24 (maintainer, S3-7's CI):** three more pypdf advisories, published on 2026-10-23 and fixed by 6.21.2, under the same reasons and the same end; eleven ignores in all. **`deploy-config` (S3-7b, 2026-10-26):** `promtool check config`, `promtool test rules` and `amtool check-config`, from the pinned images; required by the ruleset from S3-7b's merge (maintainer, at its second review), so S3-9 adds the compose check to it and `container` to the ruleset. S3-9. |
 | DEC-25 | Backup and restore | **Resolved 2026-10-14: snapshots of immutable generations to a directory; a restore is a new generation and an alias switch** | Checksums verified both ways; a snapshot from another embedder is refused; RPO and RTO stated; tested against a real server in CI and by drills (maintainer's addition). **Design review 1:** a restore holds the writer lock from the upload to the end, or an ingest could delete its generation mid-restore; the sidecar keeps the whole manifest. **Design review 2 (2026-10-16):** the manifest survived a real round trip. Restore refuses a taken name, since an upload overwrites in place, and runs `check_index`'s whole rule. Snapshot files outlive their collections, so restore, `create` and `recover` delete them. The backup service mounts `./var`. S3-10. |
 | DEC-26 | Tier-2 re-runs in Phase 3 | **Resolved 2026-10-14: one, batching every lever; S3-11 measures them and S3-11b commits** | The judge (from the hand labels), the prompt fixes and LLM01's delimiting, the hybrid switch, `min_score`, the model (DEC-2), `check` recomputing aggregates, and a per-question context digest. Staged so the grid stays small: about 4–6 h of T4 time plus about 70 min here. **Design review 1:** split into S3-11 (the sweep) and S3-11b (the commit), as S2-5 and S2-5b were (maintainer); the `langchain` bump moved to S3-9; the answers file records Qdrant's version. **Design review 2 (2026-10-16):** a stage 0 measures the T4 against this CPU; stage 1's re-score is certain; every rule is a margin committed before the first run; Colab restores this host's index and runs Ollama only; about 5–9 h of T4 time, where this row first said 4–6; and about 5 labels outside the 20 after S3-11b. S3-11, S3-11b. |
@@ -1930,11 +2004,6 @@ diffed this backlog against `main`'s: no line was dropped.
   traces one while the start-up line names the generic one. The Deployment section says so.
   S3-9's story has the line.
 
-- **S3-8 — the availability SLI sees no unexpected 500** (S3-7b's second review). It counts
-  `/v1/query`'s 503 refusals and the answers that failed after their 200; a 500 is in no
-  metric, there being no HTTP status counter. S3-8 adds refusals of its own (401, 413, 429)
-  and touches the middleware: count the 5xx there, or say in the README that the SLI does not.
-
 - **Before the alerts get a real receiver — one failed answer pages a quiet host** (a
   promtool probe at S3-7b's merge). With a question every 20 minutes, a single failed answer
   is 14.4 times the 1% budget over both the 1 h and the 5 m window, so
@@ -1961,7 +2030,9 @@ diffed this backlog against `main`'s: no line was dropped.
   create, the collection is left behind (`--cleanup` removes it). Cosmetic; no hashed
   input.
 
-- **S3-8 — the config's no-secrets rule is name-based** (found in S3-6's first review).
+- **S3-9 — the config's no-secrets rule is name-based** (found in S3-6's first review; moved
+  from S3-8 by its plan, 2026-10-26: the config schema, not the API's keys; S3-9's story has
+  the line).
   `Components.check_api_keys` refuses `api_key` and `*_api_key`, in any case and depth.
   `default_headers: {Authorization: …}` or `{x-api-key: …}`, a hyphenated `api-key` and
   `token` load, and so does a plain `http://` remote `base_url`, which sends the fallback's
@@ -1969,10 +2040,17 @@ diffed this backlog against `main`'s: no line was dropped.
   require `https` unless the host is loopback; or say in the docs that the rule is
   best-effort. A config the maintainer writes, so not urgent.
 
-- **S3-8 — the Qdrant URL in an ingest job's error text** (found in S3-2's second review).
+- **S3-9 — the Qdrant URL in an ingest job's error text** (found in S3-2's second review;
+  moved from S3-8 by its plan, 2026-10-26; S3-9's story has the line).
   `describe_error` passes `cannot use Qdrant at http://host:6333 (…)` through to
-  `GET /v1/ingest/<job>` clients. Not a path, so DEC-18 holds; once S3-9 puts Qdrant on an
-  internal network, decide whether to redact it.
+  `GET /v1/ingest/<job>` clients. Not a path, so DEC-18 holds; since S3-8 only an `ingest` key
+  reads a job. Once S3-9 puts Qdrant on an internal network, decide whether to redact it.
+
+- **If unauthenticated load becomes a concern — a body that is not JSON is parsed before
+  authentication** (found in S3-8). FastAPI parses a body before any dependency, so its 422
+  comes ahead of the 401, now over at most 64 KiB, and draws on no bucket. A per-address
+  bucket in a middleware, before parsing, would cover it; Caddy's own limits are the other
+  place (S3-9). Bounded, and DEC-23 asked no more.
 
 ### Closed in Phase 3
 
@@ -2005,6 +2083,14 @@ diffed this backlog against `main`'s: no line was dropped.
   - **What it opened:** four lines: the app's environment for the deploy files (S3-9),
     availability's unseen 500s (S3-8), NFR-2b's answers cancelled before their first token,
     and a stale fallback assertion; and caveat 41.
+- **S3-8 (2026-10-26):**
+  - **What it closed:** NFR-5; DEC-23; the API's deployment hardening (multi-user keys and
+    rate limiting), request size and health-check load, statelessness; and availability's
+    unseen 500s (S3-7b's second review).
+  - **What it moved:** the name-based no-secrets rule and the Qdrant URL in a job's error text,
+    to S3-9.
+  - **What it opened:** one line, a body that is not JSON parsed before authentication; and
+    caveat 42.
 - **S3-7b's fix (2026-10-26, PR #27):** NFR-2b's answers cancelled before their first token,
   which S3-7b opened. They count in the latency SLIs once they had waited past the objective
   (`rag_abandoned_seconds`), so a hung model whose users give up pages. The record of S3-7b's

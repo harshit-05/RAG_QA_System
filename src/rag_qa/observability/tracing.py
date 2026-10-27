@@ -49,15 +49,23 @@ once tracing is on.
 
 import logging
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final
 from urllib.parse import urlsplit
 
 from opentelemetry import context as otel_context
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
-from opentelemetry.trace import INVALID_SPAN, Span, SpanKind, Status, StatusCode, Tracer
-from opentelemetry.util.types import Attributes
+from opentelemetry.trace import (
+    INVALID_SPAN,
+    Span,
+    SpanKind,
+    Status,
+    StatusCode,
+    Tracer,
+    get_current_span,
+)
+from opentelemetry.util.types import Attributes, AttributeValue
 from pydantic import ValidationError
 
 from rag_qa import __version__
@@ -119,6 +127,8 @@ INGEST_FAILED: Final = "rag.ingest.failed"
 QDRANT: Final = "qdrant"
 #: A cancel's event and attribute: the client left, or the user pressed Ctrl-C.
 CANCELLED: Final = "rag.cancelled"
+#: The name of the API key a request authenticated with (S3-8, DEC-23): never its token.
+API_KEY_NAME: Final = "rag.api_key.name"
 
 
 class TraceSettingsError(ValueError):
@@ -293,6 +303,13 @@ def attached(parent: "Context | None") -> Iterator[None]:
         yield
     finally:
         otel_context.detach(token)
+
+
+def annotate(attributes: Mapping[str, AttributeValue]) -> None:
+    """Set ``attributes`` on the span current now: in a request, its server span. Nothing while
+    tracing is off."""
+    if _tracer is not None:
+        get_current_span().set_attributes(attributes)
 
 
 def failed(span: Span, error: BaseException) -> None:

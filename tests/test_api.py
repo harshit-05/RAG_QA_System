@@ -35,6 +35,7 @@ import ollama
 import pytest
 from conftest import (
     FAKE_ANSWER,
+    UNLIMITED,
     FakeOllama,
     MakeConfig,
     StreamingFakeChatModel,
@@ -61,8 +62,8 @@ from starlette.datastructures import State
 from starlette.requests import Request
 
 from rag_qa import resilience
+from rag_qa.api import auth, routes
 from rag_qa.api import jobs as api_jobs
-from rag_qa.api import routes
 from rag_qa.api import state as api_state
 from rag_qa.api.app import create_app
 from rag_qa.api.jobs import KEEP
@@ -94,10 +95,12 @@ def serve(
     serving: Serving | None = None,
     *,
     token: str | None = None,
+    keys_file: Path | None = None,
 ) -> Iterator[tuple[TestClient, Serving]]:
     """A running app, its lifespan included, and a client that fails any response that
     names ``private`` (the folder holding the corpus and the index)."""
-    app = create_app(config, ServerSettings(token=token), serving=serving)
+    settings = ServerSettings(token=token, keys_file=keys_file, rate_limit=UNLIMITED)
+    app = create_app(config, settings, serving=serving)
 
     def scan(response: httpx.Response) -> None:
         response.read()
@@ -137,6 +140,14 @@ def run_job(client: TestClient, *, rebuild: bool = False) -> dict[str, Any]:
 def refused(client: TestClient) -> tuple[httpx.Response, httpx.Response]:
     """A question and the document list: what a server with no usable index refuses."""
     return client.post("/v1/query", json={"question": "q"}), client.get("/v1/documents")
+
+
+def health_now(client: TestClient, serving: Serving) -> httpx.Response:
+    """``GET /v1/health`` as it is now: the probes' cached answers dropped first, as 5 s
+    passing would (DEC-23). The tests that read health twice in a row read through this."""
+    serving.index_probe.forget()
+    serving.llm_probe.forget()
+    return client.get("/v1/health")
 
 
 def bigger_embedder(c: dict[str, Any]) -> None:
@@ -494,6 +505,40 @@ def test_a_body_that_is_not_json_is_refused_before_the_dependencies(
     assert model.prompts == []
 
 
+def test_a_body_over_the_limit_is_413_before_any_other_refusal(
+    fake_config: RagConfig, tmp_path: Path
+) -> None:
+    # S3-8 (DEC-23): the size is checked before FastAPI reads the body, ahead of every
+    # dependency, which closes the gap above: no token, a web page's Origin or JSON that does
+    # not parse, a body over 64 KiB is never read. With Content-Length, and streamed without
+    # one (an iterator body); test_api_uvicorn.py sends both over a real socket.
+    model = StreamingFakeChatModel()
+    big = b"{" + b" " * (64 * 1024)
+    as_json = {"content-type": "application/json"}
+    with serve(fake_config, tmp_path, fake_serving(fake_config, model), token=TOKEN) as (
+        client,
+        serving,
+    ):
+        for path in ("/v1/query", "/v1/ingest"):
+            for headers in (as_json, {**as_json, "origin": "https://example.com"}):
+                declared = client.post(path, content=big, headers=headers)
+                assert declared.status_code == 413, declared.text
+                assert declared.json() == {"detail": "the request body is larger than 64 KiB"}
+                streamed = client.post(
+                    path, content=iter([big[:40_000], big[40_000:]]), headers=headers
+                )
+                assert streamed.status_code == 413, streamed.text
+                assert streamed.json() == declared.json()
+        # At the limit exactly, the usual order resumes: JSON that parses, then the 401, which
+        # comes before the model's 422 for an overlong question.
+        at_limit = b'{"question": "' + b"a" * (64 * 1024 - 16) + b'"}'
+        assert len(at_limit) == 64 * 1024
+        assert client.post("/v1/query", content=at_limit, headers=as_json).status_code == 401
+        assert serving.jobs.running is None
+        assert serving.slots.in_use == 0
+    assert model.prompts == []
+
+
 @pytest.mark.parametrize(
     "body",
     [{}, {"rebuild": "true"}, {"rebuild": 1}, {"rebuild": None}, {"rebuild": False, "config": "x"}],
@@ -554,6 +599,52 @@ def test_every_route_but_the_health_probes_needs_the_token(
         "/openapi.json",
         *HEALTH,
     }
+
+
+#: Each route's scope (DEC-23): the docs and the schema need a valid key and no scope; the
+#: health probes need nothing.
+ROUTE_SCOPES = {
+    ("POST", "/v1/query"): "query",
+    ("GET", "/v1/documents"): "query",
+    ("POST", "/v1/ingest"): "ingest",
+    ("GET", "/v1/ingest/x"): "ingest",
+    ("GET", "/docs"): None,
+    ("GET", "/redoc"): None,
+    ("GET", "/openapi.json"): None,
+    ("GET", "/v1/health"): None,
+    ("GET", "/v1/health/live"): None,
+}
+
+
+def test_every_route_without_its_scope_is_refused_with_403(
+    fake_config: RagConfig, tmp_path: Path
+) -> None:
+    # Fail closed, as above: a route added later without its scope's dependency turns this red,
+    # since its key without the other scope would get through, or the table would be short.
+    keys = tmp_path / "var" / "api-keys.json"
+    keys.parent.mkdir(exist_ok=True)
+    tokens = {scope: secrets.token_urlsafe(32) for scope in ("query", "ingest")}
+    keys.write_text(
+        auth.dump(
+            auth.ApiKey(f"only-{scope}", frozenset({scope}), auth.digest(token), "2026-10-26")
+            for scope, token in tokens.items()
+        )
+    )
+    serving = fake_serving(fake_config, StreamingFakeChatModel())
+    with serve(fake_config, tmp_path, serving, keys_file=keys) as (client, _):
+        requests = route_requests(client.app)  # type: ignore[arg-type]
+        assert set(requests) == set(ROUTE_SCOPES)
+        for (method, path), needed in ROUTE_SCOPES.items():
+            for scope, token in tokens.items():
+                status = client.request(
+                    method, path, headers={"Authorization": f"Bearer {token}"}
+                ).status_code
+                if needed is not None and needed != scope:
+                    assert status == 403, (method, path, scope)
+                else:
+                    assert status not in (401, 403), (method, path, scope, status)
+        assert serving.slots.in_use == 0
+        assert serving.jobs.running is None
 
 
 @pytest.mark.parametrize(
@@ -872,7 +963,7 @@ def test_a_job_that_cannot_run_fails_with_rag_ingests_exit_code(
     # cannot hold the flock on ingest()'s behalf.
     error.args = (str(error.args[0]).format(corpus=scratch_config.paths.data),)
 
-    def failing_ingest(config: RagConfig, *, rebuild: bool) -> IngestReport:
+    def failing_ingest(config: RagConfig, *, rebuild: bool, **_: Any) -> IngestReport:
         raise error
 
     monkeypatch.setattr("rag_qa.api.jobs.ingest", failing_ingest)
@@ -887,7 +978,7 @@ def test_a_second_ingest_job_while_one_runs_is_refused_with_409(
 ) -> None:
     release = threading.Event()
 
-    def slow_ingest(config: RagConfig, *, rebuild: bool) -> IngestReport:
+    def slow_ingest(config: RagConfig, *, rebuild: bool, **_: Any) -> IngestReport:
         release.wait(10)
         return IngestReport(found=1)
 
@@ -909,7 +1000,9 @@ def test_a_second_ingest_job_while_one_runs_is_refused_with_409(
 def test_an_unknown_job_is_404_and_only_the_last_jobs_are_kept(
     scratch_config: RagConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("rag_qa.api.jobs.ingest", lambda config, *, rebuild: IngestReport(found=1))
+    monkeypatch.setattr(
+        "rag_qa.api.jobs.ingest", lambda config, *, rebuild, **_: IngestReport(found=1)
+    )
     with serve(scratch_config, tmp_path) as (client, _):
         assert client.get("/v1/ingest/nope").status_code == 404
         ids = []
@@ -940,10 +1033,10 @@ def test_an_index_rebuilt_with_another_embedder_makes_the_server_not_ready(
     scratch_config: RagConfig, make_config: MakeConfig, tmp_path: Path
 ) -> None:
     ingest(scratch_config)
-    with serve(scratch_config, tmp_path) as (client, _):
+    with serve(scratch_config, tmp_path) as (client, serving):
         assert client.get("/v1/health").status_code == 200
         ingest(load_config(make_config(bigger_embedder)), rebuild=True)  # a CLI --rebuild
-        health = client.get("/v1/health")
+        health = health_now(client, serving)
         assert health.status_code == 503
         assert health.json()["index"]["detail"] == REINGEST
         for response in refused(client):
@@ -1000,6 +1093,112 @@ def test_health_is_503_when_the_models_server_does_not_answer(
     assert health.json()["status"] == "not ready"
     assert health.json()["index"]["ready"] is True
     assert health.json()["llm"]["ready"] is False
+
+
+# --- the health probes' cost (S3-8, DEC-23) ---------------------------------------------------
+
+
+def test_a_flood_of_health_probes_asks_each_dependency_once_and_a_question_still_reads_the_alias(
+    scratch_config: RagConfig,
+    tmp_path: Path,
+    fake_ollama: FakeOllama,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Docker's and Caddy's checks poll readiness from one address, and it is never
+    # rate-limited: the probes behind it are each made at most once per 5 s, whoever asks.
+    ingest(scratch_config)
+    up = ChatOllama(model="mistral", base_url=fake_ollama.url)
+    monkeypatch.setattr("rag_qa.api.state.build_llm", lambda config: up)
+    with serve(scratch_config, tmp_path) as (client, serving):
+        reads: list[None] = []
+        real = serving.store.alias_target
+
+        def counted() -> str | None:
+            reads.append(None)
+            return real()
+
+        monkeypatch.setattr(serving.store, "alias_target", counted)
+        before = fake_ollama.requests.count("/api/tags")
+        for _ in range(200):
+            assert client.get("/v1/health").status_code == 200
+        assert fake_ollama.requests.count("/api/tags") - before <= 1
+        assert len(reads) <= 1
+        # A question is never served from the probe's answer: it reads the alias itself (NFR-5).
+        alias_reads = len(reads)
+        assert client.post("/v1/query", json={"question": "q"}).status_code == 200
+        assert len(reads) > alias_reads
+
+
+def test_a_probe_is_asked_once_by_concurrent_callers_and_again_after_5_s() -> None:
+    clock = Clock()
+    asked: list[int] = []
+    gate = asyncio.Event()
+
+    async def ask() -> int:
+        asked.append(len(asked))
+        await gate.wait()
+        return len(asked)
+
+    probe: api_state.Probe[int] = api_state.Probe(ask, clock=clock)
+
+    async def scenario() -> tuple[list[int], int, int]:
+        waiting = [asyncio.create_task(probe.get()) for _ in range(50)]
+        await asyncio.sleep(0)
+        gate.set()
+        answers = await asyncio.gather(*waiting)
+        clock.now += 4.9
+        cached = await probe.get()
+        clock.now += 0.1
+        fresh = await probe.get()
+        return list(answers), cached, fresh
+
+    answers, cached, fresh = asyncio.run(scenario())
+    assert answers == [1] * 50  # one call shared by all fifty
+    assert (cached, fresh) == (1, 2)
+
+
+def test_a_cancelled_caller_leaves_the_probe_running_and_its_answer_cached() -> None:
+    clock = Clock()
+    asked: list[None] = []
+
+    async def ask() -> str:
+        asked.append(None)
+        await asyncio.sleep(0.05)
+        return "answered"
+
+    probe: api_state.Probe[str] = api_state.Probe(ask, clock=clock)
+
+    async def scenario() -> str:
+        caller = asyncio.create_task(probe.get())
+        await asyncio.sleep(0.01)
+        caller.cancel()  # a health client that gave up
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        await asyncio.sleep(0.1)
+        return await probe.get()
+
+    assert asyncio.run(scenario()) == "answered"
+    assert len(asked) == 1
+
+
+def test_a_probe_that_raises_caches_nothing() -> None:
+    attempts: list[None] = []
+
+    async def ask() -> str:
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise RuntimeError("once")
+        return "fine"
+
+    probe: api_state.Probe[str] = api_state.Probe(ask, clock=Clock())
+
+    async def scenario() -> str:
+        with pytest.raises(RuntimeError):
+            await probe.get()
+        return await probe.get()
+
+    assert asyncio.run(scenario()) == "fine"
+    assert len(attempts) == 2
 
 
 # --- one retrieval at a time (S2-4's second review) -----------------------------------------
@@ -1112,7 +1311,7 @@ def test_an_open_that_fails_for_another_reason_is_not_ready_and_tried_again(
     # It is not ready instead, says so without the error's text (which names paths), and
     # the next request tries again, since such a failure is likelier to pass than not.
     ingest(scratch_config)
-    with serve(scratch_config, tmp_path) as (client, _):
+    with serve(scratch_config, tmp_path) as (client, serving):
         real_open = api_state.open_retrieval
         failing = [True]
 
@@ -1125,7 +1324,7 @@ def test_an_open_that_fails_for_another_reason_is_not_ready_and_tried_again(
         (sample_corpus / "added.txt").write_text("A new note.\n")
         ingest(scratch_config)  # a rag-ingest outside the server flips a new generation in
 
-        health = client.get("/v1/health")
+        health = health_now(client, serving)
         assert health.status_code == 503
         assert health.json()["index"]["detail"] == api_state.UNAVAILABLE
         for response in refused(client):
@@ -1134,7 +1333,7 @@ def test_an_open_that_fails_for_another_reason_is_not_ready_and_tried_again(
         assert "the disk went away" in caplog.text  # in the server log only
 
         failing[0] = False
-        assert client.get("/v1/health").status_code == 200
+        assert health_now(client, serving).status_code == 200
         assert client.post("/v1/query", json={"question": "q"}).status_code == 200
 
 
@@ -1155,7 +1354,7 @@ def test_qdrant_unreachable_on_a_refresh_is_not_ready_and_tried_again(
             raise StoreUnavailableError("cannot use Qdrant at http://q (ConnectError)")
 
         monkeypatch.setattr(serving.store, "alias_target", down)
-        health = client.get("/v1/health")
+        health = health_now(client, serving)
         assert health.status_code == 503
         assert health.json()["index"]["detail"] == api_state.UNAVAILABLE
         for response in refused(client):
@@ -1164,7 +1363,7 @@ def test_qdrant_unreachable_on_a_refresh_is_not_ready_and_tried_again(
         assert caplog.text.count("Not serving an index: cannot use Qdrant") == 1  # said once
 
         monkeypatch.setattr(serving.store, "alias_target", real)
-        assert client.get("/v1/health").status_code == 200
+        assert health_now(client, serving).status_code == 200
         assert client.post("/v1/query", json={"question": "q"}).status_code == 200
 
 
@@ -1265,19 +1464,22 @@ def test_a_slot_is_released_even_when_closing_its_stream_fails(
 def test_a_failure_to_serve_what_a_job_published_never_fails_the_job(
     scratch_config: RagConfig, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    monkeypatch.setattr("rag_qa.api.jobs.ingest", lambda config, *, rebuild: IngestReport(found=1))
+    monkeypatch.setattr(
+        "rag_qa.api.jobs.ingest", lambda config, *, rebuild, **_: IngestReport(found=1)
+    )
 
     async def failing_refresh() -> None:
         raise RuntimeError("cannot reopen")
 
-    async def scenario() -> api_jobs.IngestJob:
+    async def scenario() -> api_jobs.IngestJob | None:
         jobs = api_jobs.IngestJobs(scratch_config, after=failing_refresh)
-        job = jobs.start(rebuild=False)
+        started = await jobs.start(rebuild=False)
         while jobs.running is not None or jobs._tasks:
             await asyncio.sleep(0.01)
-        return job
+        return await jobs.get(started.job_id)
 
     job = asyncio.run(scenario())
+    assert job is not None
     assert (job.status, job.exit_code) == ("succeeded", 0)
     assert f"Could not serve what ingest job {job.job_id} published" in caplog.text
 
@@ -1292,7 +1494,7 @@ def test_stopping_the_server_abandons_a_running_job_and_says_so(
     # does not wait for it.
     release = threading.Event()
 
-    def stuck_ingest(config: RagConfig, *, rebuild: bool) -> IngestReport:
+    def stuck_ingest(config: RagConfig, *, rebuild: bool, **_: Any) -> IngestReport:
         release.wait(10)
         return IngestReport(found=1)
 
@@ -1452,7 +1654,7 @@ def test_qdrant_down_on_a_refresh_is_named_by_its_own_failure_not_the_breaker_s(
 
         monkeypatch.setattr(serving.store.client, "get_aliases", down)
         with caplog.at_level(logging.WARNING, logger="rag_qa.api.state"):
-            health = client.get("/v1/health")
+            health = health_now(client, serving)
     assert health.status_code == 503
     assert health.json()["index"]["detail"] == STORE_DOWN
     assert serving.store.breaker.state == "open"

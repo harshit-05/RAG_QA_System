@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 import pytest
 from conftest import (
+    UNLIMITED,
     MakeConfig,
     StreamingFakeChatModel,
     StubCrossEncoder,
@@ -94,7 +95,7 @@ def tokens(provider: str, model: str, kind: str) -> tuple[str, dict[str, str]]:
 
 @contextmanager
 def served(config: RagConfig, serving: Serving) -> Iterator[TestClient]:
-    app = create_app(config, ServerSettings(), serving=serving)
+    app = create_app(config, ServerSettings(rate_limit=UNLIMITED), serving=serving)
     with TestClient(app, base_url="http://127.0.0.1") as client:
         yield client
 
@@ -185,6 +186,13 @@ def test_every_label_set_is_there_at_zero_and_no_created_series() -> None:
         'rag_refusals_total{code="503",reason="busy"}',
         'rag_refusals_total{code="503",reason="dependency_down"}',
         'rag_refusals_total{code="503",reason="no_index"}',
+        'rag_refusals_total{code="413",reason="too_large"}',
+        'rag_refusals_total{code="500",reason="error"}',
+        'rag_refusals_total{code="401",reason="unauthenticated"}',
+        'rag_refusals_total{code="403",reason="scope"}',
+        'rag_refusals_total{code="429",reason="rate_limited"}',
+        'rag_refusals_total{code="429",reason="auth_limited"}',
+        'rag_refusals_total{code="503",reason="keys_unreadable"}',
         'rag_ingest_runs_total{status="failed"}',
         'rag_abandoned_seconds_count{waiting_for="sources"}',
         'rag_abandoned_seconds_count{waiting_for="first_token"}',
@@ -376,6 +384,56 @@ async def _done() -> None:
     return None
 
 
+def test_a_question_whose_body_is_too_large_counts_as_a_413_and_no_other_route_does(
+    fake_config: RagConfig,
+) -> None:
+    counts = Counts(("rag_refusals_total", {"code": "413", "reason": "too_large"}))
+    big = b"x" * (64 * 1024 + 1)
+    as_json = {"content-type": "application/json"}
+    with served(fake_config, fake_serving(fake_config, StreamingFakeChatModel())) as client:
+        assert client.post("/v1/query", content=big, headers=as_json).status_code == 413
+        assert client.post("/v1/ingest", content=big, headers=as_json).status_code == 413
+    assert counts.moved("rag_refusals_total", code="413", reason="too_large") == 1
+
+
+def test_an_unexpected_error_before_the_answer_counts_as_a_500_once(
+    fake_config: RagConfig,
+) -> None:
+    # No refusal of ours makes a 500, so nothing else counts it (S3-7b's second review): the
+    # availability SLI would not see it.
+    counts = Counts(
+        ("rag_refusals_total", {"code": "500", "reason": "error"}),
+        *(("rag_refusals_total", {"code": "503", "reason": r}) for r in ("busy", "no_index")),
+    )
+    serving = fake_serving(fake_config, StreamingFakeChatModel())
+
+    async def broken() -> None:
+        raise RuntimeError("a bug")
+
+    serving.refresh = broken  # type: ignore[method-assign]
+    app = create_app(fake_config, ServerSettings(rate_limit=UNLIMITED), serving=serving)
+    with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as client:
+        assert client.post("/v1/query", json={"question": "q"}).status_code == 500
+        assert client.get("/v1/documents").status_code == 500  # not a question
+    assert counts.moved("rag_refusals_total", code="500", reason="error") == 1
+    assert counts.moved("rag_refusals_total", code="503", reason="busy") == 0
+    assert counts.moved("rag_refusals_total", code="503", reason="no_index") == 0
+
+
+def test_an_answer_that_fails_after_its_200_is_no_500(fake_config: RagConfig) -> None:
+    # It counts as a failed answer (rag_answers_total), once: never as a 500 besides.
+    counts = Counts(("rag_refusals_total", {"code": "500", "reason": "error"}))
+
+    def retrieve(asked: RetrievalQuery) -> list[Document]:
+        raise RuntimeError("retrieval broke")
+
+    serving = fake_serving(fake_config, StreamingFakeChatModel(), retrieve=RunnableLambda(retrieve))
+    with served(fake_config, serving) as client:
+        response = client.post("/v1/query", json={"question": "q"})
+    assert response.status_code == 200 and "event: error" in response.text
+    assert counts.moved("rag_refusals_total", code="500", reason="error") == 0
+
+
 def answer_outcomes() -> dict[str, float]:
     """``rag_answers_total`` by outcome: every series the registry holds, not only the three
     started at zero."""
@@ -442,7 +500,9 @@ def test_an_ingest_job_moves_the_runs_and_the_chunks(
         ("rag_ingest_chunks_total", {}),
         ("rag_index_documents", {}),
     )
-    with TestClient(create_app(config, ServerSettings()), base_url="http://127.0.0.1") as client:
+    with TestClient(
+        create_app(config, ServerSettings(rate_limit=UNLIMITED)), base_url="http://127.0.0.1"
+    ) as client:
         started = client.post("/v1/ingest", json={"rebuild": False}).json()
         job = _wait(client, started["job_id"])
         # The job ends, then the server reopens what it published: wait for that.
@@ -552,7 +612,9 @@ def test_an_ingest_jobs_log_lines_carry_its_job_id(
     monkeypatch.setenv("RAG_LOG_FORMAT", "json")
     logs.configure_logging()
     config = load_config(make_config(use_fakes))
-    with TestClient(create_app(config, ServerSettings()), base_url="http://127.0.0.1") as client:
+    with TestClient(
+        create_app(config, ServerSettings(rate_limit=UNLIMITED)), base_url="http://127.0.0.1"
+    ) as client:
         started = client.post("/v1/ingest", json={"rebuild": False}).json()
         _wait(client, started["job_id"])
     lines = [json.loads(x) for x in capsys.readouterr().err.splitlines() if x.startswith("{")]

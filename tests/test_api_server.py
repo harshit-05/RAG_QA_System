@@ -70,7 +70,8 @@ def test_a_non_loopback_host_without_a_token_is_refused_before_the_config_loads(
     status = server.main(["--host", "0.0.0.0", "--config", "/nonexistent/config.yaml"])
     err = capsys.readouterr().err
     assert status == server.EXIT_CANNOT_START
-    assert "refusing to listen on 0.0.0.0 without a token" in err
+    assert "refusing to listen on 0.0.0.0 without a credential" in err
+    assert "RAG_API_KEYS_FILE" in err and "RAG_API_TOKEN" in err
     assert "Traceback" not in err
     assert ran == []
 
@@ -91,6 +92,12 @@ def test_a_non_loopback_host_from_the_environment_is_refused_too(
         ("RAG_API_PORT", "70000", "RAG_API_PORT: Input should be less than"),
         ("RAG_API_TOKEN", "two words", "RAG_API_TOKEN: must be visible ASCII"),
         ("RAG_API_TOKEN", "sécret", "RAG_API_TOKEN: must be visible ASCII"),
+        # Addresses only, never a range (DEC-23, design review 2): a published port's
+        # connections come from the network's gateway, inside its range.
+        ("RAG_API_TRUSTED_PROXIES", "172.18.0.0/16", "RAG_API_TRUSTED_PROXIES: must be IP"),
+        ("RAG_API_TRUSTED_PROXIES", "*", "RAG_API_TRUSTED_PROXIES: must be IP"),
+        ("RAG_API_TRUSTED_PROXIES", "caddy", "RAG_API_TRUSTED_PROXIES: must be IP"),
+        ("RAG_API_TRUSTED_PROXIES", "172.18.0.10,", "RAG_API_TRUSTED_PROXIES: must be IP"),
     ],
 )
 def test_invalid_settings_stop_the_start_and_never_echo_a_value(
@@ -153,6 +160,23 @@ def test_with_ollama_up_it_runs_uvicorn_on_the_given_address(
     assert fake_ollama.requests.count("/api/tags") == 2  # validate_model_on_init, then the ping
     # uvicorn's lines go through our formatter (S3-7): no logging config of its own.
     assert (config.log_config, config.log_level) == (None, "info")
+    # No one's X-Forwarded-For is believed, loopback's included (DEC-23): never uvicorn's default.
+    assert config.forwarded_allow_ips == []
+
+
+def test_the_trusted_proxies_are_what_uvicorn_believes_and_nothing_else(
+    make_config: MakeConfig,
+    fake_ollama: FakeOllama,
+    ran: list[uvicorn.Config],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Also with FORWARDED_ALLOW_IPS set: uvicorn reads it only when it is passed nothing.
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+    monkeypatch.setenv("RAG_API_TRUSTED_PROXIES", " 172.18.0.10, ::1 ")
+    path = ollama_config(make_config, fake_ollama.url)
+    assert server.main(["--config", str(path)]) == server.EXIT_OK
+    (config,) = ran
+    assert config.forwarded_allow_ips == ["172.18.0.10", "::1"]
 
 
 # --- the metrics listener (S3-7) ----------------------------------------------------------
@@ -228,8 +252,28 @@ def test_with_a_token_a_non_loopback_host_runs_and_warns_about_cleartext(
     with caplog.at_level(logging.WARNING, logger="rag_qa"):
         assert server.main(["--config", str(path), "--host", "0.0.0.0"]) == server.EXIT_OK
     assert ran[0].host == "0.0.0.0"
-    assert "travels in cleartext" in caplog.text
+    assert "travel in cleartext" in caplog.text
     assert "s3cret" not in caplog.text
+
+
+def test_with_a_keys_file_alone_a_non_loopback_host_runs_and_a_broken_file_is_a_warning(
+    make_config: MakeConfig,
+    fake_ollama: FakeOllama,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    ran: list[uvicorn.Config],
+    tmp_path: Path,
+) -> None:
+    # "No credential" means no keys file and no token (DEC-23, design review 2). A keys file
+    # that cannot be used is no reason to stay down: it fails closed, and health says why.
+    missing = tmp_path / "var" / "api-keys.json"
+    monkeypatch.setenv("RAG_API_KEYS_FILE", str(missing))
+    path = ollama_config(make_config, fake_ollama.url)
+    with caplog.at_level(logging.WARNING, logger="rag_qa"):
+        assert server.main(["--config", str(path), "--host", "0.0.0.0"]) == server.EXIT_OK
+    assert ran[0].host == "0.0.0.0"
+    assert "travel in cleartext" in caplog.text
+    assert "the keys file does not exist" in caplog.text
 
 
 @pytest.mark.parametrize(("raised", "started"), [(True, False), (False, False)])

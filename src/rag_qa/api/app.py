@@ -6,12 +6,20 @@ shutdown, on the loop that used them. The server starts without an index, or wit
 config cannot use: it reports not-ready until an ingest gives it one.
 
 Two refusals apply to every route, through the app's own dependencies: requests from a
-web page (``Origin``) and, with no token set, a ``Host`` that is not loopback. The
-interactive docs are re-added as ordinary routes, so they sit behind the token too. The
-first dependency gives each request's log lines an ID of their own (S3-7).
+web page (``Origin``) and, with no credential configured, a ``Host`` that is not loopback. The
+interactive docs are re-added as ordinary routes, so they sit behind a key too. The first
+dependency gives each request's log lines an ID of their own (S3-7). The keys and the rate
+limits (DEC-23, S3-8) live on ``app.state``: :class:`rag_qa.api.auth.KeyRing`, which reads the
+keys file, and :class:`rag_qa.api.limits.Limits`, the buckets, both this replica's own.
 
 While it serves, the metrics read each breaker's state and the documents served at every
 scrape (:func:`rag_qa.observability.metrics.watch`, S3-7).
+
+**Two middlewares, both pure ASGI** (S3-8). Outermost, :class:`rag_qa.api.limits.BodyLimit`
+answers 413 to a body over 64 KiB before FastAPI reads it, ahead of every dependency. Inside it,
+:class:`CountServerErrors` counts a question that ends in an unexpected 500, which no other
+metric sees: the exception passes through it on its way to Starlette's own error middleware,
+which sits outside every middleware added here and answers the 500.
 
 **Traces** (S3-7b). While a command has tracing on, every request but the health probes gets
 a server span from the contrib instrumentation (:func:`rag_qa.observability.tracing.instrument`),
@@ -29,9 +37,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.routing import APIRoute
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rag_qa import __version__
 from rag_qa.api import routes
+from rag_qa.api.auth import KeyRing
+from rag_qa.api.limits import BodyLimit, Limits
 from rag_qa.api.state import Serving
 from rag_qa.observability import metrics, tracing
 from rag_qa.schema import RagConfig
@@ -93,6 +104,13 @@ def create_app(
         ],
     )
     app.state.settings = settings
+    # Who may ask, and how often (DEC-23, S3-8): read here, so a keys file that cannot be used
+    # is a warning in the log at start-up, before the first request.
+    app.state.keys = KeyRing(settings.keys_file, settings.token)
+    app.state.limits = Limits(settings.rate_limit)
+    # The last added is the outermost: the body limit runs first.
+    app.add_middleware(CountServerErrors)
+    app.add_middleware(BodyLimit, refused=count_too_large)
     app.include_router(routes.health)
     app.include_router(routes.v1)
     app.include_router(routes.docs)
@@ -101,6 +119,48 @@ def create_app(
     probes = [route.path for route in routes.health.routes if isinstance(route, APIRoute)]
     tracing.instrument(app, untraced=probes)
     return app
+
+
+def count_too_large(scope: Scope) -> None:
+    """Count a question whose body was over the limit (:class:`BodyLimit`'s ``refused``)."""
+    if routes.asks_a_question(scope):
+        metrics.refused(metrics.BODY_TOO_LARGE)
+
+
+class CountServerErrors:
+    """Count a question that ends in an unexpected 500 (S3-8, the availability SLI).
+
+    Every other refusal is counted where it is made; a 500 is made by nothing of ours. An
+    exception that escapes the app before the response began reaches Starlette's error
+    middleware, outside this one, which answers 500: it is counted here on its way out, and
+    raised on. A 500 the app sends itself is counted as it starts. An exception after the
+    response began is an answer's, which counts its own failure (``rag_answers_total``), and a
+    cancel is not an error.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not routes.asks_a_question(scope):
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def watched(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+                if message["status"] == 500:
+                    metrics.refused(metrics.SERVER_ERROR)
+            await send(message)
+
+        try:
+            await self.app(scope, receive, watched)
+        except Exception:
+            if not started:
+                metrics.refused(metrics.SERVER_ERROR)
+            raise
 
 
 def breaker_states(serving: Serving) -> Mapping[str, str]:

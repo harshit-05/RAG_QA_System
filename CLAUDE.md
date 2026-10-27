@@ -92,7 +92,8 @@ prototype to production via a spec-driven story loop.
   `.env` with `set -a; . ./.env; set +a`). Never write the key to a file, never print it.
   Without the extra, as in CI, `tests/test_fallback_openai.py` is skipped.
 
-- Commands: `rag-ingest`, `rag-query`, `rag-serve` (the HTTP API) and `rag-eval`
+- Commands: `rag-ingest`, `rag-query`, `rag-serve` (the HTTP API), `rag-keys` (its API
+  keys, in `var/api-keys.json`, since S3-8) and `rag-eval`
   (`retrieval` for tier 1; `generate`, `score` and `check` for tier 2). Servers and
   model runs go in the maintainer's foreground terminal, logged with `tee -i`: a
   plain `tee` dies with Ctrl-C and loses the shutdown lines. Since S3-7 every log goes to

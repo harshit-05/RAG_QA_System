@@ -31,6 +31,12 @@ free slot gets 503 rather than a place in a queue. A :class:`Slot` is released b
 whichever comes first, the answer stream's ``finally`` or the request's teardown, and
 only once.
 
+**Health probes cost almost nothing** (DEC-23, S3-8). ``GET /v1/health`` reads each
+dependency through a :class:`Probe`: the alias read (:meth:`Serving.refresh`) and the model's
+server (:func:`rag_qa.components.llm_reachable`), each cached for :data:`PROBE_TTL_S` and
+single-flight, so a flood of probes makes at most one call per dependency per 5 s. A question
+never reads through them: it reads the alias itself, on every request (NFR-5).
+
 **Breakers** (DEC-21, S3-6). The store and each model have one, shared by every request.
 While one that a question needs refuses, open or half-open with its probe out,
 :meth:`Serving.unavailable` says so and the route answers 503 with ``Retry-After``, before
@@ -48,7 +54,7 @@ import logging
 import math
 import threading
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -73,6 +79,7 @@ from rag_qa.components import (
     build_llm,
     build_reranker,
     build_store,
+    llm_reachable,
 )
 from rag_qa.manifest import Manifest
 from rag_qa.observability import metrics
@@ -118,6 +125,56 @@ def _refused(current: str | None | StoreError) -> bool:
 def wait_s(seconds: float) -> int:
     """A ``Retry-After`` in whole seconds, at least 1."""
     return max(1, math.ceil(seconds))
+
+
+#: Seconds Ollama has to answer the readiness check (ARCHITECTURE.md §2.4).
+LLM_CHECK_TIMEOUT_S = 2.0
+#: How long a readiness probe's answer stands, in seconds (DEC-23).
+PROBE_TTL_S = 5.0
+
+
+class Probe[T]:
+    """``ask()``'s answer, asked at most once every ``ttl_s`` seconds, and once at a time.
+
+    Concurrent callers share the one call in flight. A caller that is cancelled leaves it
+    running for the others (``asyncio.shield``), so a probe a client gave up on still gets its
+    answer cached. An exception is not cached: each caller of that call gets it. ``clock`` is
+    for the tests.
+    """
+
+    def __init__(
+        self,
+        ask: Callable[[], Awaitable[T]],
+        *,
+        ttl_s: float = PROBE_TTL_S,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._ask = ask
+        self._ttl_s = ttl_s
+        self._clock = clock
+        self._answer: tuple[float, T] | None = None
+        self._flight: asyncio.Task[T] | None = None
+
+    async def get(self) -> T:
+        """The answer, fresh within ``ttl_s``."""
+        answer = self._answer
+        if answer is not None and self._clock() - answer[0] < self._ttl_s:
+            return answer[1]
+        if self._flight is None:
+            self._flight = asyncio.ensure_future(self._run())
+        return await asyncio.shield(self._flight)
+
+    async def _run(self) -> T:
+        try:
+            value = await self._ask()
+            self._answer = (self._clock(), value)
+            return value
+        finally:
+            self._flight = None
+
+    def forget(self) -> None:
+        """Drop the cached answer: the next caller asks again."""
+        self._answer = None
 
 
 @dataclass(frozen=True)
@@ -351,6 +408,12 @@ class Serving:
         self._reopens = 0  # attempts finished: a request that waited for one takes its result
         self.served = served
         self.pipeline = replace(pipeline, retrieve=self._serialized(pipeline.retrieve))
+        #: What readiness reads, each at most once every 5 s (DEC-23): the alias, and the
+        #: model's server. Questions never read through them.
+        self.index_probe: Probe[None] = Probe(self.refresh)
+        self.llm_probe: Probe[bool | None] = Probe(
+            lambda: llm_reachable(self.pipeline.llm, LLM_CHECK_TIMEOUT_S)
+        )
 
     @classmethod
     def build(cls, config: RagConfig, *, max_concurrent: int) -> "Serving":

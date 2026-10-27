@@ -80,7 +80,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -964,11 +964,17 @@ def _update(config: RagConfig, store: QdrantStore, plan: _Plan, report: IngestRe
 
 
 def ingest(
-    config: RagConfig, *, rebuild: bool = False, store: QdrantStore | None = None
+    config: RagConfig,
+    *,
+    rebuild: bool = False,
+    store: QdrantStore | None = None,
+    on_locked: Callable[[], None] | None = None,
 ) -> IngestReport:
     """Bring the index up to date with the corpus; see the module docstring.
 
     ``store`` is :func:`rag_qa.components.build_store`'s, built here when not given.
+    ``on_locked`` is called once the run holds the writer lock, before it changes anything:
+    the API's job is "running" from then on (S3-8).
     Raises ``FileNotFoundError`` (no corpus folder), :class:`CorpusUnreadableError`,
     :class:`IndexInTheWayError`, :class:`IngestionRunningError`, :class:`ConfigError` and
     :class:`~rag_qa.vectorstore.StoreUnavailableError` (Qdrant cannot be used, at any
@@ -978,11 +984,11 @@ def ingest(
     with tracing.span(tracing.INGEST, {tracing.INGEST_REBUILD: rebuild}) as span:
         _check_corpus(config.paths.data)  # before the lock, so a mistyped path writes nothing
         if store is not None:
-            report = _ingest(config, store, rebuild=rebuild)
+            report = _ingest(config, store, rebuild=rebuild, on_locked=on_locked)
         else:
             own = build_store(config)
             try:
-                report = _ingest(config, own, rebuild=rebuild)
+                report = _ingest(config, own, rebuild=rebuild, on_locked=on_locked)
             finally:
                 own.close()
         _record(span, report)
@@ -1008,7 +1014,13 @@ def _record(span: Span, report: IngestReport) -> None:
         span.set_attribute(DB_COLLECTION_NAME, report.published)
 
 
-def _ingest(config: RagConfig, store: QdrantStore, *, rebuild: bool) -> IngestReport:
+def _ingest(
+    config: RagConfig,
+    store: QdrantStore,
+    *,
+    rebuild: bool,
+    on_locked: Callable[[], None] | None = None,
+) -> IngestReport:
     report = IngestReport()
     blocked = in_the_way(store)
     if blocked is not None:
@@ -1019,6 +1031,8 @@ def _ingest(config: RagConfig, store: QdrantStore, *, rebuild: bool) -> IngestRe
         )
     config.paths.state.mkdir(parents=True, exist_ok=True)
     with _writer_lock(config.paths.state):
+        if on_locked is not None:
+            on_locked()
         leftovers = recover(store)
         if leftovers:
             logger.info("Removed what an earlier run left behind: %s", ", ".join(leftovers))

@@ -13,8 +13,8 @@
 # the bucket does not count is slow. Beside them, the answers abandoned before their event
 # (rag_abandoned_seconds, S3-7b's fix), flat at 0 where a scenario has none: the SLI adds
 # them, and a missing series would empty it, as the app's every label set at 0 never does.
-# The availability series give the answers by outcome and the 503 refusals; cancelled
-# answers count on neither side.
+# The availability series give the answers by outcome and the 5xx refusals; cancelled
+# answers count on neither side, and so do the 4xx refusals (S3-8).
 #
 # The rules are evaluated every 5 minutes, so alerts change state only then, and every eval
 # time is a multiple of 5 minutes: promtool evaluates all 41 rules at every step, and at one
@@ -34,8 +34,9 @@ tests:
   - name: each SLI counts what its objective names, and nothing else
     interval: 1m
     input_series:
-      # Availability: 2 answered, 1 failed and 1 refused (503) a minute: half are bad. The
-      # cancelled answers and the 429s (S3-8) count on neither side.
+      # Availability: 2 answered, 1 failed, 1 refused with 503 and 1 with an unexpected 500 a
+      # minute: 3 of 5 are bad. The cancelled answers, the 429s and the 413s (S3-8) count on
+      # neither side.
       - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="answered"}'
         values: '0+2x120'
       - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="failed"}'
@@ -44,7 +45,11 @@ tests:
         values: '0+4x120'
       - series: 'rag_refusals_total{job="rag",instance="app:9464",code="503",reason="busy"}'
         values: '0+1x120'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="500",reason="error"}'
+        values: '0+1x120'
       - series: 'rag_refusals_total{job="rag",instance="app:9464",code="429",reason="rate_limited"}'
+        values: '0+3x120'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="413",reason="too_large"}'
         values: '0+3x120'
       # Latency: 4 a minute, 3 at or under the objective: a quarter are slow (retrieval), before
       # the abandoned answers below. The bucket beside it is never read.
@@ -88,7 +93,7 @@ tests:
         eval_time: 60m
         exp_samples:
           - labels: 'rag:availability_errors:ratio_rate30m{job="rag"}'
-            value: 0.5
+            value: 0.6
       - expr: rag:retrieval_slow:ratio_rate30m
         eval_time: 60m
         exp_samples:
@@ -130,7 +135,7 @@ tests:
           - exp_labels: { job: rag, severity: page }
             exp_annotations: &availability_fast
               summary: The API is spending its availability budget fast
-              description: 503 refusals and failed answers burn 99% availability at 14.4 times its budget over 1 h, or 6 times over 6 h.
+              description: 5xx refusals and failed answers burn 99% availability at 14.4 times its budget over 1 h, or 6 times over 6 h.
       - eval_time: 445m # ten minutes after: the hour still burns, the 5 m window no longer
         alertname: RagAvailabilityFastBurn
         exp_alerts: []
@@ -173,7 +178,7 @@ tests:
           - exp_labels: { job: rag, severity: ticket }
             exp_annotations: &availability_slow
               summary: The API is spending its availability budget
-              description: 503 refusals and failed answers burn 99% availability at 3 times its budget over 1 d, or at its budget over 3 d.
+              description: 5xx refusals and failed answers burn 99% availability at 3 times its budget over 1 d, or at its budget over 3 d.
       - eval_time: 27h # the 2 h window is clean, the 6 h one is not: the 3 d and 6 h pair alone holds
         alertname: RagAvailabilitySlowBurn
         exp_alerts:
@@ -213,6 +218,60 @@ tests:
         alertname: RagAvailabilitySlowBurn
         exp_alerts: []
       - eval_time: 26h # nor fast: 1.7% of 6 h is under 6%, 5% of the hour under 14.4%
+        alertname: RagAvailabilityFastBurn
+        exp_alerts: []
+
+  # S3-8: an unexpected 500 is bad, as a 503 is; the 4xx refusals are the client's or the
+  # limits', and burn nothing. The first scenario's outage, made of 500s instead of failed
+  # answers, pages as it did; a flood of 401s, 403s, 413s and 429s ten times the answers' rate
+  # leaves the SLI at 0. An SLI that read the 503s alone would miss the first; one that read
+  # every code would page on the second.
+  - name: availability, fast burn from unexpected 500s - a 15-minute outage after 7 good hours
+    interval: 1m
+    input_series:
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="answered"}'
+        values: '0+10x420 4200+0x14 4210+10x40'
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="failed"}'
+        values: '0x476'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="503",reason="busy"}'
+        values: '0x476'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="500",reason="error"}'
+        values: '0x420 10+10x14 150+0x40'
+    alert_rule_test:
+      - eval_time: 420m # steady
+        alertname: RagAvailabilityFastBurn
+        exp_alerts: []
+      - eval_time: 435m # the whole outage: 25% of the hour
+        alertname: RagAvailabilityFastBurn
+        exp_alerts:
+          - exp_labels: { job: rag, severity: page }
+            exp_annotations: *availability_fast
+
+  - name: availability, a flood of 4xx refusals stays quiet
+    interval: 1m
+    input_series:
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="answered"}'
+        values: '0+10x476'
+      - series: 'rag_answers_total{job="rag",instance="app:9464",outcome="failed"}'
+        values: '0x476'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="503",reason="busy"}'
+        values: '0x476'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="401",reason="unauthenticated"}'
+        values: '0x420 100+100x14 1500+0x40'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="403",reason="scope"}'
+        values: '0x420 100+100x14 1500+0x40'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="413",reason="too_large"}'
+        values: '0x420 100+100x14 1500+0x40'
+      - series: 'rag_refusals_total{job="rag",instance="app:9464",code="429",reason="rate_limited"}'
+        values: '0x420 100+100x14 1500+0x40'
+    promql_expr_test:
+      - expr: rag:availability_errors:ratio_rate5m
+        eval_time: 435m
+        exp_samples:
+          - labels: 'rag:availability_errors:ratio_rate5m{job="rag"}'
+            value: 0
+    alert_rule_test:
+      - eval_time: 435m
         alertname: RagAvailabilityFastBurn
         exp_alerts: []
 
